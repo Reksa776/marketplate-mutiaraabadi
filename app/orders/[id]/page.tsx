@@ -201,6 +201,11 @@ export default function OrderDetailPage() {
 
     const [loading, setLoading] =
         useState(true);
+
+    // Guards the "Bayar Lagi" button: a second click while a repayment
+    // is in flight must never create a duplicate payment attempt.
+    const [repaying, setRepaying] =
+        useState(false);
     useEffect(() => {
         if (!order?.id) {
             return;
@@ -354,6 +359,86 @@ export default function OrderDetailPage() {
         loadOrder();
     }, [id]);
 
+    async function handleRepay() {
+        if (!order || repaying) {
+            return;
+        }
+
+        try {
+            setRepaying(true);
+
+            const response = await fetch(
+                `/api/orders/${order.id}/repay`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json",
+                    },
+                    body: JSON.stringify({
+                        paymentMethod:
+                            order.paymentMethod === "COD"
+                                ? "BANK_TRANSFER"
+                                : order.paymentMethod,
+                    }),
+                }
+            );
+
+            const result =
+                await response.json();
+
+            if (
+                !response.ok ||
+                !result.success
+            ) {
+                throw new Error(
+                    result.message ||
+                    "Gagal memproses pembayaran ulang."
+                );
+            }
+
+            /*
+             * ==========================================
+             * HALAMAN PEMBAYARAN TOKO SENDIRI
+             * ==========================================
+             *
+             * Selalu menuju halaman pembayaran milik toko:
+             * pakai URL internal dari server bila ada, kalau tidak
+             * diturunkan dari order id. URL provider (iPaymu) TIDAK
+             * pernah dipakai — customer tidak boleh keluar dari toko.
+             */
+
+            const serverUrl =
+                typeof result.data?.paymentUrl ===
+                "string"
+                    ? result.data.paymentUrl
+                    : "";
+
+            const paymentPageUrl =
+                serverUrl.startsWith(
+                    "/checkout/payment/"
+                )
+                    ? serverUrl
+                    : `/checkout/payment/${order.id}`;
+
+            toast.success(
+                "Mengarahkan ke halaman pembayaran..."
+            );
+
+            window.location.assign(
+                paymentPageUrl
+            );
+        } catch (error) {
+            setRepaying(false);
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal memproses pembayaran ulang."
+            );
+        }
+    }
+
     if (loading) {
         return (
             <main className="min-h-screen bg-gray-50 px-4 py-8">
@@ -441,64 +526,13 @@ export default function OrderDetailPage() {
                             order.status !== "REFUND_PENDING"
                         ) && (
                             <button
-                                onClick={async () => {
-                                    try {
-                                        const response = await fetch(
-                                            `/api/orders/${order.id}/repay`,
-                                            {
-                                                method: "POST",
-                                                headers: {
-                                                    "Content-Type":
-                                                        "application/json",
-                                                },
-                                                body: JSON.stringify({
-                                                    paymentMethod:
-                                                        order.paymentMethod ===
-                                                        "COD"
-                                                            ? "BANK_TRANSFER"
-                                                            : order.paymentMethod,
-                                                }),
-                                            }
-                                        );
-
-                                        const result =
-                                            await response.json();
-
-                                        if (
-                                            !response.ok ||
-                                            !result.success
-                                        ) {
-                                            throw new Error(
-                                                result.message ||
-                                                    "Gagal memproses pembayaran ulang."
-                                            );
-                                        }
-
-                                        toast.success(
-                                            "Siap! Mengarahkan ke halaman pembayaran..."
-                                        );
-
-                                        // Redirect to payment gateway if URL available
-                                        if (
-                                            result.data.redirectUrl
-                                        ) {
-                                            window.location.href =
-                                                result.data.redirectUrl;
-                                        } else {
-                                            // Fallback: reload order to show updated state
-                                            loadOrder();
-                                        }
-                                    } catch (error) {
-                                        toast.error(
-                                            error instanceof Error
-                                                ? error.message
-                                                : "Gagal memproses pembayaran ulang."
-                                        );
-                                    }
-                                }}
-                                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                                onClick={handleRepay}
+                                disabled={repaying}
+                                className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                                💳 Bayar Lagi
+                                {repaying
+                                    ? "Memproses..."
+                                    : "💳 Bayar Lagi"}
                             </button>
                         )}
 

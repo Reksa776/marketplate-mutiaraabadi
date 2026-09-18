@@ -12,24 +12,24 @@ import { getReferralCode } from "@/lib/affiliate/referral";
 import { rateLimiters } from "@/lib/rate-limit";
 
 import {
-    createRedirectPayment,
     formatProductName,
+    resolveProviderMethod,
 } from "@/lib/payment/ipaymu";
+
+import {
+    createDirectOrderPayment,
+    getInstructionKind,
+} from "@/lib/payment/order-payment";
 
 import {
     getIpaymuConfig,
 } from "@/lib/payment/config";
 
-import type {
-    IpaymuPaymentChannel,
-    IpaymuPaymentMethod,
-} from "@/lib/payment/ipaymu";
-
 /* ==========================================
  * POST /api/payment/ipaymu
  * ==========================================
  *
- * NON-COD ONLY — iPaymu Redirect Payment
+ * NON-COD ONLY — iPaymu DIRECT Payment
  *
  * Flow:
  * cleanup pending payment lama
@@ -40,12 +40,15 @@ import type {
  * ↓
  * voucher usage
  * ↓
- * create iPaymu Redirect Payment
+ * create iPaymu Direct Payment (server-only, POST /api/v2/payment/direct)
  * ↓
- * return paymentUrl to client
+ * persist payment instruction (VA / QR URL / e-wallet URL + expiry)
  * ↓
- * client redirects to iPaymu page
+ * return our OWN payment page URL to the client
+ * ↓
+ * customer pays WITHOUT leaving the store
  *
+ * Settlement is decided by the webhook only.
  * Cart TIDAK dikosongkan.
  */
 
@@ -141,6 +144,7 @@ export async function POST(request: Request) {
             addressId,
             shipping,
             paymentMethod,
+            paymentChannel,
             voucherCode,
             productId,
             variantId,
@@ -195,6 +199,33 @@ export async function POST(request: Request) {
                 }
             );
         }
+
+        /* ==========================================
+         * PAYMENT CHANNEL (SERVER-VALIDATED ALLOWLIST)
+         * ==========================================
+         *
+         * The customer may only CHOOSE a channel; mapping to the
+         * provider method/channel pair is enforced server-side. This
+         * runs BEFORE any order is created, so an unlisted channel can
+         * never reserve stock.
+         */
+
+        const selectedPaymentMethod =
+            paymentMethod as
+                | "BANK_TRANSFER"
+                | "E_WALLET"
+                | "QRIS";
+
+        const selectedPaymentChannel =
+            typeof paymentChannel === "string"
+                ? paymentChannel.trim().toLowerCase()
+                : null;
+
+        // Throws PaymentInputError (status 400) for an unlisted channel.
+        resolveProviderMethod(
+            selectedPaymentMethod,
+            selectedPaymentChannel
+        );
 
         /* ==========================================
          * ADDRESS
@@ -300,32 +331,14 @@ export async function POST(request: Request) {
         }
 
         /* ==========================================
-         * MAP PAYMENT METHOD TO IPAYMU
-         * ========================================== */
-
-        let ipaymuMethod: IpaymuPaymentMethod =
-            "va";
-        let ipaymuChannel: IpaymuPaymentChannel =
-            "bca";
-
-        if (paymentMethod === "QRIS") {
-            ipaymuMethod = "qris";
-            ipaymuChannel = "qris";
-        } else if (
-            paymentMethod === "E_WALLET"
-        ) {
-            // iPaymu uses QRIS for e-wallet
-            ipaymuMethod = "qris";
-            ipaymuChannel = "qris";
-        } else {
-            // BANK_TRANSFER → VA
-            ipaymuMethod = "va";
-            ipaymuChannel = "bca";
-        }
-
-        /* ==========================================
-         * BUILD IPAYMU PRODUCT ITEMS
-         * ========================================== */
+         * BUILD IPAYMU ITEM SUMMARY
+         * ==========================================
+         *
+         * The item breakdown is NOT sent to the direct payment API
+         * (product[] is COD-only); it exists to verify that the sum of
+         * the items equals the amount charged, and to build the
+         * transaction comment.
+         */
 
         const products: string[] = [];
         const qtys: string[] = [];
@@ -388,11 +401,12 @@ export async function POST(request: Request) {
         ).substring(0, 20);
 
         /* ==========================================
-         * BUILD DESCRIPTION ARRAY
+         * BUILD TRANSACTION COMMENT
          * ==========================================
          *
-         * iPaymu requires description as an array,
-         * one entry per product item.
+         * Human-readable order summary. Sent as the documented
+         * `comments` field (a string) — the direct payment API does not
+         * accept the redirect-era `description` array.
          */
 
         const descriptions: string[] =
@@ -461,72 +475,39 @@ export async function POST(request: Request) {
                 },
                 { status: 500 }
             );
-        }
-
-        /* ==========================================
-         * CREATE IPAYMU REDIRECT PAYMENT
+        }        /* ==========================================
+         * CREATE IPAYMU DIRECT PAYMENT
          * ==========================================
+         *
+         * Server-authoritative: amount (result.grossAmount),
+         * referenceId (orderNumber), buyer data and notifyUrl all come
+         * from the server. The provider response is persisted as a
+         * sanitized instruction — the raw provider data (and any
+         * credential) never reaches the browser.
          */
 
-        const ipaymuResult =
-            await createRedirectPayment({
-                product: products,
-                qty: qtys,
-                price: prices,
-                amount: result.grossAmount,
-                buyerName: recipientName,
-                buyerEmail:
-                    session.user.email ?? "",
-                buyerPhone: phone,
-                paymentMethod: ipaymuMethod,
-                paymentChannel: ipaymuChannel,
-                notifyUrl: `${appUrl}/api/payment/ipaymu/notification`,
-                returnUrl: `${appUrl}/checkout/payment-finish?payment=${encodeURIComponent(
-                    result.order.orderNumber
-                )}`,
-                cancelUrl: `${appUrl}/checkout/payment-finish?payment=${encodeURIComponent(
-                    result.order.orderNumber
-                )}`,
-                referenceId:
-                    result.order.orderNumber,
-                description: descriptions,
-                expired: 1,
-            });
-
-        if (
-            !ipaymuResult.Data?.Url
-        ) {
-            try {
-                await rollbackCheckoutOrder(
-                    result.order.id,
-                    {
-                        restoreCart: false,
-                    }
-                );
-
-                createdOrderId = null;
-            } catch (rollbackError) {
-                console.error(
-                    "IPAYMU ROLLBACK ERROR:",
-                    rollbackError
-                );
-            }
-
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "URL pembayaran iPaymu tidak ditemukan.",
-                },
-                {
-                    status: 500,
-                }
-            );
-        }
+        const payment = await createDirectOrderPayment({
+            orderId: result.order.id,
+            orderNumber: result.order.orderNumber,
+            buyerName: recipientName,
+            buyerPhone: phone,
+            buyerEmail: session.user.email ?? "",
+            amount: result.grossAmount,
+            paymentMethod: selectedPaymentMethod,
+            paymentChannel: selectedPaymentChannel,
+            notifyUrl: `${appUrl}/api/payment/ipaymu/notification`,
+            comments:
+                descriptions.join(", ").substring(0, 191) ||
+                undefined,
+        });
 
         /* ==========================================
          * SUCCESS
-         * ========================================== */
+         * ==========================================
+         *
+         * `paymentUrl` is OUR OWN payment page. The customer stays on
+         * the store domain and never sees an iPaymu URL.
+         */
 
         return NextResponse.json({
             success: true,
@@ -540,16 +521,29 @@ export async function POST(request: Request) {
                 orderNumber:
                     result.order.orderNumber,
 
-                paymentUrl:
-                    ipaymuResult.Data.Url,
-
-                sessionId:
-                    ipaymuResult.Data.SessionId,
+                paymentUrl: payment.paymentPageUrl,
 
                 paymentReference:
                     result.order.orderNumber,
 
                 paymentMethod,
+
+                paymentChannel: payment.providerChannel,
+
+                expiresAt:
+                    payment.instruction.expiresAt
+                        ? payment.instruction.expiresAt.toISOString()
+                        : null,
+
+                instructions: {
+                    kind: getInstructionKind(selectedPaymentMethod),
+                    channel: payment.instruction.channel,
+                    channelLabel:
+                        payment.instruction.channelLabel,
+                    paymentNo: payment.instruction.paymentNo,
+                    qrImageUrl: payment.instruction.qrImageUrl,
+                    actionUrl: payment.instruction.paymentUrl,
+                },
 
                 subtotal: result.subtotal,
                 shippingCost: result.shippingCost,

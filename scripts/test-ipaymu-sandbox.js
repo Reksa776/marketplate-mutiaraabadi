@@ -1,11 +1,15 @@
 /**
- * Safe iPaymu Sandbox Diagnostic Test
- * 
+ * Safe iPaymu SANDBOX Diagnostic Test
+ *
  * Loads credentials from .env via dotenv.
- * Makes a minimal test payment request.
+ * Makes a minimal DIRECT PAYMENT request
+ * (POST /api/v2/payment/direct — the endpoint the app now uses).
  * Reports sanitized results.
- * 
- * NEVER prints the full API key.
+ *
+ * SAFETY
+ *  - refuses to run against a non-sandbox base URL, so it can never
+ *    create a real payment in production
+ *  - NEVER prints the full API key
  */
 
 require("dotenv").config();
@@ -32,23 +36,32 @@ if (!apiKey || !va) {
   process.exit(1);
 }
 
+/* ========== PRODUCTION GUARD ==========
+ *
+ * This script CREATES A PAYMENT. It must never be pointed at the
+ * production endpoint, so any non-sandbox URL aborts immediately.
+ */
+if (!baseUrl.includes("sandbox.ipaymu.com")) {
+  console.error(
+    "\n❌ REFUSED: BASE_URL is not the iPaymu sandbox endpoint.\n" +
+      "   This diagnostic creates a real payment and must never run " +
+      "against production.\n"
+  );
+  process.exit(1);
+}
+
 // ========== BUILD TEST REQUEST ==========
+// Direct payment contract: only the documented fields are sent.
 const testBody = {
-  product: ["Test Product"],
-  qty: ["1"],
-  price: ["10000"],
+  name: "Test Buyer",
+  phone: "081234567890",
+  email: "test@example.com",
   amount: 10000,
-  buyerName: "Test Buyer",
-  buyerEmail: "test@example.com",
-  buyerPhone: "081234567890",
+  notifyUrl: "https://example.com/api/payment/ipaymu/notification",
+  referenceId: "TEST-DIRECT-" + Date.now(),
   paymentMethod: "va",
   paymentChannel: "bca",
-  notifyUrl: "https://example.com/notify",
-  returnUrl: "https://example.com/return",
-  cancelUrl: "https://example.com/cancel",
-  referenceId: "TEST-" + Date.now(),
-  description: ["Test Product"],
-  expired: 1,
+  comments: "Sandbox diagnostic",
 };
 
 const body = JSON.stringify(testBody);
@@ -69,7 +82,7 @@ const timestamp =
   String(now.getSeconds()).padStart(2, "0");
 
 console.log("\n========== REQUEST DETAILS ==========");
-console.log("ENDPOINT:", `${baseUrl}/api/v2/payment/`);
+console.log("ENDPOINT:", `${baseUrl}/api/v2/payment/direct`);
 console.log("BODY_LENGTH:", body.length);
 console.log("BODY_HASH:", bodyHash);
 console.log("VA_LEN:", va.length);
@@ -78,6 +91,7 @@ console.log("SIGNATURE_LEN:", signature.length);
 console.log("SIGNATURE_FIRST8:", signature.substring(0, 8));
 console.log("TIMESTAMP:", timestamp);
 console.log("CONTENT_TYPE:", "application/json");
+console.log("BODY:", body);
 
 // Show stringToSign with API key redacted
 console.log("\nSTRING_TO_SIGN:", `POST:${va}:${bodyHash.toLowerCase()}:<REDACTED>`);
@@ -87,7 +101,7 @@ console.log("\n========== SENDING REQUEST ==========");
 
 async function testRequest() {
   try {
-    const response = await fetch(`${baseUrl}/api/v2/payment/`, {
+    const response = await fetch(`${baseUrl}/api/v2/payment/direct`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -105,15 +119,21 @@ async function testRequest() {
     console.log("HTTP_STATUS:", response.status);
     console.log("IPAYMU_STATUS:", result.Status);
     console.log("IPAYMU_MESSAGE:", result.Message);
+    console.log("TRANSACTION_ID:", result.Data?.TransactionId || "N/A");
+    console.log("VIA / CHANNEL:", result.Data?.Via, "/", result.Data?.Channel);
+    console.log("PAYMENT_NO:", result.Data?.PaymentNo || "N/A");
+    console.log("PAYMENT_NAME:", result.Data?.PaymentName || "N/A");
+    console.log("EXPIRED:", result.Data?.Expired || "N/A");
     console.log("HAS_URL:", !!result.Data?.Url);
-    console.log("SESSION_ID:", result.Data?.SessionId || "N/A");
-
-    if (result.Data?.Url) {
-      console.log("PAYMENT_URL:", result.Data.Url);
-    }
 
     if (result.Status === 200) {
-      console.log("\n✅ SUCCESS: iPaymu sandbox accepted the request!");
+      console.log("\n✅ SUCCESS: iPaymu sandbox accepted the direct payment request!");
+      if (!result.Data?.PaymentNo && !result.Data?.Url) {
+        console.log(
+          "⚠️  NOTE: no PaymentNo and no Url returned — the app would reject " +
+            "this response and roll the order back."
+        );
+      }
     } else {
       console.log("\n❌ FAILED: iPaymu returned status", result.Status, "-", result.Message);
     }

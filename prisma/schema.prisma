@@ -226,6 +226,23 @@ model Order {
   postalCode       String?
   province         String?
   paymentReference String?
+
+  // ==========================================
+  // iPaymu Direct Payment instruction
+  // (sanitized subset of the provider response)
+  // ==========================================
+  //
+  // paymentNo        → provider VA number / payment code (Data.PaymentNo)
+  // paymentUrl       → provider QR image URL (QRIS) or e-wallet link (Data.Url)
+  // paymentChannel   → provider channel, e.g. bca / mandiri / qris / dana
+  // paymentExpiresAt → provider expiry (Data.Expired, WIB → UTC)
+  //
+  // NOTE: the merchant VA / API key / signature are NEVER stored here.
+  paymentNo        String?
+  paymentUrl       String?             @db.Text
+  paymentChannel   String?
+  paymentExpiresAt DateTime?
+
   voucherId        Int?
   voucherCode      String?
   discount         Decimal             @default(0) @db.Decimal(12, 2)
@@ -261,6 +278,7 @@ model Order {
   @@index([userId])
   @@index([status])
   @@index([paymentStatus])
+  @@index([paymentExpiresAt])
   @@index([createdAt])
   @@index([trackingNumber])
   @@map("order")

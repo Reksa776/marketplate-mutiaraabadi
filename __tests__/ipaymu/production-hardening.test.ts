@@ -176,6 +176,11 @@ import {
     isFailedNotification,
     verifyNotificationAmount,
     formatProductName,
+    classifyIpaymuNotification,
+    isExpiryNotification,
+    sanitizeProviderUrl,
+    sanitizeQrImageUrl,
+    resolveProviderMethod,
 } from "@/lib/payment/ipaymu";
 
 test("generateSignature produces valid hex", () => {
@@ -566,19 +571,34 @@ test("notifyUrl uses APP_URL env var (not request headers)", () => {
     );
 });
 
-test("returnUrl uses APP_URL env var", () => {
+test("Cart checkout sends NO return/cancel redirect URLs (direct payment)", () => {
     assert(
-        cartIpaymuRoute.includes("returnUrl:") &&
-            cartIpaymuRoute.includes("appUrl"),
-        "Cart must use APP_URL for returnUrl"
+        !cartIpaymuRoute.includes("returnUrl:") &&
+            !cartIpaymuRoute.includes("cancelUrl:"),
+        "Direct payment must not use provider redirect URLs"
     );
 });
 
-test("cancelUrl uses APP_URL env var", () => {
+test("Cart checkout keeps using the env APP_URL for the internal payment page", () => {
     assert(
-        cartIpaymuRoute.includes("cancelUrl:") &&
-            cartIpaymuRoute.includes("appUrl"),
-        "Cart must use APP_URL for cancelUrl"
+        cartIpaymuRoute.includes("appUrl") &&
+            cartIpaymuRoute.includes("api/payment/ipaymu/notification"),
+        "Cart must use APP_URL for notifyUrl"
+    );
+});
+
+test("Cart checkout returns our own payment page, not a provider URL", () => {
+    assert(
+        cartIpaymuRoute.includes("payment.paymentPageUrl") &&
+            !cartIpaymuRoute.includes("ipaymuResult.Data"),
+        "paymentUrl must point at /checkout/payment/{orderId}"
+    );
+});
+
+test("Cart checkout validates the customer channel against the allowlist", () => {
+    assert(
+        cartIpaymuRoute.includes("resolveProviderMethod"),
+        "Must validate the payment channel server-side"
     );
 });
 
@@ -645,16 +665,23 @@ test("Forged Host header cannot alter callback URLs", () => {
     );
 });
 
-test("API key not logged in createRedirectPayment", () => {
-    // Check that debug logs don't expose the full API key
-    const debugSection = ipaymuLib.substring(
-        ipaymuLib.indexOf("IPAYMU DEBUG"),
-        ipaymuLib.indexOf("========== IPAYMU CREATE")
+test("API key is never logged by the outgoing payment call", () => {
+    // postToIpaymu() is the single place that builds signed requests.
+    const start = ipaymuLib.indexOf("async function postToIpaymu");
+    const end = ipaymuLib.indexOf("export async function createDirectPayment");
+    const requestSection = ipaymuLib.substring(start, end);
+
+    assert(start > -1 && end > start, "postToIpaymu must exist");
+    assert(
+        !/console\.(log|warn|error)[\s\S]{0,400}apiKey\s*[,:}]/.test(
+            requestSection
+        ),
+        "Must not log the API key"
     );
     assert(
-        !debugSection.includes("apiKey") ||
-            debugSection.includes("SIGNATURE FIRST8"),
-        "Must not log full API key"
+        requestSection.includes("bodyHash") ||
+            requestSection.includes("hasPaymentNo"),
+        "May only log non-secret identifiers"
     );
 });
 
@@ -690,7 +717,7 @@ test("Notification logs safe fields only", () => {
 
 console.log("\nH. Error Handling:");
 
-test("createRedirectPayment has timeout support", () => {
+test("createDirectPayment has timeout support", () => {
     assert(
         ipaymuLib.includes("AbortController") ||
             ipaymuLib.includes("signal") ||
@@ -699,7 +726,7 @@ test("createRedirectPayment has timeout support", () => {
     );
 });
 
-test("createRedirectPayment validates amount", () => {
+test("createDirectPayment validates amount", () => {
     assert(
         ipaymuLib.includes("Number.isFinite(request.amount)") ||
             ipaymuLib.includes("amount <= 0"),
@@ -707,11 +734,132 @@ test("createRedirectPayment validates amount", () => {
     );
 });
 
-test("createRedirectPayment validates product arrays", () => {
+test("createDirectPayment validates referenceId and notifyUrl (server-authoritative)", () => {
     assert(
-        ipaymuLib.includes("product.length === 0") ||
-            ipaymuLib.includes("product.length !== request.qty.length"),
-        "Must validate product arrays"
+        ipaymuLib.includes("iPaymu referenceId wajib diisi") &&
+            ipaymuLib.includes("iPaymu notifyUrl wajib diisi"),
+        "Must validate server-authoritative fields"
+    );
+});
+
+test("createDirectPayment validates method AND channel against the allowlist", () => {
+    assert(
+        ipaymuLib.includes("isValidDirectChannel") &&
+            ipaymuLib.includes("paymentChannel tidak valid"),
+        "Must validate the provider channel allowlist"
+    );
+});
+
+test("resolveProviderMethod maps methods and rejects unlisted channels", () => {
+    assert(
+        resolveProviderMethod("BANK_TRANSFER", "bca").method === "va",
+        "bca must map to va"
+    );
+    assert(
+        resolveProviderMethod("BANK_TRANSFER", null).channel === "bca",
+        "VA default channel must be bca"
+    );
+    assert(
+        resolveProviderMethod("E_WALLET", "dana").method === "ewallet",
+        "dana must map to ewallet"
+    );
+    assert(
+        resolveProviderMethod("QRIS", null).method === "qris",
+        "QRIS must map to qris"
+    );
+
+    let threw = false;
+    try {
+        resolveProviderMethod("BANK_TRANSFER", "evil-bank");
+    } catch {
+        threw = true;
+    }
+    assert(threw, "Unlisted channel must be rejected");
+});
+
+test("Direct payment never sends COD-only product arrays for va/qris/ewallet", () => {
+    const bodySection = ipaymuLib.substring(
+        ipaymuLib.indexOf("const payload: Record<string, unknown>"),
+        ipaymuLib.indexOf("const body = JSON.stringify(payload)")
+    );
+
+    assert(
+        !bodySection.includes("payload.product"),
+        "product[] is COD-only and must not be sent"
+    );
+});
+
+test("Direct payment amount is never rounded (webhook amount must match order.total)", () => {
+    assert(
+        ipaymuLib.includes("amount: request.amount") &&
+            !ipaymuLib.includes("Math.round(request.amount)"),
+        "Rounding would desync the provider amount from order.total"
+    );
+});
+
+test("Provider URLs are sanitized before they reach the UI", () => {
+    assert(
+        ipaymuLib.includes("sanitizeQrImageUrl") &&
+            ipaymuLib.includes("sanitizeProviderUrl"),
+        "Must sanitize provider URLs"
+    );
+
+    assert(
+        sanitizeProviderUrl("javascript:alert(1)") === null,
+        "javascript: URLs must be rejected"
+    );
+
+    assert(
+        sanitizeProviderUrl("https://my.ipaymu.com/qr.png") ===
+            "https://my.ipaymu.com/qr.png",
+        "https provider URLs must be kept"
+    );
+
+    assert(
+        sanitizeQrImageUrl("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=") ===
+            null,
+        "SVG data URIs must be rejected"
+    );
+
+    assert(
+        typeof sanitizeQrImageUrl(
+            "data:image/png;base64,iVBORw0KGgo="
+        ) === "string",
+        "Raster data URIs must be accepted"
+    );
+});
+
+test("Expired payment (-2) is classified as a failure, never as success", () => {
+    assert(
+        classifyIpaymuNotification({ status_code: "-2" }) === "failed",
+        "status_code -2 must be failed"
+    );
+    assert(
+        classifyIpaymuNotification({ status: "expired" }) === "failed",
+        "status 'expired' must be failed"
+    );
+    assert(
+        isExpiryNotification({ status_code: "-2" }) === true &&
+            isExpiryNotification({ status: "pending" }) === false,
+        "Expiry detection must be explicit"
+    );
+});
+
+test("Webhook: expiry/failure also releases the shipping-discount quota", () => {
+    assert(
+        notificationRoute.includes("releaseShippingDiscountForOrder"),
+        "Shipping-discount reservation must be released on failure/expiry"
+    );
+});
+
+test("In-shop payment page is settled only through the lifecycle CAS", () => {
+    const orderPayment = readFile("lib/payment/order-payment.ts");
+
+    assert(
+        orderPayment.includes("rollbackCheckoutOrder") &&
+            orderPayment.includes("PAYMENT_EXPIRY_GRACE_MS") &&
+            !orderPayment.includes("paymentStatus: \"PAID\""),
+        "Expiry settlement must reuse the existing CAS lifecycle"
     );
 });
 

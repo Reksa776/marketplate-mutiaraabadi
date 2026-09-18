@@ -67,12 +67,15 @@ const nextConfig: NextConfig = {
                         //   - *.tile.openstreetmap.org → Leaflet map tiles (app/addresses/new/LocationPickerMap.tsx)
                         //   - unpkg.com → Leaflet marker images (app/addresses/new/LocationPickerMap.tsx)
                         //   - down-id.img.susercontent.com → Product images (next.config.ts images.remotePatterns)
+                        //   - my.ipaymu.com / sandbox.ipaymu.com → iPaymu QRIS
+                        //     QR image URL rendered on our own payment page
+                        //     (app/checkout/payment/[id])
                         key: "Content-Security-Policy",
                         value: [
                             "default-src 'self'",
                             `script-src ${scriptSrcDirectives.join(" ")}`,
                             "style-src 'self' 'unsafe-inline'",
-                            "img-src 'self' https://down-id.img.susercontent.com https://unpkg.com https://*.tile.openstreetmap.org data:",
+                            "img-src 'self' https://down-id.img.susercontent.com https://unpkg.com https://*.tile.openstreetmap.org https://my.ipaymu.com https://sandbox.ipaymu.com data:",
                             "font-src 'self'",
                             "connect-src 'self'",
                             "frame-src 'none'",
@@ -87,7 +90,7 @@ const nextConfig: NextConfig = {
         ];
     },
     allowedDevOrigins: [
-        "192.168.2.49",
+        "192.168.99.247",
         "103.93.132.214",
         "202.73.25.122",
         "demosolusisejalan.my.id",

@@ -3,10 +3,13 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { processRepayment } from "@/lib/repay";
 import { rateLimiters } from "@/lib/rate-limit";
-import { getAppOrigin } from "@/lib/app-origin";
 
-import { createRedirectPayment, formatProductName } from "@/lib/payment/ipaymu";
-import type { IpaymuPaymentChannel, IpaymuPaymentMethod } from "@/lib/payment/ipaymu";
+import { formatProductName, resolveProviderMethod } from "@/lib/payment/ipaymu";
+import {
+    canReusePaymentInstruction,
+    createDirectOrderPayment,
+    getPaymentPagePath,
+} from "@/lib/payment/order-payment";
 
 /* ==========================================
  * POST /api/orders/[id]/repay
@@ -14,20 +17,20 @@ import type { IpaymuPaymentChannel, IpaymuPaymentMethod } from "@/lib/payment/ip
  *
  * Repayment / Bayar Lagi.
  *
- * After the DB state is reset, creates a new
- * payment gateway session and returns the
- * payment URL to the caller.
+ * After the DB state is reset, creates a new iPaymu DIRECT payment
+ * and returns OUR OWN payment page URL to the caller.
  *
  * Flow:
  * 1. Validate ownership
  * 2. Validate order eligibility
  * 3. CAS reset order to PENDING
  * 4. Re-reserve stock if needed
- * 5. Create iPaymu payment session
- * 6. Return payment URL to frontend
+ * 5. Create iPaymu direct payment (VA / QRIS / e-wallet instruction)
+ * 6. Return our payment page URL to the frontend
  *
  * Amount is SERVER-AUTHORITATIVE (order.total from DB).
- * Payment gateway session is created server-side.
+ * Payment creation is server-side; the customer never leaves the store
+ * and settlement still comes from the webhook only.
  */
 
 
@@ -93,7 +96,10 @@ export async function POST(
         // PARSE PAYMENT METHOD
         // ==========================================
 
-        let body: { paymentMethod?: string } = {};
+        let body: {
+            paymentMethod?: string;
+            paymentChannel?: string;
+        } = {};
         try {
             body = await req.json();
         } catch {
@@ -101,6 +107,89 @@ export async function POST(
         }
 
         const paymentMethod = body.paymentMethod || "BANK_TRANSFER";
+
+        const paymentChannel =
+            typeof body.paymentChannel === "string"
+                ? body.paymentChannel.trim().toLowerCase()
+                : null;
+
+        // ==========================================
+        // VALIDATE METHOD + CHANNEL (ALLOWLIST)
+        // ==========================================
+        //
+        // Runs before any DB state is touched, so a bad channel can
+        // never reset the order or reserve stock.
+
+        if (
+            paymentMethod !== "BANK_TRANSFER" &&
+            paymentMethod !== "E_WALLET" &&
+            paymentMethod !== "QRIS"
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: "Metode pembayaran tidak valid.",
+                },
+                { status: 400 }
+            );
+        }
+
+        try {
+            resolveProviderMethod(paymentMethod, paymentChannel);
+        } catch (error) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        error instanceof Error
+                            ? error.message
+                            : "Channel pembayaran tidak valid.",
+                },
+                { status: 400 }
+            );
+        }
+
+        // ==========================================
+        // STEP 0: SNAPSHOT (REUSE DECISION INPUT)
+        // ==========================================
+        //
+        // Read BEFORE the state reset. An order that is still awaiting
+        // payment and has an instruction inside its provider window must
+        // be REUSED — creating a second provider payment with the same
+        // referenceId would either be rejected by the provider or make
+        // settlement ambiguous.
+        //
+        // Scoped by userId, so another user's order is indistinguishable
+        // from a missing one.
+
+        const snapshot = await prisma.order.findFirst({
+            where: { id: orderId, userId: session.user.id },
+            select: {
+                id: true,
+                status: true,
+                paymentStatus: true,
+                paymentMethod: true,
+                paymentChannel: true,
+                paymentNo: true,
+                paymentUrl: true,
+                paymentExpiresAt: true,
+            },
+        });
+
+        if (!snapshot) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: "Order tidak ditemukan.",
+                },
+                { status: 404 }
+            );
+        }
+
+        const reuseInstruction = canReusePaymentInstruction(
+            snapshot,
+            paymentMethod
+        );
 
         // ==========================================
         // STEP 1: PROCESS REPAYMENT (DB STATE RESET)
@@ -123,27 +212,55 @@ export async function POST(
         }
 
         // ==========================================
-        // STEP 2: CREATE PAYMENT GATEWAY SESSION
+        // STEP 2: REUSE THE OPEN INSTRUCTION
         // ==========================================
         //
-        // After DB state is reset, we need to create
-        // a new payment session at the gateway.
-        // The user will be redirected to the gateway.
+        // The order is still awaiting payment and the provider window is
+        // open, so the customer keeps the SAME VA / QR / e-wallet
+        // instruction. No provider call, no duplicate session, no
+        // duplicate referenceId.
+
+        if (reuseInstruction) {
+            return NextResponse.json({
+                success: true,
+                message: "Pembayaran ulang berhasil dibuat.",
+                data: {
+                    orderId: result.orderId,
+                    orderNumber: result.orderNumber,
+                    grossAmount: result.grossAmount,
+                    paymentMethod: result.paymentMethod,
+                    gateway: "ipaymu",
+                    reused: true,
+                    // OUR OWN payment page — no provider redirect.
+                    paymentUrl: getPaymentPagePath(result.orderId),
+                    paymentChannel: snapshot.paymentChannel,
+                    expiresAt: snapshot.paymentExpiresAt
+                        ? snapshot.paymentExpiresAt.toISOString()
+                        : null,
+                },
+            });
+        }
+
+        // ==========================================
+        // STEP 3: CREATE A NEW PAYMENT INSTRUCTION
+        // ==========================================
+        //
+        // No usable instruction exists (absent, expired, or for another
+        // method), so a fresh provider payment is created.
 
         const appUrl = process.env.NEXT_PUBLIC_APP_URL;
         if (!appUrl) {
+            console.error(
+                "REPAY ORDER ERROR: NEXT_PUBLIC_APP_URL belum dikonfigurasi."
+            );
+
             return NextResponse.json(
                 {
-                    success: true,
-                    message: "Pembayaran ulang siap diproses.",
-                    data: {
-                        orderId: result.orderId,
-                        orderNumber: result.orderNumber,
-                        grossAmount: result.grossAmount,
-                        paymentMethod: result.paymentMethod,
-                        // Fallback: no gateway URL, frontend shows manual payment info
-                    },
-                }
+                    success: false,
+                    message:
+                        "Konfigurasi aplikasi belum lengkap. Silakan hubungi dukungan.",
+                },
+                { status: 500 }
             );
         }
 
@@ -156,125 +273,74 @@ export async function POST(
         if (!order) {
             return NextResponse.json(
                 {
-                    success: true,
-                    message: "Pembayaran ulang siap diproses.",
-                    data: {
-                        orderId: result.orderId,
-                        orderNumber: result.orderNumber,
-                        grossAmount: result.grossAmount,
-                        paymentMethod: result.paymentMethod,
-                    },
-                }
+                    success: false,
+                    message: "Order tidak ditemukan.",
+                },
+                { status: 404 }
             );
         }
 
-        // All payment methods now route through iPaymu
-
         // ==========================================
-        // IPAYMU PAYMENT CREATION (ALL METHODS)
+        // IPAYMU DIRECT PAYMENT CREATION
         // ==========================================
+        //
+        // Amount is SERVER-AUTHORITATIVE (order.total from the DB) and
+        // the resulting instruction is persisted for OUR payment page.
+        // The provider URL is never returned to the client.
 
         try {
-            // Map payment method to iPaymu method/channel
-            let ipaymuMethod: IpaymuPaymentMethod = "va";
-            let ipaymuChannel: IpaymuPaymentChannel = "bca";
+            const descriptions: string[] = order.items.map((item) =>
+                formatProductName(item.productName, item.variantName).substring(0, 50)
+            );
 
-            if (paymentMethod === "QRIS") {
-                ipaymuMethod = "qris";
-                ipaymuChannel = "qris";
-            } else if (paymentMethod === "E_WALLET") {
-                ipaymuMethod = "qris";
-                ipaymuChannel = "qris";
-            } else {
-                // BANK_TRANSFER and others → VA
-                ipaymuMethod = "va";
-                ipaymuChannel = "bca";
-            }
-
-            const products: string[] = [];
-            const qtys: string[] = [];
-            const prices: string[] = [];
-            const descriptions: string[] = [];
-
-            for (const item of order.items) {
-                products.push(
-                    formatProductName(item.productName, item.variantName).substring(0, 50)
-                );
-                qtys.push(String(item.quantity));
-                prices.push(String(Number(item.price)));
-                descriptions.push(
-                    formatProductName(item.productName, item.variantName).substring(0, 50)
-                );
-            }
-
-            if (Number(order.shippingCost) > 0) {
-                products.push("Biaya Pengiriman");
-                qtys.push("1");
-                prices.push(String(Number(order.shippingCost)));
-                descriptions.push("Biaya Pengiriman");
-            }
-
-            if (Number(order.discount) > 0 && order.voucherCode) {
-                products.push(`Voucher ${order.voucherCode}`.substring(0, 50));
-                qtys.push("1");
-                prices.push(String(-Number(order.discount)));
-                descriptions.push(`Voucher ${order.voucherCode}`.substring(0, 50));
-            }
-
-            const ipaymuResult = await createRedirectPayment({
-                product: products,
-                qty: qtys,
-                price: prices,
-                amount: Number(order.total),
+            const payment = await createDirectOrderPayment({
+                orderId: order.id,
+                orderNumber: order.orderNumber,
                 buyerName: (order.recipientName || "").substring(0, 50),
                 buyerEmail: session.user.email ?? "",
                 buyerPhone: (order.phone || "").substring(0, 20),
-                paymentMethod: ipaymuMethod,
-                paymentChannel: ipaymuChannel,
+                amount: Number(order.total),
+                paymentMethod,
+                paymentChannel,
                 notifyUrl: `${appUrl}/api/payment/ipaymu/notification`,
-                returnUrl: `${appUrl}/checkout/payment-finish?payment=${encodeURIComponent(order.orderNumber)}`,
-                cancelUrl: `${appUrl}/checkout/payment-finish?payment=${encodeURIComponent(order.orderNumber)}`,
-                referenceId: order.orderNumber,
-                description: descriptions,
-                expired: 1,
+                comments:
+                    descriptions.join(", ").substring(0, 191) ||
+                    undefined,
             });
 
-            if (ipaymuResult.Data?.Url) {
-                return NextResponse.json({
-                    success: true,
-                    message: "Pembayaran ulang berhasil dibuat.",
-                    data: {
-                        orderId: result.orderId,
-                        orderNumber: result.orderNumber,
-                        grossAmount: result.grossAmount,
-                        paymentMethod: result.paymentMethod,
-                        gateway: "ipaymu",
-                        redirectUrl: ipaymuResult.Data.Url,
-                    },
-                });
-            }
+            return NextResponse.json({
+                success: true,
+                message: "Pembayaran ulang berhasil dibuat.",
+                data: {
+                    orderId: result.orderId,
+                    orderNumber: result.orderNumber,
+                    grossAmount: result.grossAmount,
+                    paymentMethod: result.paymentMethod,
+                    gateway: "ipaymu",
+                    // OUR OWN payment page — no provider redirect.
+                    paymentUrl: payment.paymentPageUrl,
+                    paymentChannel: payment.providerChannel,
+                    expiresAt: payment.instruction.expiresAt
+                        ? payment.instruction.expiresAt.toISOString()
+                        : null,
+                },
+            });
         } catch (ipaymuError: any) {
             console.error("IPAYMU REPAYMENT CREATE FAILED:", ipaymuError);
-            // Fall through — return generic response
+
+            // Never pretend this succeeded: the client must be able to
+            // show a clear error instead of silently doing nothing.
+            // The DB state was reset, so the customer can simply retry
+            // (or pick another method/channel).
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Gagal membuat instruksi pembayaran baru. Silakan coba lagi atau pilih metode pembayaran lain.",
+                },
+                { status: 502 }
+            );
         }
-
-        // ==========================================
-        // GENERIC RESPONSE (gateway creation failed)
-        // ==========================================
-        //
-        // DB state has been reset successfully.
-        // User can try again or contact support.
-
-        return NextResponse.json({
-            success: true,
-            message: "Pembayaran ulang siap diproses. Silakan pilih metode pembayaran.",
-            data: {
-                orderId: result.orderId,
-                orderNumber: result.orderNumber,
-                grossAmount: result.grossAmount,
-                paymentMethod: result.paymentMethod,
-            },
-        });
     } catch (error) {
         console.error("REPAY ORDER ERROR:", error);
 

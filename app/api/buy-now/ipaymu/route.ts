@@ -12,18 +12,18 @@ import { rateLimiters } from "@/lib/rate-limit";
 import { getAppOrigin } from "@/lib/app-origin";
 
 import {
-    createRedirectPayment,
     formatProductName,
+    resolveProviderMethod,
 } from "@/lib/payment/ipaymu";
+
+import {
+    createDirectOrderPayment,
+    getInstructionKind,
+} from "@/lib/payment/order-payment";
 
 import {
     getIpaymuConfig,
 } from "@/lib/payment/config";
-
-import type {
-    IpaymuPaymentChannel,
-    IpaymuPaymentMethod,
-} from "@/lib/payment/ipaymu";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +51,8 @@ type Body = {
     addressId: string;
     shipping: ShippingPayload;
     paymentMethod: PaymentMethod;
+    /** Optional provider channel chosen by the customer (e.g. bca, dana). */
+    paymentChannel?: string | null;
     voucherCode?: string | null;
     spinWheelSpinId?: number | null;
 };
@@ -175,6 +177,11 @@ export async function POST(
         const paymentMethod =
             body.paymentMethod;
 
+        const paymentChannel =
+            typeof body.paymentChannel === "string"
+                ? body.paymentChannel.trim().toLowerCase()
+                : null;
+
         const voucherCode = normalizeVoucherCode(
             body.voucherCode
         );
@@ -222,6 +229,24 @@ export async function POST(
         ) {
             return jsonError(
                 "Metode pembayaran tidak valid."
+            );
+        }
+
+        /*
+         * Payment channel allowlist — validated BEFORE the order is
+         * created so an unlisted channel can never reserve stock.
+         * Mapping to the provider method/channel pair is server-side.
+         */
+        try {
+            resolveProviderMethod(
+                paymentMethod,
+                paymentChannel
+            );
+        } catch (error) {
+            return jsonError(
+                error instanceof Error
+                    ? error.message
+                    : "Channel pembayaran tidak valid."
             );
         }
 
@@ -278,30 +303,13 @@ export async function POST(
         }
 
         /* ==========================================
-         * MAP PAYMENT METHOD TO IPAYMU
-         * ========================================== */
-
-        let ipaymuMethod: IpaymuPaymentMethod =
-            "va";
-        let ipaymuChannel: IpaymuPaymentChannel =
-            "bca";
-
-        if (paymentMethod === "QRIS") {
-            ipaymuMethod = "qris";
-            ipaymuChannel = "qris";
-        } else if (
-            paymentMethod === "E_WALLET"
-        ) {
-            ipaymuMethod = "qris";
-            ipaymuChannel = "qris";
-        } else {
-            ipaymuMethod = "va";
-            ipaymuChannel = "bca";
-        }
-
-        /* ==========================================
-         * BUILD IPAYMU PRODUCT ITEMS
-         * ========================================== */
+         * BUILD IPAYMU ITEM SUMMARY
+         * ==========================================
+         *
+         * The breakdown is not sent to the direct payment API
+         * (product[] is COD-only); it verifies that the items sum to the
+         * amount charged and builds the transaction comment.
+         */
 
         const products: string[] = [];
         const qtys: string[] = [];
@@ -392,13 +400,15 @@ export async function POST(
 
         if (result.spinWheelDiscount > 0) {
             descriptions.push("Reward Spin Wheel");
-        }        /* ==========================================
+        }
+
+        /* ==========================================
          * VALIDATE ITEM DETAILS TOTAL
          * ==========================================
          *
          * Server-authoritative check: the sum of
          * product + shipping - discounts must equal
-         * the payment amount sent to iPaymu.
+         * the amount charged to the customer.
          */
         const itemTotal = prices.reduce(
             (sum, p, i) => sum + Number(p) * Number(qtys[i]),
@@ -437,65 +447,39 @@ export async function POST(
         }
 
         /* ==========================================
-         * CREATE IPAYMU REDIRECT PAYMENT
+         * CREATE IPAYMU DIRECT PAYMENT
          * ==========================================
+         *
+         * Server-authoritative amount/reference/buyer/notifyUrl; the
+         * provider response is persisted as a sanitized instruction and
+         * the customer stays on our own payment page.
          */
 
-        const ipaymuResult =
-            await createRedirectPayment({
-                product: products,
-                qty: qtys,
-                price: prices,
-                amount: result.grossAmount,
-                buyerName: recipientName,
-                buyerEmail:
-                    user.email ?? "",
-                buyerPhone: phone,
-                paymentMethod: ipaymuMethod,
-                paymentChannel: ipaymuChannel,
-                notifyUrl: `${appOrigin}/api/payment/ipaymu/notification`,
-                returnUrl: `${appOrigin}/checkout/payment-finish?payment=${encodeURIComponent(
-                    result.order.orderNumber
-                )}`,
-                cancelUrl: `${appOrigin}/checkout/payment-finish?payment=${encodeURIComponent(
-                    result.order.orderNumber
-                )}`,
-                referenceId:
-                    result.order.orderNumber,
-                description: descriptions,
-                expired: 1,
-            });
-
-        if (!ipaymuResult.Data?.Url) {
-            try {
-                await rollbackCheckoutOrder(
-                    result.order.id,
-                    { restoreCart: false }
-                );
-                createdOrderId = null;
-            } catch (rollbackError) {
-                console.error(
-                    "IPAYMU ROLLBACK ERROR:",
-                    rollbackError
-                );
-            }
-
-            return jsonError(
-                "URL pembayaran iPaymu tidak ditemukan.",
-                500
-            );
-        }
+        const payment = await createDirectOrderPayment({
+            orderId: result.order.id,
+            orderNumber: result.order.orderNumber,
+            buyerName: recipientName,
+            buyerPhone: phone,
+            buyerEmail: user.email ?? "",
+            amount: result.grossAmount,
+            paymentMethod,
+            paymentChannel,
+            notifyUrl: `${appOrigin}/api/payment/ipaymu/notification`,
+            comments:
+                descriptions.join(", ").substring(0, 191) ||
+                undefined,
+        });
 
         /* ==========================================
          * SUCCESS
-         * ========================================== */
+         * ==========================================
+         *
+         * `paymentUrl` is OUR OWN payment page (no provider redirect).
+         */
 
         return jsonSuccess(
             {
-                paymentUrl:
-                    ipaymuResult.Data.Url,
-                sessionId:
-                    ipaymuResult.Data.SessionId,
+                paymentUrl: payment.paymentPageUrl,
                 paymentReference:
                     result.order.orderNumber,
                 orderId: result.order.id,
@@ -504,6 +488,20 @@ export async function POST(
                 grossAmount:
                     result.grossAmount,
                 paymentMethod,
+                paymentChannel: payment.providerChannel,
+                expiresAt:
+                    payment.instruction.expiresAt
+                        ? payment.instruction.expiresAt.toISOString()
+                        : null,
+                instructions: {
+                    kind: getInstructionKind(paymentMethod),
+                    channel: payment.instruction.channel,
+                    channelLabel:
+                        payment.instruction.channelLabel,
+                    paymentNo: payment.instruction.paymentNo,
+                    qrImageUrl: payment.instruction.qrImageUrl,
+                    actionUrl: payment.instruction.paymentUrl,
+                },
             },
             201
         );

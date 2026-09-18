@@ -184,20 +184,21 @@ export async function POST(
             Status:
                 raw.status_code !== undefined
                     ?
-                      /* iPaymu status_code: 1 = success.
-                       * Map to 200 for isSuccessNotification. */
+                      /* iPaymu status_code mapping (documented):
+                       *   1 → 200 (success)
+                       *   0 → 150 (pending)
+                       *  -2 → expired  → 400 (failed/expired)
+                       * >=4 → 400 (error/failed)
+                       *  2/3 → passed through (cancel/refund:
+                       *        explicit non-success, never settles) */
                       Number(raw.status_code) === 1
                         ? 200
                         : Number(raw.status_code) === 0
                           ? 150
-                          :
-                            Number(
-                                raw.status_code
-                            ) >= 4
-                              ? 400
-                              : Number(
-                                  raw.status_code
-                                )
+                          : Number(raw.status_code) < 0 ||
+                              Number(raw.status_code) >= 4
+                            ? 400
+                            : Number(raw.status_code)
                     : raw.Status !== undefined
                       ? raw.Status
                       : undefined,
@@ -300,10 +301,15 @@ export async function POST(
          * cannot forge a webhook with wrong amount.
          */
 
-        if (
-            body.Amount !== undefined &&
-            body.Amount !== null
-        ) {
+        // Whenever the payload carries ANY recognizable amount field the
+        // comparison MUST run — including payloads that only send
+        // `sub_total` (the product total) without `amount`/`total`.
+        const hasNotificationAmount =
+            (body.Amount !== undefined && body.Amount !== null) ||
+            (body.sub_total !== undefined &&
+                body.sub_total !== null);
+
+        if (hasNotificationAmount) {
             const orderAmount = Number(
                 existingOrder.total.toString()
             );
@@ -320,7 +326,7 @@ export async function POST(
                     {
                         orderNumber,
                         notificationAmount:
-                            body.Amount,
+                            body.sub_total ?? body.Amount,
                         orderAmount,
                         referenceId:
                             body.ReferenceId,
@@ -556,6 +562,26 @@ export async function POST(
                         tx,
                         existingOrder.id
                     );
+
+                    /*
+                     * SHIPPING-DISCOUNT QUOTA RELEASE
+                     *
+                     * Same release set as the admin cancellation path:
+                     * without this the reserved ongkir promo quota would
+                     * leak when a payment fails / expires.
+                     * No-op when the order used no shipping discount.
+                     */
+                    if (existingOrder.shippingDiscountId) {
+                        const {
+                            releaseShippingDiscountForOrder,
+                        } = await import(
+                            "@/lib/marketing/shipping-discount"
+                        );
+                        await releaseShippingDiscountForOrder(
+                            tx,
+                            existingOrder
+                        );
+                    }
 
                     /* AFFILIATE COMMISSION CANCELLATION */
                     const {

@@ -312,6 +312,16 @@ export default function CheckoutPage() {
     const [paymentMethod, setPaymentMethod] = useState<
         "COD" | "BANK_TRANSFER" | "E_WALLET" | "QRIS"
     >("COD");
+
+    /*
+     * Provider channel chosen by the customer (bank / e-wallet).
+     *
+     * This is only a CHOICE: the server validates it against the iPaymu
+     * channel allowlist before creating any order, and the amount /
+     * reference / buyer data stay server-authoritative.
+     */
+    const [paymentChannel, setPaymentChannel] =
+        useState<string | null>(null);
     const [loading, setLoading] =
         useState(true);
 
@@ -1559,6 +1569,32 @@ export default function CheckoutPage() {
     const [creatingOrder, setCreatingOrder] =
         useState(false);
 
+    /*
+     * ==========================================
+     * PAYMENT CHANNELS
+     * ==========================================
+     *
+     * Only channels published for the iPaymu direct payment API are
+     * offered here (Virtual Account + e-wallet lists from the provider
+     * documentation).
+     */
+
+    const BANK_CHANNELS = [
+        { value: "bca", label: "BCA" },
+        { value: "bni", label: "BNI" },
+        { value: "bri", label: "BRI" },
+        { value: "mandiri", label: "Mandiri" },
+        { value: "bsi", label: "BSI" },
+        { value: "permata", label: "Permata" },
+        { value: "cimb", label: "CIMB Niaga" },
+        { value: "danamon", label: "Danamon" },
+    ];
+
+    const EWALLET_CHANNELS = [
+        { value: "dana", label: "DANA" },
+        { value: "shopeepay", label: "ShopeePay" },
+    ];
+
     function getSelectedCartItemIds(): number[] {
         try {
             const stored = localStorage.getItem(
@@ -1723,16 +1759,16 @@ export default function CheckoutPage() {
 
             /*
              * ==========================================
-             * IPAYMU PAYMENT
+             * IPAYMU DIRECT PAYMENT
              * ==========================================
              *
              * BANK_TRANSFER
              * E_WALLET
              * QRIS
              *
-             * Creates order + payment via iPaymu,
-             * then redirects customer to iPaymu
-             * payment page.
+             * Creates the order + the iPaymu direct payment, then sends
+             * the customer to OUR OWN payment page where the QR / VA /
+             * e-wallet instruction is displayed.
              */            const paymentResponse =
                 await fetch(
                     "/api/payment/ipaymu",
@@ -1752,6 +1788,11 @@ export default function CheckoutPage() {
                                 selectedShipping,
                             paymentMethod:
                                 paymentMethod,
+                            paymentChannel:
+                                paymentMethod === "BANK_TRANSFER" ||
+                                paymentMethod === "E_WALLET"
+                                    ? paymentChannel
+                                    : null,
                             voucherCode: appliedVoucherCode || null,
                             spinWheelSpinId: selectedSpinReward,
                             selectedCartItemIds: getSelectedCartItemIds(),
@@ -1788,12 +1829,13 @@ export default function CheckoutPage() {
 
             /*
              * ==========================================
-             * REDIRECT KE HALAMAN PEMBAYARAN
+             * HALAMAN PEMBAYARAN TOKO SENDIRI
              * ==========================================
              *
-             * Customer diarahkan ke halaman
-             * pembayaran iPaymu untuk menyelesaikan
-             * transaksi.
+             * `paymentUrl` adalah halaman pembayaran milik toko
+             * (/checkout/payment/{orderId}), bukan halaman iPaymu:
+             * instruksi pembayaran (QRIS / VA / e-wallet) ditampilkan
+             * di dalam toko dan customer tidak keluar dari website.
              */
 
             // Clear used spin wheel reward from localStorage
@@ -2771,7 +2813,10 @@ export default function CheckoutPage() {
                                     name="paymentMethod"
                                     value="COD"
                                     checked={paymentMethod === "COD"}
-                                    onChange={() => setPaymentMethod("COD")}
+                                    onChange={() => {
+                                        setPaymentMethod("COD");
+                                        setPaymentChannel(null);
+                                    }}
                                 />
 
                                 <div>
@@ -2786,54 +2831,109 @@ export default function CheckoutPage() {
                             </label>
 
                             {/* BANK TRANSFER */}
-                            <label className="flex cursor-pointer items-center gap-3 rounded-lg border p-4">
-                                <input
-                                    type="radio"
-                                    name="paymentMethod"
-                                    value="BANK_TRANSFER"
-                                    checked={
-                                        paymentMethod === "BANK_TRANSFER"
-                                    }
-                                    onChange={() =>
-                                        setPaymentMethod("BANK_TRANSFER")
-                                    }
-                                />
+                            <div className="rounded-lg border p-4">
+                                <label className="flex cursor-pointer items-center gap-3">
+                                    <input
+                                        type="radio"
+                                        name="paymentMethod"
+                                        value="BANK_TRANSFER"
+                                        checked={
+                                            paymentMethod === "BANK_TRANSFER"
+                                        }
+                                        onChange={() => {
+                                            setPaymentMethod("BANK_TRANSFER");
+                                            setPaymentChannel("bca");
+                                        }}
+                                    />
 
-                                <div>
-                                    <div className="font-medium">
-                                        Bank Transfer
-                                    </div>
+                                    <div>
+                                        <div className="font-medium">
+                                            Bank Transfer (Virtual Account)
+                                        </div>
 
-                                    <div className="text-sm text-gray-500">
-                                        Pembayaran melalui iPaymu
+                                        <div className="text-sm text-gray-500">
+                                            Nomor VA tampil di halaman
+                                            pembayaran toko
+                                        </div>
                                     </div>
-                                </div>
-                            </label>
+                                </label>
+
+                                {paymentMethod === "BANK_TRANSFER" && (
+                                    <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                        {BANK_CHANNELS.map((bank) => (
+                                            <button
+                                                key={bank.value}
+                                                type="button"
+                                                onClick={() =>
+                                                    setPaymentChannel(
+                                                        bank.value
+                                                    )
+                                                }
+                                                className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                                                    paymentChannel ===
+                                                    bank.value
+                                                        ? "border-rose-500 bg-rose-50 text-rose-700"
+                                                        : "border-gray-200 text-gray-700 hover:border-gray-300"
+                                                }`}
+                                            >
+                                                {bank.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
 
                             {/* E-WALLET */}
-                            <label className="flex cursor-pointer items-center gap-3 rounded-lg border p-4">
-                                <input
-                                    type="radio"
-                                    name="paymentMethod"
-                                    value="E_WALLET"
-                                    checked={
-                                        paymentMethod === "E_WALLET"
-                                    }
-                                    onChange={() =>
-                                        setPaymentMethod("E_WALLET")
-                                    }
-                                />
+                            <div className="rounded-lg border p-4">
+                                <label className="flex cursor-pointer items-center gap-3">
+                                    <input
+                                        type="radio"
+                                        name="paymentMethod"
+                                        value="E_WALLET"
+                                        checked={
+                                            paymentMethod === "E_WALLET"
+                                        }
+                                        onChange={() => {
+                                            setPaymentMethod("E_WALLET");
+                                            setPaymentChannel("dana");
+                                        }}
+                                    />
 
-                                <div>
-                                    <div className="font-medium">
-                                        E-Wallet
-                                    </div>
+                                    <div>
+                                        <div className="font-medium">
+                                            E-Wallet
+                                        </div>
 
-                                    <div className="text-sm text-gray-500">
-                                        GoPay / ShopeePay melalui iPaymu
+                                        <div className="text-sm text-gray-500">
+                                            DANA / ShopeePay
+                                        </div>
                                     </div>
-                                </div>
-                            </label>
+                                </label>
+
+                                {paymentMethod === "E_WALLET" && (
+                                    <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                        {EWALLET_CHANNELS.map((wallet) => (
+                                            <button
+                                                key={wallet.value}
+                                                type="button"
+                                                onClick={() =>
+                                                    setPaymentChannel(
+                                                        wallet.value
+                                                    )
+                                                }
+                                                className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                                                    paymentChannel ===
+                                                    wallet.value
+                                                        ? "border-rose-500 bg-rose-50 text-rose-700"
+                                                        : "border-gray-200 text-gray-700 hover:border-gray-300"
+                                                }`}
+                                            >
+                                                {wallet.label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
 
                             {/* QRIS */}
                             <label className="flex cursor-pointer items-center gap-3 rounded-lg border p-4">
@@ -2844,9 +2944,10 @@ export default function CheckoutPage() {
                                     checked={
                                         paymentMethod === "QRIS"
                                     }
-                                    onChange={() =>
-                                        setPaymentMethod("QRIS")
-                                    }
+                                    onChange={() => {
+                                        setPaymentMethod("QRIS");
+                                        setPaymentChannel(null);
+                                    }}
                                 />
 
                                 <div>
@@ -2855,7 +2956,7 @@ export default function CheckoutPage() {
                                     </div>
 
                                     <div className="text-sm text-gray-500">
-                                        Bayar menggunakan QRIS melalui iPaymu
+                                        Scan QR di halaman pembayaran toko
                                     </div>
                                 </div>
                             </label>

@@ -147,6 +147,27 @@ type PaymentMethod =
     | "E_WALLET"
     | "QRIS";
 
+/*
+ * Payment channels offered in the UI. Only channels published for the
+ * iPaymu direct payment API are listed; the server keeps its own
+ * allowlist and validates whatever is sent.
+ */
+const BANK_CHANNELS = [
+    { value: "bca", label: "BCA" },
+    { value: "bni", label: "BNI" },
+    { value: "bri", label: "BRI" },
+    { value: "mandiri", label: "Mandiri" },
+    { value: "bsi", label: "BSI" },
+    { value: "permata", label: "Permata" },
+    { value: "cimb", label: "CIMB Niaga" },
+    { value: "danamon", label: "Danamon" },
+];
+
+const EWALLET_CHANNELS = [
+    { value: "dana", label: "DANA" },
+    { value: "shopeepay", label: "ShopeePay" },
+];
+
 type Props = {
     productId: string;
     variantId: string;
@@ -587,6 +608,14 @@ export default function BuyNowPage({
 
     const [paymentMethod, setPaymentMethod] =
         useState<PaymentMethod>("COD");
+
+    /*
+     * Provider channel chosen by the customer (bank / e-wallet).
+     * Server-validated against the iPaymu channel allowlist before any
+     * order or payment is created.
+     */
+    const [paymentChannel, setPaymentChannel] =
+        useState<string | null>(null);
 
     const [creatingOrder, setCreatingOrder] =
         useState(false);
@@ -2343,19 +2372,30 @@ export default function BuyNowPage({
                                     numericQuantity,
 
                                 addressId:
-                                    selectedAddress,
+                                    selectedAddress,                                    shipping:
+                                        selectedShipping,
 
-                                shipping:
-                                    selectedShipping,
+                                    paymentMethod:
+                                        paymentMethod,
 
-                                paymentMethod:
-                                    paymentMethod,
+                                    /*
+                                     * Customer channel choice only — the
+                                     * server validates it against the
+                                     * iPaymu allowlist before creating any
+                                     * order or payment.
+                                     */
+                                    paymentChannel:
+                                        paymentMethod ===
+                                            "BANK_TRANSFER" ||
+                                        paymentMethod === "E_WALLET"
+                                            ? paymentChannel
+                                            : null,
 
-                                voucherCode:
-                                    appliedVoucherCode ||
-                                    null,
-                                spinWheelSpinId: selectedSpinReward,
-                            }),
+                                    voucherCode:
+                                        appliedVoucherCode ||
+                                        null,
+                                    spinWheelSpinId: selectedSpinReward,
+                                }),
                     }
                 );
 
@@ -3584,11 +3624,12 @@ export default function BuyNowPage({
                                             paymentMethod ===
                                             "COD"
                                         }
-                                        onChange={() =>
+                                        onChange={() => {
                                             setPaymentMethod(
                                                 "COD"
-                                            )
-                                        }
+                                            );
+                                            setPaymentChannel(null);
+                                        }}
                                     />
 
                                     <div>
@@ -3606,76 +3647,133 @@ export default function BuyNowPage({
 
                                 {/* BANK TRANSFER */}
 
-                                <label
-                                    className={`flex cursor-pointer items-center gap-3 rounded-2xl border p-4 ${paymentMethod ===
+                                <div
+                                    className={`rounded-2xl border p-4 ${paymentMethod ===
                                         "BANK_TRANSFER"
                                         ? "border-rose-500 bg-rose-50"
                                         : "border-gray-200"
                                         }`}
                                 >
-                                    <input
-                                        type="radio"
-                                        name="payment"
-                                        checked={
-                                            paymentMethod ===
-                                            "BANK_TRANSFER"
-                                        }
-                                        onChange={() =>
-                                            setPaymentMethod(
+                                    <label className="flex cursor-pointer items-center gap-3">
+                                        <input
+                                            type="radio"
+                                            name="payment"
+                                            checked={
+                                                paymentMethod ===
                                                 "BANK_TRANSFER"
-                                            )
-                                        }
-                                    />
+                                            }
+                                            onChange={() => {
+                                                setPaymentMethod(
+                                                    "BANK_TRANSFER"
+                                                );
+                                                setPaymentChannel("bca");
+                                            }}
+                                        />
 
-                                    <div>
-                                        <div className="font-semibold">
-                                            Bank Transfer
-                                        </div>
+                                        <div>
+                                            <div className="font-semibold">
+                                                Bank Transfer (Virtual
+                                                Account)
+                                            </div>
 
-                                        <div className="text-sm text-gray-500">
-                                            Pembayaran
-                                            melalui
-                                            iPaymu.
+                                            <div className="text-sm text-gray-500">
+                                                Nomor VA tampil di halaman
+                                                pembayaran toko.
+                                            </div>
                                         </div>
-                                    </div>
-                                </label>
+                                    </label>
+
+                                    {paymentMethod ===
+                                        "BANK_TRANSFER" && (
+                                        <div className="mt-4 grid grid-cols-2 gap-2">
+                                            {BANK_CHANNELS.map(
+                                                (bank) => (
+                                                    <button
+                                                        key={bank.value}
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setPaymentChannel(
+                                                                bank.value
+                                                            )
+                                                        }
+                                                        className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                                                            paymentChannel ===
+                                                            bank.value
+                                                                ? "border-rose-500 bg-white text-rose-700"
+                                                                : "border-gray-200 bg-white text-gray-700"
+                                                        }`}
+                                                    >
+                                                        {bank.label}
+                                                    </button>
+                                                )
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
 
                                 {/* E-WALLET */}
 
-                                <label
-                                    className={`flex cursor-pointer items-center gap-3 rounded-2xl border p-4 ${paymentMethod ===
+                                <div
+                                    className={`rounded-2xl border p-4 ${paymentMethod ===
                                         "E_WALLET"
                                         ? "border-rose-500 bg-rose-50"
                                         : "border-gray-200"
                                         }`}
                                 >
-                                    <input
-                                        type="radio"
-                                        name="payment"
-                                        checked={
-                                            paymentMethod ===
-                                            "E_WALLET"
-                                        }
-                                        onChange={() =>
-                                            setPaymentMethod(
+                                    <label className="flex cursor-pointer items-center gap-3">
+                                        <input
+                                            type="radio"
+                                            name="payment"
+                                            checked={
+                                                paymentMethod ===
                                                 "E_WALLET"
-                                            )
-                                        }
-                                    />
+                                            }
+                                            onChange={() => {
+                                                setPaymentMethod(
+                                                    "E_WALLET"
+                                                );
+                                                setPaymentChannel("dana");
+                                            }}
+                                        />
 
-                                    <div>
-                                        <div className="font-semibold">
-                                            E-Wallet
-                                        </div>
+                                        <div>
+                                            <div className="font-semibold">
+                                                E-Wallet
+                                            </div>
 
-                                        <div className="text-sm text-gray-500">
-                                            GoPay /
-                                            ShopeePay
-                                            melalui
-                                            iPaymu.
+                                            <div className="text-sm text-gray-500">
+                                                DANA / ShopeePay.
+                                            </div>
                                         </div>
-                                    </div>
-                                </label>
+                                    </label>
+
+                                    {paymentMethod ===
+                                        "E_WALLET" && (
+                                        <div className="mt-4 grid grid-cols-2 gap-2">
+                                            {EWALLET_CHANNELS.map(
+                                                (wallet) => (
+                                                    <button
+                                                        key={wallet.value}
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setPaymentChannel(
+                                                                wallet.value
+                                                            )
+                                                        }
+                                                        className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                                                            paymentChannel ===
+                                                            wallet.value
+                                                                ? "border-rose-500 bg-white text-rose-700"
+                                                                : "border-gray-200 bg-white text-gray-700"
+                                                        }`}
+                                                    >
+                                                        {wallet.label}
+                                                    </button>
+                                                )
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
 
                                 {/* QRIS */}
 
@@ -3693,11 +3791,12 @@ export default function BuyNowPage({
                                             paymentMethod ===
                                             "QRIS"
                                         }
-                                        onChange={() =>
+                                        onChange={() => {
                                             setPaymentMethod(
                                                 "QRIS"
-                                            )
-                                        }
+                                            );
+                                            setPaymentChannel(null);
+                                        }}
                                     />
 
                                     <div>

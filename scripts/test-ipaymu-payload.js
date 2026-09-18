@@ -10,21 +10,55 @@
 require("dotenv").config();
 const crypto = require("crypto");
 
+/* ==========================================
+ * HARD SANDBOX GUARD
+ * ==========================================
+ *
+ * This script CREATES A PAYMENT against whatever endpoint it is
+ * pointed at. It must therefore NEVER be able to reach production.
+ *
+ *  1. abort unless the app is explicitly running in the sandbox
+ *  2. abort unless the resolved endpoint is the sandbox host
+ *
+ * The guards run BEFORE any credential is read or printed.
+ */
+
+const payEnvironment = (process.env.PAYMENT_ENVIRONMENT || "").trim();
+
+if (payEnvironment !== "sandbox") {
+  console.error(
+    "\n❌ REFUSED: PAYMENT_ENVIRONMENT is not 'sandbox' " +
+      `(got '${payEnvironment || "unset"}').\n` +
+      "   This diagnostic creates a payment and must never run " +
+      "outside the sandbox.\n"
+  );
+  process.exit(1);
+}
+
 const apiKey = (process.env.IPAYMU_API_KEY || "").trim();
 const va = (process.env.IPAYMU_VA || "").trim();
 const baseUrl =
   (process.env.IPAYMU_URL || "").trim() ||
   "https://sandbox.ipaymu.com";
 
+if (!baseUrl.includes("sandbox.ipaymu.com")) {
+  console.error(
+    "\n❌ REFUSED: the endpoint is not the iPaymu sandbox.\n" +
+      "   This diagnostic creates a payment and must never run " +
+      "against production.\n"
+  );
+  process.exit(1);
+}
+
 if (!apiKey || !va) {
   console.error("ERROR: Missing credentials!");
   process.exit(1);
 }
 
+// Credential VALUES are never printed — presence/length only.
 console.log("========== CREDENTIALS ==========");
-console.log("VA:", va);
-console.log("KEY_LEN:", apiKey.length);
-console.log("KEY_FIRST4:", apiKey.substring(0, 4));
+console.log("VA: <redacted, len=" + va.length + ">");
+console.log("KEY: <redacted, len=" + apiKey.length + ">");
 console.log("BASE_URL:", baseUrl);
 
 // Helper: formatProductName (mirrors lib/payment/ipaymu.ts)
@@ -72,11 +106,7 @@ async function testPayload(label, request) {
   console.log("BODY:", body);
   console.log("BODY_LENGTH:", body.length);
   console.log("BODY_HASH:", bodyHash);
-  console.log(
-    "STRING_TO_SIGN:",
-    `POST:${va}:${bodyHash.toLowerCase()}:<REDACTED>`
-  );
-  console.log("SIGNATURE:", signature);
+  console.log("SIGNATURE: <redacted, len=" + signature.length + ">");
   console.log("TIMESTAMP:", timestamp);
 
   try {
@@ -285,8 +315,6 @@ async function runTests() {
   const sig1 = generateSignature(testBody, va, apiKey);
   const sig2 = generateSignature(testBody, va, apiKey);
   console.log("Same body → same signature:", sig1 === sig2);
-  console.log("Signature 1:", sig1);
-  console.log("Signature 2:", sig2);
 
   // Test 8: Verify body hash matches between helper and inline
   console.log("\n========== HASH CONSISTENCY ==========");

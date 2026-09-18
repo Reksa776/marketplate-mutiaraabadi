@@ -637,24 +637,109 @@ describe("iPaymu Checkout Integration", () => {
         );
     });
 
-    test("iPaymu cart route calls createRedirectPayment", () => {
+    test("iPaymu cart route creates a DIRECT payment (no provider redirect)", () => {
         const route = readFile(
             "app/api/payment/ipaymu/route.ts"
         );
 
-        expect(route).toContain(
-            "createRedirectPayment"
-        );
+        expect(route).toContain("createDirectOrderPayment");
+        expect(route).not.toContain("createRedirectPayment");
+        // No provider redirect URL may be returned to the client.
+        expect(route).not.toContain("ipaymuResult.Data");
+        expect(route).not.toContain("returnUrl:");
+        expect(route).not.toContain("cancelUrl:");
     });
 
-    test("iPaymu buy-now route calls createRedirectPayment", () => {
+    test("iPaymu buy-now route creates a DIRECT payment (no provider redirect)", () => {
         const route = readFile(
             "app/api/buy-now/ipaymu/route.ts"
         );
 
-        expect(route).toContain(
-            "createRedirectPayment"
+        expect(route).toContain("createDirectOrderPayment");
+        expect(route).not.toContain("createRedirectPayment");
+        expect(route).not.toContain("ipaymuResult.Data");
+        expect(route).not.toContain("returnUrl:");
+        expect(route).not.toContain("cancelUrl:");
+    });
+
+    test("repay route creates a DIRECT payment and returns our own page", () => {
+        const route = readFile(
+            "app/api/orders/[id]/repay/route.ts"
         );
+
+        expect(route).toContain("createDirectOrderPayment");
+        expect(route).not.toContain("createRedirectPayment");
+        expect(route).toContain("paymentUrl: payment.paymentPageUrl");
+    });
+
+    /*
+     * Repayment must reuse a still-open instruction instead of creating
+     * a second provider payment keyed by the same referenceId, and it
+     * must never hide a creation failure behind a success response.
+     */
+    test("repay route reuses an open instruction instead of duplicating it", () => {
+        const route = readFile(
+            "app/api/orders/[id]/repay/route.ts"
+        );
+
+        expect(route).toContain("canReusePaymentInstruction");
+        expect(route).toContain("getPaymentPagePath");
+
+        // The reuse branch must run before the provider call.
+        expect(
+            route.indexOf("canReusePaymentInstruction")
+        ).toBeLessThan(
+            route.indexOf("createDirectOrderPayment({")
+        );
+
+        // A failed creation is an error, never a silent success.
+        expect(route).toContain("IPAYMU REPAYMENT CREATE FAILED");
+        expect(route).toContain("status: 502");
+    });
+
+    test("order detail \"Bayar Lagi\" always lands on the internal payment page", () => {
+        const page = readFile("app/orders/[id]/page.tsx");
+
+        // The repay endpoint is what the button calls.
+        expect(page).toContain("/repay");
+
+        // …and the destination is OUR page, from the server URL or the
+        // order id — never a provider redirect.
+        expect(page).toContain("/checkout/payment/");
+        expect(page).toContain("window.location.assign");
+        expect(page).not.toContain("redirectUrl");
+
+        // No silent fallback: a missing paymentUrl must still route to
+        // the internal page, and failures must surface as an error.
+        const handler = page.slice(
+            page.indexOf("async function handleRepay"),
+            page.indexOf("if (loading)")
+        );
+
+        expect(handler).not.toContain("loadOrder");
+        expect(handler).toContain("/checkout/payment/");
+        expect(handler).toContain("toast.error");
+
+        // No duplicate submission while a repayment is in flight.
+        expect(page).toContain("const [repaying, setRepaying]");
+        expect(page).toContain("disabled={repaying}");
+        expect(page).toContain("setRepaying(true)");
+    });
+
+    test("payment creation never returns the raw provider payload", () => {
+        for (const path of [
+            "app/api/payment/ipaymu/route.ts",
+            "app/api/buy-now/ipaymu/route.ts",
+            "app/api/orders/[id]/repay/route.ts",
+        ]) {
+            const route = readFile(path);
+
+            // Only the sanitized instruction may reach the client — no
+            // credential, merchant VA or provider signature value.
+            expect(route).not.toContain("sessionId: ipaymuResult");
+            expect(route).not.toContain("apiKey:");
+            expect(route).not.toContain("signature:");
+        }
     });
 
     test("iPaymu cart route returns paymentUrl", () => {
@@ -1016,7 +1101,7 @@ describe("iPaymu UI Integration", () => {
         );
     });
 
-    test("CheckoutPage uses redirect (window.location.href) instead of snap.pay", () => {
+    test("CheckoutPage navigates to the in-shop payment page instead of snap.pay", () => {
         const checkout = readFile(
             "app/checkout/CheckoutPage.tsx"
         );
@@ -1035,6 +1120,56 @@ describe("iPaymu UI Integration", () => {
         );
 
         expect(checkout).toContain("paymentUrl");
+    });
+
+    test("CheckoutPage sends the customer-selected paymentChannel", () => {
+        const checkout = readFile(
+            "app/checkout/CheckoutPage.tsx"
+        );
+
+        expect(checkout).toContain("paymentChannel:");
+        expect(checkout).toContain("setPaymentChannel");
+        expect(checkout).toContain("BANK_CHANNELS");
+    });
+
+    test("BuyNowPage sends the customer-selected paymentChannel", () => {
+        const buyNow = readFile("app/buy-now/BuyNowPage.tsx");
+
+        expect(buyNow).toContain("paymentChannel:");
+        expect(buyNow).toContain("setPaymentChannel");
+    });
+
+    test("in-shop payment page exists and renders QRIS / VA / e-wallet instructions", () => {
+        const page = readFile(
+            "app/checkout/payment/[id]/page.tsx"
+        );
+
+        expect(page).toContain("VIRTUAL_ACCOUNT");
+        expect(page).toContain("QRIS");
+        expect(page).toContain("EWALLET");
+        expect(page).toContain("qrImageUrl");
+        expect(page).toContain("paymentNo");
+    });
+
+    test("in-shop payment page polls OUR server (never iPaymu)", () => {
+        const page = readFile(
+            "app/checkout/payment/[id]/page.tsx"
+        );
+
+        expect(page).toContain("/api/orders/");
+        expect(page).toContain("payment-status");
+        expect(page).not.toContain("ipaymu.com");
+        expect(page).not.toContain("navigator.sendBeacon");
+    });
+
+    test("in-shop payment page never marks an order as paid", () => {
+        const page = readFile(
+            "app/checkout/payment/[id]/page.tsx"
+        );
+
+        // Only the webhook settles payment; the page reacts to server state.
+        expect(page).not.toContain("paymentStatus = \"PAID\"");
+        expect(page).not.toContain("setPaymentStatus");
     });
 
     test("BuyNowPage calls /api/buy-now/ipaymu instead of midtrans", () => {
