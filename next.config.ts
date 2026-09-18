@@ -94,7 +94,7 @@ const nextConfig: NextConfig = {
         "103.93.132.214",
         "202.73.25.122",
         "demosolusisejalan.my.id",
-        "debut-thanks-spray-wine.trycloudflare.com",
+        "mutiaraabadisnack.com",
     ],
     images: {
         remotePatterns: [
