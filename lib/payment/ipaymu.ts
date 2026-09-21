@@ -42,6 +42,18 @@
  *             Note, Url }
  *   Semantics: PaymentNo = VA number / payment code to pay to,
  *              Url = QR image URL (QRIS) / e-wallet URL.
+ *
+ *   QRIS semantic rule (enforced by buildPaymentInstruction):
+ *     - the scannable QR is sourced from `QrImage` (live shape) or `Url`
+ *       (documented shape); a provider URL echoed in `PaymentNo` is ALSO
+ *       accepted as the image source (it is never treated as a payment
+ *       number).
+ *     - the raw QRIS payload (raw `QrString` or `PaymentNo`) is captured
+ *       as `qrString` — it is rendered INTO a QR image by the payment
+ *       page ONLY when no image URL is available, and is never shown to
+ *       the customer as text.
+ *     - `paymentNo` is left null for QRIS: a QRIS payload is not a
+ *       pay-to code and must never be persisted/rendered as such.
  */
 
 import crypto from "crypto";
@@ -236,7 +248,12 @@ export type IpaymuDirectData = {
      * sandbox: `Url` is absent for QRIS while `QrImage` is present.
      */
     QrImage?: string;
-    /** Raw QRIS payload string (not rendered; kept for diagnostics). */
+    /**
+     * Raw QRIS payload string. This is the actual QR **content** (for
+     * QRIS typically an EMVCo "000201..." string). It is persisted as
+     * `qrString` so the payment page can render a QR from it when no
+     * image URL is servable — it is NEVER rendered as visible text.
+     */
     QrString?: string;
     /** QRIS template image URL (not used). */
     QrTemplate?: string;
@@ -391,10 +408,16 @@ export type PaymentInstruction = {
     channel: string;
     /** Provider display name, e.g. "BCA Virtual Account". */
     channelLabel: string | null;
-    /** VA number / payment code to pay to (Data.PaymentNo). */
+    /** VA number / payment code to pay to (Data.PaymentNo). QRIS → null. */
     paymentNo: string | null;
-    /** QR image URL for QRIS (Data.Url). */
+    /** QR image URL for QRIS (Data.QrImage ?? Data.Url ?? URL-in-PaymentNo). */
     qrImageUrl: string | null;
+    /**
+     * Raw QRIS payload (Data.QrString ?? Data.PaymentNo). Only kept for
+     * QRIS. Rendered INTO a QR image by the payment page when no image
+     * URL is available — never displayed as text.
+     */
+    qrString: string | null;
     /** E-wallet action URL (Data.Url). */
     paymentUrl: string | null;
     /** Provider expiry (Data.Expired, WIB → UTC). */
@@ -459,6 +482,112 @@ export function sanitizeProviderUrl(
 }
 
 /**
+ * Maximum length of a `paymentNo` value.
+ *
+ * Matches the `Order.paymentNo` database column (VARCHAR(191)) and
+ * therefore the maximum we may ever persist or return to the client.
+ */
+export const PAYMENT_NO_MAX_LENGTH = 191;
+
+/**
+ * Sanitize a provider `PaymentNo` (VA number / payment code).
+ *
+ * `paymentNo` must NEVER contain:
+ *   - a URL or data-URI (payment URLs belong to `paymentUrl`, never here),
+ *   - control characters, or
+ *   - a value longer than the `Order.paymentNo` column can store.
+ *
+ * Anything that does not look like a bounded, displayable payment
+ * number/code is dropped (null) rather than truncated — an oversized or
+ * unrelated provider value (e.g. a QRIS QR payload) is a mapping error,
+ * not a column-size problem. In-bounds, non-URL values are preserved.
+ */
+export function sanitizePaymentNo(
+    raw: unknown
+): string | null {
+    if (typeof raw !== "string") return null;
+    const value = raw.trim();
+    if (!value) return null;
+
+    if (value.length > PAYMENT_NO_MAX_LENGTH) return null;
+
+    if (
+        value.startsWith("data:") ||
+        /^https?:\/\//i.test(value)
+    ) {
+        return null;
+    }
+
+    if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+
+    return value;
+}
+
+/**
+ * True when a provider value is URL/data-URI-shaped rather than a
+ * payment code or a raw QR payload. Such a value must never be stored
+ * as `paymentNo` or treated as a QR payload to render.
+ */
+export function isUrlLikeValue(
+    raw: unknown
+): boolean {
+    if (typeof raw !== "string") return false;
+    const value = raw.trim();
+    if (!value) return false;
+    return value.startsWith("data:") || /^https?:\/\//i.test(value);
+}
+
+/**
+ * Maximum length of a raw QRIS payload we accept/persist.
+ *
+ * A real QRIS payload is an EMVCo string of at most a few hundred
+ * characters. The bound is generous but still rejects an accidental
+ * multi-MB blob. Persisted in the `Order.qrString` LONGTEXT column.
+ */
+export const QR_RAW_PAYLOAD_MAX_LENGTH = 4096;
+
+/**
+ * Sanitize a raw QRIS payload (QR content, NOT an image).
+ *
+ * The value is provider data that the payment page renders INTO a QR
+ * image. It must NEVER be a URL/data-URI (those belong to `qrString`'s
+ * sibling `paymentUrl`/`qrImageUrl`) and is dropped when it cannot be
+ * turned into a scannable QR. The result is still raw payload — it is
+ * stored and later rendered as a QR, but never shown to the customer
+ * as visible text.
+ */
+export function sanitizeQrPayload(
+    raw: unknown
+): string | null {
+    if (typeof raw !== "string") return null;
+    const value = raw.trim();
+    if (!value) return null;
+
+    if (value.length > QR_RAW_PAYLOAD_MAX_LENGTH) return null;
+    if (isUrlLikeValue(value)) return null;
+
+    if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+
+    return value;
+}
+
+/**
+ * Pick the first non-null result of sanitizing each candidate with
+ * `sanitize`, in priority order. Used so a useable provider value is
+ * found even when the primary field is present but fails sanitization.
+ */
+function pickFirstSanitized<T>(
+    candidates: unknown[],
+    sanitize: (raw: unknown) => T | null
+): T | null {
+    for (const candidate of candidates) {
+        const value = sanitize(candidate);
+        if (value !== null) return value;
+    }
+    return null;
+}
+
+/**
  * Parse the provider `Expired` value.
  *
  * iPaymu returns a naive Jakarta time string
@@ -514,26 +643,43 @@ export function buildPaymentInstruction(
 ): PaymentInstruction | null {
     if (!data) return null;
 
-    const paymentNo =
-        typeof data.PaymentNo === "string" &&
-        data.PaymentNo.trim()
-            ? data.PaymentNo.trim()
-            : null;
-
-    const providerUrl = sanitizeProviderUrl(data.Url);
-
     /*
-     * QRIS image source.
+     * QRIS mapping (verified against the live iPaymu sandbox):
      *
-     * The live direct-payment API returns the scannable image as
-     * `QrImage` and does NOT set `Url` (verified against the iPaymu
-     * sandbox for both the `qris` and `mpm` channels). `Url` is kept
-     * as a fallback so the documented/redirect-era shape still works.
+     *   QrImage   → the scannable QR image URL (live shape; `Url` is
+     *               absent for QRIS)
+     *   Url       → documented fallback QR image URL
+     *   PaymentNo → for QRIS this carries the RAW QR payload, never a
+     *               pay-to number. An http(s)/data URL echoed here is
+     *               still accepted as the image source; anything else
+     *               becomes the `qrString` payload to render.
+     *   QrString  → explicit raw payload, preferred over PaymentNo.
+     *
+     * `paymentNo` is intentionally kept null for QRIS so a QRIS payload
+     * can never be persisted/displayed as a payment code.
      */
     const qrImageUrl =
         method === "QRIS"
-            ? sanitizeQrImageUrl(data.QrImage ?? data.Url)
+            ? pickFirstSanitized(
+                  [data.QrImage, data.Url, isUrlLikeValue(data.PaymentNo) ? data.PaymentNo : undefined],
+                  sanitizeQrImageUrl
+              )
             : null;
+
+    const qrString =
+        method === "QRIS"
+            ? pickFirstSanitized(
+                  [data.QrString, isUrlLikeValue(data.PaymentNo) ? undefined : data.PaymentNo],
+                  sanitizeQrPayload
+              )
+            : null;
+
+    const paymentNo =
+        method === "QRIS"
+            ? null
+            : sanitizePaymentNo(data.PaymentNo);
+
+    const providerUrl = sanitizeProviderUrl(data.Url);
 
     const instruction: PaymentInstruction = {
         method,
@@ -556,6 +702,7 @@ export function buildPaymentInstruction(
                 : null,
         paymentNo,
         qrImageUrl,
+        qrString,
         paymentUrl: method === "E_WALLET" ? providerUrl : null,
         expiresAt: parseIpaymuExpiredAt(data.Expired),
         referenceId:
@@ -577,7 +724,7 @@ export function buildPaymentInstruction(
     if (
         method === "QRIS" &&
         !instruction.qrImageUrl &&
-        !instruction.paymentNo
+        !instruction.qrString
     ) {
         return null;
     }
@@ -625,6 +772,62 @@ type IpaymuProviderEnvelope = {
     Message?: string;
     Data?: Record<string, unknown> | null;
 };
+
+/* ==========================================
+ * SAFE RESPONSE DIAGNOSTICS (metadata only)
+ * ==========================================
+ *
+ * Logs ONLY structural metadata of a provider response so an operator
+ * can confirm the actual QRIS/VA/e-wallet shape without ever logging:
+ *   - API key, signature, merchant VA, customer PII
+ *   - any full provider value (only ≤12-char prefixes are logged)
+ *
+ * Enabled automatically outside production; opt-in in production via
+ * IPAYMU_RESPONSE_DIAGNOSTIC=1. This is temporary/diagnostic by design.
+ */
+
+const RESPONSE_DIAGNOSTIC_PREFIX_LENGTH = 12;
+
+function logResponseDiagnostics(
+    label: string,
+    httpStatus: number,
+    result: IpaymuProviderEnvelope,
+    method?: string
+): void {
+    const d = result.Data;
+    const prefixOf = (v: unknown) =>
+        typeof v === "string" && v.length
+            ? v.slice(0, RESPONSE_DIAGNOSTIC_PREFIX_LENGTH)
+            : null;
+
+    console.log(`[iPaymu] RESPONSE DIAGNOSTIC (${label}):`, {
+        httpStatus,
+        ipaymuStatus: result.Status,
+        message: result.Message,
+        paymentMethod: method ?? d?.Via ?? null,
+        channel: d?.Channel,
+        via: d?.Via,
+        hasPaymentNo: d?.PaymentNo !== undefined && d?.PaymentNo !== null,
+        paymentNoLength:
+            typeof d?.PaymentNo === "string" ? d.PaymentNo.length : null,
+        paymentNoPrefix: prefixOf(d?.PaymentNo),
+        hasQrImage: d?.QrImage !== undefined && d?.QrImage !== null,
+        qrImageLength:
+            typeof d?.QrImage === "string" ? d.QrImage.length : null,
+        qrImagePrefix: prefixOf(d?.QrImage),
+        hasQrString: d?.QrString !== undefined && d?.QrString !== null,
+        qrStringLength:
+            typeof d?.QrString === "string" ? d.QrString.length : null,
+        qrStringPrefix: prefixOf(d?.QrString),
+        hasUrl: d?.Url !== undefined && d?.Url !== null,
+        urlLength: typeof d?.Url === "string" ? d.Url.length : null,
+        urlPrefix: prefixOf(d?.Url),
+        hasQrTemplate:
+            d?.QrTemplate !== undefined && d?.QrTemplate !== null,
+        qrTemplateLength:
+            typeof d?.QrTemplate === "string" ? d.QrTemplate.length : null,
+    });
+}
 
 async function postToIpaymu(options: {
     path: string;
@@ -754,15 +957,16 @@ async function postToIpaymu(options: {
     // ==========================================
     // SECURITY: Log safe fields only
     // ==========================================
-    if (process.env.NODE_ENV !== "production") {
-        console.log(`[iPaymu] RESPONSE (${options.label}):`, {
-            httpStatus: response.status,
-            ipaymuStatus: result.Status,
-            message: result.Message,
-            hasPaymentNo: !!result.Data?.PaymentNo,
-            hasUrl: !!result.Data?.Url,
-            channel: result.Data?.Channel,
-        });
+    const diagnosticsEnabled =
+        process.env.NODE_ENV !== "production" ||
+        process.env.IPAYMU_RESPONSE_DIAGNOSTIC === "1";
+    if (diagnosticsEnabled) {
+        logResponseDiagnostics(
+            options.label,
+            response.status,
+            result,
+            options.logFields?.method as string | undefined
+        );
     }
 
     // ==========================================

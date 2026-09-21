@@ -29,6 +29,7 @@ import {
     buildPaymentInstruction,
     createDirectPayment,
     resolveProviderMethod,
+    sanitizePaymentNo,
     type IpaymuDirectPaymentMethod,
     type PaymentInstruction,
 } from "./ipaymu";
@@ -132,6 +133,11 @@ export type PaymentView = {
         paymentNo: string | null;
         /** QR image URL (QRIS) — provider URL, http(s) only. */
         qrImageUrl: string | null;
+        /**
+         * Raw QRIS payload (QRIS only). Rendered into a QR by the page
+         * when no image URL is servable. Never displayed as text.
+         */
+        qrString: string | null;
         /** E-wallet action URL — provider URL, http(s) only. */
         actionUrl: string | null;
         amount: number;
@@ -164,12 +170,21 @@ export async function savePaymentInstruction(
     orderId: number,
     instruction: PaymentInstruction
 ): Promise<void> {
+    /*
+     * Write-site guard: whatever the caller built, `paymentNo` must fit
+     * the VARCHAR(191) column and must never be a URL/data-URI. Values
+     * that fail the guard are dropped (never truncated) — the persisted
+     * instruction keeps the separately-held `paymentUrl` intact.
+     */
+    const paymentNo = sanitizePaymentNo(instruction.paymentNo);
+
     await prisma.order.update({
         where: { id: orderId },
         data: {
-            paymentNo: instruction.paymentNo,
+            paymentNo,
             paymentUrl:
                 instruction.qrImageUrl ?? instruction.paymentUrl ?? null,
+            qrString: instruction.qrString ?? null,
             paymentChannel: instruction.channel || null,
             paymentExpiresAt: instruction.expiresAt ?? null,
         },
@@ -234,6 +249,7 @@ export type ReusableInstructionOrder = {
     paymentMethod: "COD" | "BANK_TRANSFER" | "E_WALLET" | "QRIS";
     paymentNo: string | null;
     paymentUrl: string | null;
+    qrString: string | null;
     paymentChannel: string | null;
     paymentExpiresAt: Date | null;
 };
@@ -268,6 +284,13 @@ export function canReusePaymentInstruction(
     // Something the customer can actually act on.
     if (requestedMethod === "BANK_TRANSFER") {
         return Boolean(order.paymentNo);
+    }
+
+    // QRIS pays through a QR image URL or, failing that, the raw
+    // payload rendered into a QR. A QRIS `paymentNo` is never a usable
+    // instruction (it is always null after the mapping fix).
+    if (requestedMethod === "QRIS") {
+        return Boolean(order.paymentUrl || order.qrString);
     }
 
     return Boolean(order.paymentUrl || order.paymentNo);
@@ -346,6 +369,7 @@ export async function loadPaymentView(
             paymentChannel: true,
             paymentNo: true,
             paymentUrl: true,
+            qrString: true,
             paymentExpiresAt: true,
             total: true,
             paidAt: true,
@@ -368,6 +392,9 @@ export async function loadPaymentView(
 
     const qrImageUrl =
         order.paymentMethod === "QRIS" ? order.paymentUrl : null;
+
+    const qrString =
+        order.paymentMethod === "QRIS" ? order.qrString : null;
 
     const actionUrl =
         order.paymentMethod === "E_WALLET" ? order.paymentUrl : null;
@@ -393,6 +420,7 @@ export async function loadPaymentView(
             ),
             paymentNo: order.paymentNo,
             qrImageUrl,
+            qrString,
             actionUrl,
             amount,
             expiresAt: expiresAt ? expiresAt.toISOString() : null,

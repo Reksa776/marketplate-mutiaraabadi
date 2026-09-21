@@ -124,9 +124,14 @@ import {
     computeCanonicalJson,
     computeWebhookSignature,
     createDirectPayment,
+    isUrlLikeValue,
     parseIpaymuExpiredAt,
+    PAYMENT_NO_MAX_LENGTH,
+    QR_RAW_PAYLOAD_MAX_LENGTH,
     resolveProviderMethod,
+    sanitizePaymentNo,
     sanitizeProviderUrl,
+    sanitizeQrPayload,
 } from "@/lib/payment/ipaymu";
 import {
     canReusePaymentInstruction,
@@ -258,13 +263,16 @@ describe("1. QRIS direct payment creation", () => {
         expect(result.instruction.qrImageUrl).toBe(
             "https://my.ipaymu.com/qr/98765.png"
         );
+        expect(result.instruction.qrString).toBe("QR-CODE-PAYLOAD");
+        expect(result.instruction.paymentNo).toBeNull();
         expect(result.providerChannel).toBe("qris");
 
         expect(prisma.order.update).toHaveBeenCalledWith({
             where: { id: 11 },
             data: expect.objectContaining({
-                paymentNo: "QR-CODE-PAYLOAD",
+                paymentNo: null,
                 paymentUrl: "https://my.ipaymu.com/qr/98765.png",
+                qrString: "QR-CODE-PAYLOAD",
                 paymentChannel: "qris",
             }),
         });
@@ -345,6 +353,10 @@ describe("1. QRIS direct payment creation", () => {
         expect(result.instruction.qrImageUrl).toBe(
             "https://sandbox.ipaymu.com/qris/1789707975553.png"
         );
+        expect(result.instruction.qrString).toBe(
+            "00020101021226610014ID.CO.QRIS.WWW"
+        );
+        expect(result.instruction.paymentNo).toBeNull();
 
         // Persisted where loadPaymentView() reads it back for the page
         expect(prisma.order.update).toHaveBeenCalledWith({
@@ -352,6 +364,53 @@ describe("1. QRIS direct payment creation", () => {
             data: expect.objectContaining({
                 paymentUrl:
                     "https://sandbox.ipaymu.com/qris/1789707975553.png",
+                qrString: "00020101021226610014ID.CO.QRIS.WWW",
+                paymentNo: null,
+            }),
+        });
+    });
+
+    test("persists a raw QRIS payload when the provider returns no image URL", async () => {
+        fetchMock.mockResolvedValue(
+            providerResponse({
+                SessionId: "ses_qris_payload_only",
+                TransactionId: 4411,
+                ReferenceId: "PAY-CART-PAYLOAD",
+                Via: "qris",
+                Channel: "qris",
+                PaymentNo: "00020101021226610014ID.CO.QRIS.PAYLOADONLY",
+                PaymentName: "QRIS",
+                Total: 50000,
+                Fee: 0,
+                Expired: "2026-09-22 10:00:00",
+            })
+        );
+
+        const result = await createDirectOrderPayment({
+            orderId: 4411,
+            orderNumber: "PAY-CART-PAYLOAD",
+            buyerName: "Budi",
+            buyerPhone: "08123456789",
+            buyerEmail: "buyer@example.com",
+            amount: 50000,
+            paymentMethod: "QRIS",
+            notifyUrl: "https://shop.example.com/notify",
+        });
+
+        // No image → the panel renders the QR from the raw payload.
+        expect(result.instruction.qrImageUrl).toBeNull();
+        expect(result.instruction.qrString).toBe(
+            "00020101021226610014ID.CO.QRIS.PAYLOADONLY"
+        );
+        expect(result.instruction.paymentNo).toBeNull();
+
+        expect(prisma.order.update).toHaveBeenCalledWith({
+            where: { id: 4411 },
+            data: expect.objectContaining({
+                paymentNo: null,
+                paymentUrl: null,
+                qrString: "00020101021226610014ID.CO.QRIS.PAYLOADONLY",
+                paymentChannel: "qris",
             }),
         });
     });
@@ -1196,6 +1255,7 @@ describe("16. Repayment instruction reuse", () => {
             paymentMethod: "BANK_TRANSFER" | "E_WALLET" | "QRIS";
             paymentNo: string | null;
             paymentUrl: string | null;
+            qrString: string | null;
             paymentChannel: string | null;
             paymentExpiresAt: Date | null;
         }> = {}
@@ -1206,6 +1266,7 @@ describe("16. Repayment instruction reuse", () => {
             paymentMethod: "BANK_TRANSFER" as const,
             paymentNo: "8808123456",
             paymentUrl: null,
+            qrString: null,
             paymentChannel: "bca",
             paymentExpiresAt: new Date(Date.now() + 30 * 60_000),
             ...overrides,
@@ -1289,6 +1350,20 @@ describe("16. Repayment instruction reuse", () => {
         ).toBe(true);
     });
 
+    test("reuses a QRIS instruction from its raw payload when no image URL", () => {
+        expect(
+            canReusePaymentInstruction(
+                openOrder({
+                    paymentMethod: "QRIS",
+                    paymentNo: null,
+                    paymentUrl: null,
+                    qrString: "00020101021226610014ID.CO.QRIS.WWW",
+                }),
+                "QRIS"
+            )
+        ).toBe(true);
+    });
+
     test("a method change always needs a new instruction", () => {
         expect(
             canReusePaymentInstruction(openOrder(), "E_WALLET")
@@ -1349,5 +1424,236 @@ describe("Provider contract helpers", () => {
         expect(() =>
             resolveProviderMethod("E_WALLET", "wallet-palsu")
         ).toThrow(/Channel e-wallet tidak valid/);
+    });
+
+    test("sanitizePaymentNo keeps bounded non-URL payment codes", () => {
+        expect(sanitizePaymentNo("8899123456789")).toBe("8899123456789");
+        expect(sanitizePaymentNo("  DANA-CODE  ")).toBe("DANA-CODE");
+        expect(sanitizePaymentNo("QRIS-PAYLOAD-STRING")).toBe(
+            "QRIS-PAYLOAD-STRING"
+        );
+
+        // Exactly at the column maximum stays; one char more is dropped.
+        const atLimit = "x".repeat(PAYMENT_NO_MAX_LENGTH);
+        expect(sanitizePaymentNo(atLimit)).toBe(atLimit);
+        expect(
+            sanitizePaymentNo(atLimit + "x")
+        ).toBeNull();
+
+        // No value/code → null.
+        expect(sanitizePaymentNo(undefined)).toBeNull();
+        expect(sanitizePaymentNo(null)).toBeNull();
+        expect(sanitizePaymentNo("")).toBeNull();
+        expect(sanitizePaymentNo("   ")).toBeNull();
+        expect(sanitizePaymentNo(123456)).toBeNull();
+    });
+
+    test("sanitizePaymentNo never accepts URLs, data-URIs or control chars", () => {
+        expect(
+            sanitizePaymentNo("https://my.ipaymu.com/qr/123.png")
+        ).toBeNull();
+        expect(
+            sanitizePaymentNo("http://my.ipaymu.com/qr/123.png")
+        ).toBeNull();
+        expect(
+            sanitizePaymentNo("data:image/png;base64,AAAA")
+        ).toBeNull();
+        expect(sanitizePaymentNo("code\nwith\tcontrol")).toBeNull();
+        expect(sanitizePaymentNo("code\u0000null")).toBeNull();
+    });
+
+    test("isUrlLikeValue only accepts http(s) and data: sources", () => {
+        expect(
+            isUrlLikeValue("https://my.ipaymu.com/qr/123.png")
+        ).toBe(true);
+        expect(isUrlLikeValue("http://x.id/a")).toBe(true);
+        expect(isUrlLikeValue("javascript:alert(1)")).toBe(false);
+        // A data: image is an <img> source, never a payment code/payload.
+        expect(isUrlLikeValue("data:image/png;base64,AAAA")).toBe(true);
+        expect(isUrlLikeValue("00020101021226610014ID.CO.QRIS.WWW")).toBe(
+            false
+        );
+        expect(isUrlLikeValue("8899123456789")).toBe(false);
+        expect(isUrlLikeValue(null)).toBe(false);
+        expect(isUrlLikeValue(undefined)).toBe(false);
+    });
+
+    test("sanitizeQrPayload keeps real payloads and rejects URLs/control chars", () => {
+        const payload =
+            "00020101021226610014ID.CO.QRIS.WWW6304AF3B5A2630422662B7EA8E8C09DCEB550EC8FA2B1923665D87546B0F659D50AA5D41D2565";
+
+        expect(sanitizeQrPayload(payload)).toBe(payload);
+
+        // Payload length cap is defensive only — 4 KiB is far above any
+        // QRIS payload and is never part of the provider contract.
+        const oversized = payload + "x".repeat(QR_RAW_PAYLOAD_MAX_LENGTH);
+        expect(sanitizeQrPayload(oversized)).toBeNull();
+
+        // URLs are image/target sources, never raw payloads.
+        expect(
+            sanitizeQrPayload("https://my.ipaymu.com/qr/1.png")
+        ).toBeNull();
+        expect(sanitizeQrPayload("data:image/png;base64,AAA")).toBeNull();
+
+        // Control characters inside a QR payload are rejected.
+        expect(sanitizeQrPayload("payload\nwith\tnewline")).toBeNull();
+        expect(sanitizeQrPayload("payload\u0000null")).toBeNull();
+
+        // Empty / missing values are not payloads.
+        expect(sanitizeQrPayload(undefined)).toBeNull();
+        expect(sanitizeQrPayload(null)).toBeNull();
+        expect(sanitizeQrPayload("")).toBeNull();
+        expect(sanitizeQrPayload(12345)).toBeNull();
+    });
+
+    test("QRIS payload is never promoted to a visible payment code", () => {
+        const instruction = buildPaymentInstruction(
+            {
+                Via: "QRIS",
+                Channel: "QRIS",
+                PaymentNo: "QRIS-RAW-PAYLOAD-VALUE",
+            },
+            "QRIS"
+        );
+
+        // No image and no servable payload are both possible, but the raw
+        // QRIS string never becomes a displayed `paymentNo`.
+        expect(instruction?.qrString).toBe("QRIS-RAW-PAYLOAD-VALUE");
+        expect(instruction?.paymentNo).toBeNull();
+        expect(instruction?.qrImageUrl).toBeNull();
+    });
+});
+
+/* ==========================================
+ * paymentNo COLUMN-OVERFLOW REGRESSION
+ * ==========================================
+ *
+ * Production reproduced: BUY_NOW_IPAYMU → createDirectOrderPayment →
+ * savePaymentInstruction → prisma.order.update threw
+ *   "The provided value for the column is too long ... Column: paymentNo"
+ * because the iPaymu DIRECT response echoes a QRIS QR payload (longer
+ * than VARCHAR(191)) in `Data.PaymentNo` and the app persisted it into
+ * `Order.paymentNo`. The QRIS payment code is NOT the QR image URL.
+ */
+
+describe("paymentNo column-overflow regression", () => {
+    test("QRIS QR payload longer than the column is never persisted to paymentNo", async () => {
+        // Mirrors the real provider: QRIS is delivered as a scannable
+        // image (`QrImage`) while `PaymentNo` carries the raw QR payload
+        // — which in production exceeds the 191-char VARCHAR column.
+        const qrPayload = "00020101021226610014ID.CO.QRIS.WWW1821015001" +
+            "1" + "x".repeat(250);
+
+        expect(qrPayload.length).toBeGreaterThan(PAYMENT_NO_MAX_LENGTH);
+
+        fetchMock.mockResolvedValue(
+            providerResponse({
+                SessionId: "ses_qris_long",
+                TransactionId: 987654321,
+                ReferenceId: "PAY-CART-OVERFLOW",
+                Via: "QRIS",
+                Channel: "QRIS",
+                PaymentNo: qrPayload,
+                PaymentName: "iPaymu",
+                Total: 10000,
+                Fee: 70,
+                Expired: "2026-09-19 12:06:15",
+                QrImage:
+                    "https://my.ipaymu.com/qris/987654321.png",
+            })
+        );
+
+        const result = await createDirectOrderPayment({
+            orderId: 9981,
+            orderNumber: "PAY-CART-OVERFLOW",
+            buyerName: "Budi",
+            buyerPhone: "08123456789",
+            buyerEmail: "buyer@example.com",
+            amount: 10000,
+            paymentMethod: "QRIS",
+            notifyUrl:
+                "https://shop.example.com/api/payment/ipaymu/notification",
+        });
+
+        // The QRIS instruction stays payable via the QR image — this is
+        // the producer of the original prisma.order.update() crash, and
+        // it must no longer throw.
+        expect(result.instruction.qrImageUrl).toBe(
+            "https://my.ipaymu.com/qris/987654321.png"
+        );
+        expect(result.instruction.qrString).toBe(qrPayload);
+        expect(result.instruction.paymentNo).toBeNull();
+
+        // The DB write must carry null for paymentNo (never truncation)
+        // while keeping the QR image URL separate and the payload in
+        // `qrString` (untouched — real payloads are never mutated).
+        expect(prisma.order.update).toHaveBeenCalledWith({
+            where: { id: 9981 },
+            data: expect.objectContaining({
+                paymentNo: null,
+                paymentUrl:
+                    "https://my.ipaymu.com/qris/987654321.png",
+                qrString: qrPayload,
+                paymentChannel: "QRIS",
+            }),
+        });
+    });
+
+    test("a provider URL echoed in PaymentNo is never stored as paymentNo", async () => {
+        fetchMock.mockResolvedValue(
+            providerResponse({
+                SessionId: "ses_qris_url",
+                TransactionId: 777,
+                ReferenceId: "PAY-CART-URL",
+                Via: "QRIS",
+                Channel: "QRIS",
+                PaymentNo: "https://my.ipaymu.com/qr/777.png",
+                PaymentName: "iPaymu",
+                Total: 10000,
+                Fee: 70,
+                Expired: "2026-09-19 12:06:15",
+                QrImage: "https://my.ipaymu.com/qris/777.png",
+            })
+        );
+
+        const result = await createDirectOrderPayment({
+            orderId: 9982,
+            orderNumber: "PAY-CART-URL",
+            buyerName: "Budi",
+            buyerPhone: "08123456789",
+            buyerEmail: "buyer@example.com",
+            amount: 10000,
+            paymentMethod: "QRIS",
+            notifyUrl:
+                "https://shop.example.com/api/payment/ipaymu/notification",
+        });
+
+        expect(result.instruction.paymentNo).toBeNull();
+        expect(result.instruction.qrString).toBeNull();
+
+        expect(prisma.order.update).toHaveBeenCalledWith({
+            where: { id: 9982 },
+            data: expect.objectContaining({
+                paymentNo: null,
+                paymentUrl: "https://my.ipaymu.com/qris/777.png",
+                qrString: null,
+            }),
+        });
+    });
+
+    test("legitimate VA/payment codes at or below the limit are untouched", () => {
+        // VA numbers and short e-wallet codes must keep the exact value.
+        const instruction = buildPaymentInstruction(
+            {
+                TransactionId: 1,
+                Via: "va",
+                Channel: "bca",
+                PaymentNo: "3811800012345678",
+                PaymentName: "BCA Virtual Account",
+            },
+            "BANK_TRANSFER"
+        );
+
+        expect(instruction?.paymentNo).toBe("3811800012345678");
     });
 });

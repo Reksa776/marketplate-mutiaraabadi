@@ -172,6 +172,7 @@ export async function POST(
                 paymentChannel: true,
                 paymentNo: true,
                 paymentUrl: true,
+                qrString: true,
                 paymentExpiresAt: true,
             },
         });

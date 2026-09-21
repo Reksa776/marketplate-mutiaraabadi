@@ -233,13 +233,22 @@ model Order {
   // ==========================================
   //
   // paymentNo        → provider VA number / payment code (Data.PaymentNo)
-  // paymentUrl       → provider QR image URL (QRIS) or e-wallet link (Data.Url)
+  //                    LONGTEXT column (matches the field used live).
+  //                    Only bounded, non-URL values are accepted
+  //                    (sanitizePaymentNo). Ever NULL for QRIS: a QRIS
+  //                    payload is never a pay-to code.
+  // paymentUrl       → provider QR image URL (QRIS) or e-wallet link
+  //                    (Data.QrImage ?? Data.Url)
+  // qrString         → raw QRIS payload (Data.QrString ?? Data.PaymentNo).
+  //                    Rendered into a QR by the payment page when no
+  //                    image URL is servable. NEVER displayed as text.
   // paymentChannel   → provider channel, e.g. bca / mandiri / qris / dana
   // paymentExpiresAt → provider expiry (Data.Expired, WIB → UTC)
   //
   // NOTE: the merchant VA / API key / signature are NEVER stored here.
-  paymentNo        String?
+  paymentNo        String?             @db.LongText
   paymentUrl       String?             @db.Text
+  qrString         String?             @db.LongText
   paymentChannel   String?
   paymentExpiresAt DateTime?
 

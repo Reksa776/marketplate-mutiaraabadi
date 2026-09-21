@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { trackTikTokEvent } from "@/lib/analytics/tiktok";
 import type { PaymentView } from "@/lib/payment/order-payment";
+import QrisPanel from "./QrisPanel";
 
 /* ==========================================
  * ECOMMERCE PAYMENT PAGE
@@ -65,7 +66,6 @@ export default function PaymentInstructionPage() {
     const [loading, setLoading] = useState(true);
     const [now, setNow] = useState(() => Date.now());
     const [copied, setCopied] = useState(false);
-    const [qrFailed, setQrFailed] = useState(false);
 
     // Expiry settlement must be requested at most once per page view.
     const expiryRequested = useRef(false);
@@ -393,54 +393,15 @@ export default function PaymentInstructionPage() {
                         Scan QRIS berikut dengan aplikasi bank / e-wallet Anda
                     </p>
 
-                    {instruction.qrImageUrl && !qrFailed ? (
-                        /* eslint-disable-next-line @next/next/no-img-element */
-                        <img
-                            src={instruction.qrImageUrl}
-                            alt="QRIS pembayaran"
-                            width={256}
-                            height={256}
-                            className="mx-auto mt-4 h-64 w-64 rounded-2xl border bg-white object-contain p-2"
-                            onError={() => setQrFailed(true)}
-                        />
-                    ) : (
-                        <div className="mt-4 rounded-2xl border border-dashed p-4 text-sm text-gray-500">
-                            Gambar QR tidak dapat ditampilkan.
-                            {instruction.paymentNo
-                                ? " Gunakan kode pembayaran di bawah ini di aplikasi Anda."
-                                : " Silakan buka halaman pesanan untuk mencoba lagi."}
-                        </div>
-                    )}
-
-                    {instruction.qrImageUrl && qrFailed && (
-                        <a
-                            href={instruction.qrImageUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="mt-3 inline-block text-sm font-semibold text-rose-600 hover:text-rose-700"
-                        >
-                            Buka gambar QR di tab baru
-                        </a>
-                    )}
-
-                    {instruction.paymentNo && (
-                        <div className="mt-4">
-                            <p className="text-xs uppercase tracking-wide text-gray-500">
-                                Kode Pembayaran
-                            </p>
-
-                            <p className="mt-1 font-mono text-lg font-semibold tracking-wider text-gray-900">
-                                {instruction.paymentNo}
-                            </p>
-
-                            <button
-                                onClick={copyPaymentNo}
-                                className="mt-2 rounded-xl border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-                            >
-                                {copied ? "Tersalin ✓" : "Salin Kode"}
-                            </button>
-                        </div>
-                    )}
+                    {/*
+                     * QRIS renders a QR image (provider `QrImage`/`Url`); when
+                     * that is unavailable the raw provider payload is rendered
+                     * into a QR — never shown as a payment code.
+                     */}
+                    <QrisPanel
+                        qrImageUrl={instruction.qrImageUrl}
+                        qrString={instruction.qrString}
+                    />
                 </div>
             )}
 
