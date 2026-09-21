@@ -260,7 +260,8 @@ describe("1. QRIS direct payment creation", () => {
 
         // Instruction + persistence
         expect(result.paymentPageUrl).toBe("/checkout/payment/11");
-        expect(result.instruction.qrImageUrl).toBe(
+        // The provider URL is the QRIS PAGE (fallback link), never an image.
+        expect(result.instruction.qrisPageUrl).toBe(
             "https://my.ipaymu.com/qr/98765.png"
         );
         expect(result.instruction.qrString).toBe("QR-CODE-PAYLOAD");
@@ -313,12 +314,12 @@ describe("1. QRIS direct payment creation", () => {
      * RUNTIME-VERIFIED CONTRACT (iPaymu sandbox, 2026-09-18).
      *
      * The live direct-payment QRIS response does NOT contain `Url`
-     * (it is absent from the provider payload) — the scannable image
+     * (it is absent from the provider payload) — the QRIS PAGE url
      * arrives as `QrImage`, an https URL on the iPaymu host. This test
      * pins that shape so the QRIS instruction can never silently lose
-     * its QR image again.
+     * its QR data again.
      */
-    test("maps the live QRIS shape (QrImage, no Url) to the QR image", async () => {
+    test("maps the live QRIS shape (QrImage, no Url) to the QR page url", async () => {
         fetchMock.mockResolvedValue(
             providerResponse({
                 SessionId: "ses_qris_live",
@@ -350,7 +351,8 @@ describe("1. QRIS direct payment creation", () => {
             notifyUrl: "https://shop.example.com/notify",
         });
 
-        expect(result.instruction.qrImageUrl).toBe(
+        // The live `QrImage` value is the QRIS page URL, kept as a link.
+        expect(result.instruction.qrisPageUrl).toBe(
             "https://sandbox.ipaymu.com/qris/1789707975553.png"
         );
         expect(result.instruction.qrString).toBe(
@@ -397,8 +399,9 @@ describe("1. QRIS direct payment creation", () => {
             notifyUrl: "https://shop.example.com/notify",
         });
 
-        // No image → the panel renders the QR from the raw payload.
-        expect(result.instruction.qrImageUrl).toBeNull();
+        // No provider page URL → the panel renders the QR from the raw
+        // payload only.
+        expect(result.instruction.qrisPageUrl).toBeNull();
         expect(result.instruction.qrString).toBe(
             "00020101021226610014ID.CO.QRIS.PAYLOADONLY"
         );
@@ -529,8 +532,9 @@ describe("3. E-wallet direct payment creation", () => {
         expect(result.instruction.paymentUrl).toBe(
             "https://my.ipaymu.com/ewallet/777"
         );
-        // Not a QRIS payment → no QR is shown.
-        expect(result.instruction.qrImageUrl).toBeNull();
+        // Not a QRIS payment → no QR data is exposed.
+        expect(result.instruction.qrisPageUrl).toBeNull();
+        expect(result.instruction.qrString).toBeNull();
     });
 
     test("javascript: provider URLs are dropped by the sanitizer", () => {
@@ -1516,11 +1520,11 @@ describe("Provider contract helpers", () => {
             "QRIS"
         );
 
-        // No image and no servable payload are both possible, but the raw
-        // QRIS string never becomes a displayed `paymentNo`.
+        // No QRIS page URL is present, so the panel renders the QR from
+        // the raw payload — which never becomes a displayed `paymentNo`.
         expect(instruction?.qrString).toBe("QRIS-RAW-PAYLOAD-VALUE");
         expect(instruction?.paymentNo).toBeNull();
-        expect(instruction?.qrImageUrl).toBeNull();
+        expect(instruction?.qrisPageUrl).toBeNull();
     });
 });
 
@@ -1533,14 +1537,15 @@ describe("Provider contract helpers", () => {
  *   "The provided value for the column is too long ... Column: paymentNo"
  * because the iPaymu DIRECT response echoes a QRIS QR payload (longer
  * than VARCHAR(191)) in `Data.PaymentNo` and the app persisted it into
- * `Order.paymentNo`. The QRIS payment code is NOT the QR image URL.
+ * `Order.paymentNo`. The QRIS payment code is NOT the QR page URL.
  */
 
 describe("paymentNo column-overflow regression", () => {
     test("QRIS QR payload longer than the column is never persisted to paymentNo", async () => {
-        // Mirrors the real provider: QRIS is delivered as a scannable
-        // image (`QrImage`) while `PaymentNo` carries the raw QR payload
-        // — which in production exceeds the 191-char VARCHAR column.
+        // Mirrors the real provider: QRIS is delivered as a QR page url
+        // (`QrImage`) + raw payload (`QrString`) while `PaymentNo`
+        // carries the raw QR payload — which in production exceeds the
+        // 191-char VARCHAR column.
         const qrPayload = "00020101021226610014ID.CO.QRIS.WWW1821015001" +
             "1" + "x".repeat(250);
 
@@ -1575,17 +1580,18 @@ describe("paymentNo column-overflow regression", () => {
                 "https://shop.example.com/api/payment/ipaymu/notification",
         });
 
-        // The QRIS instruction stays payable via the QR image — this is
-        // the producer of the original prisma.order.update() crash, and
-        // it must no longer throw.
-        expect(result.instruction.qrImageUrl).toBe(
+        // The QRIS instruction stays payable via the locally rendered QR
+        // (+ the provider page link) — this is the producer of the
+        // original prisma.order.update() crash, and it must no longer
+        // throw.
+        expect(result.instruction.qrisPageUrl).toBe(
             "https://my.ipaymu.com/qris/987654321.png"
         );
         expect(result.instruction.qrString).toBe(qrPayload);
         expect(result.instruction.paymentNo).toBeNull();
 
         // The DB write must carry null for paymentNo (never truncation)
-        // while keeping the QR image URL separate and the payload in
+        // while keeping the QR page URL separate and the payload in
         // `qrString` (untouched — real payloads are never mutated).
         expect(prisma.order.update).toHaveBeenCalledWith({
             where: { id: 9981 },

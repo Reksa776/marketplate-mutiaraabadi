@@ -139,7 +139,7 @@ type ProbeResult = {
     qrString?: string | null;
     qrTemplate?: string | null;
     /** What the app's buildPaymentInstruction() actually mapped. */
-    instructionQrImage?: string | null;
+    instructionQrisPageUrl?: string | null;
     instructionPaymentNoLength?: number;
     error?: string;
 };
@@ -209,8 +209,8 @@ async function probe(
                   : "E_WALLET"
         );
         result.instructionAccepted = Boolean(instruction);
-        result.instructionQrImage = instruction
-            ? describeValue(instruction.qrImageUrl)
+        result.instructionQrisPageUrl = instruction
+            ? describeValue(instruction.qrisPageUrl)
             : null;
         result.instructionPaymentNoLength =
             instruction?.paymentNo?.length ?? 0;

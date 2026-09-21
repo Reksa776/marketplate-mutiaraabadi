@@ -856,12 +856,12 @@ async function main(): Promise<void> {
     }
 
     const qris = await createPayment("qris", "QRIS");
-    qris.view?.instruction.qrImageUrl
+    qris.view?.instruction.qrString || qris.view?.instruction.qrisPageUrl
         ? ok(
               "4.1 QRIS instruction mapped",
-              `qrImageUrl=<set,host=${new URL(qris.view.instruction.qrImageUrl).host}> kind=${qris.view.instruction.kind}`
+              `qrString=${qris.view.instruction.qrString ? "set" : "null"} qrisPageUrl=${qris.view.instruction.qrisPageUrl ? `host=${new URL(qris.view.instruction.qrisPageUrl).host}` : "null"} kind=${qris.view.instruction.kind}`
           )
-        : bad("4.1 QRIS instruction mapped", `qrImageUrl missing (${qris.error ?? "-"})`);
+        : bad("4.1 QRIS instruction mapped", `QR data missing (${qris.error ?? "-"})`);
 
     const vaBca = await createPayment("va-bca", "BANK_TRANSFER", "bca");
     vaBca.view?.instruction.paymentNo
@@ -948,7 +948,7 @@ async function main(): Promise<void> {
         poll.status === 200 && pollJson?.success && instruction
             ? ok(
                   "5.3 polling returns instruction",
-                  `kind=${instruction.kind} qrImageUrl=${instruction.qrImageUrl ? "set" : "null"} canPay=${pollJson.data.canPay}`
+                  `kind=${instruction.kind} qrString=${instruction.qrString ? "set" : "null"} qrisPageUrl=${instruction.qrisPageUrl ? "set" : "null"} canPay=${pollJson.data.canPay}`
               )
             : bad("5.3 polling returns instruction", `HTTP ${poll.status}`);
 
@@ -1008,23 +1008,93 @@ async function main(): Promise<void> {
                           `dom=${JSON.stringify(qrisDom.slice(0, 120))}`
                       );
 
+                /*
+                 * RE-VERIFIED 2026-09-21: the provider's QRIS URL is an
+                 * HTML QR page (`https://my.ipaymu.com/qris-basic/...`),
+                 * NOT an image binary — so it must never appear as an
+                 * `<img src>`. The scannable QR has to be generated
+                 * locally from the raw payload (`qrString`), with the
+                 * provider URL exposed only as a fallback link.
+                 */
                 const qrisImgs: string[] = await browser.evaluate(
                     "Array.from(document.images).map(i => i.src)"
                 );
-                const qrHost = (qrisImgs ?? [])
-                    .map((src) => {
-                        try {
-                            return new URL(src).host;
-                        } catch {
-                            return null;
-                        }
-                    })
-                    .find((h) => h && h.includes("ipaymu"));
-                qrHost
-                    ? ok("5.7 QR image element present", `<img> src host=${qrHost}`)
+                const qrSvgs: {
+                    width: number;
+                    height: number;
+                    paths: number;
+                }[] = await browser.evaluate(
+                    "Array.from(document.querySelectorAll('svg')).map(s => {" +
+                        "const r = s.getBoundingClientRect();" +
+                        "return { width: r.width, height: r.height," +
+                        " paths: s.querySelectorAll('path').length };})"
+                );
+                const renderedQr = (qrSvgs ?? []).find(
+                    (s) => s.width > 150 && s.height > 150 && s.paths >= 2
+                );
+
+                (qrisImgs ?? []).length === 0 && renderedQr
+                    ? ok(
+                          "5.7 QR rendered locally (no provider <img>)",
+                          `svg ${Math.round(renderedQr.width)}x${Math.round(renderedQr.height)} with ${renderedQr.paths} paths, 0 <img> elements`
+                      )
                     : bad(
-                          "5.7 QR image element present",
-                          `${(qrisImgs ?? []).length} image(s), none from the provider QR host`
+                          "5.7 QR rendered locally (no provider <img>)",
+                          `imgs=${(qrisImgs ?? []).length} svg=${JSON.stringify(qrSvgs ?? [])}`
+                      );
+
+                const qrisPayload = qris.view?.instruction.qrString ?? "";
+                const qrisInnerText: string = await browser.evaluate(
+                    "document.body.innerText"
+                );
+                qrisPayload && !qrisInnerText.includes(qrisPayload)
+                    ? ok(
+                          "5.7b raw QRIS payload is not visible text",
+                          "payload absent from the rendered text"
+                      )
+                    : bad(
+                          "5.7b raw QRIS payload is not visible text",
+                          qrisPayload
+                              ? "payload found in the rendered text"
+                              : "no payload to assert"
+                      );
+
+                const qrisLinks: { href: string; target: string; text: string }[] =
+                    await browser.evaluate(
+                        "Array.from(document.querySelectorAll('a')).map(a => ({" +
+                            " href: a.href, target: a.target, text: a.innerText }))"
+                    );
+                const qrisPageUrl =
+                    qris.view?.instruction.qrisPageUrl ?? null;
+                const fallbackLink = (qrisLinks ?? []).find(
+                    (a) => a.href === qrisPageUrl && a.text.includes("Buka QRIS iPaymu")
+                );
+
+                if (!qrisPageUrl) {
+                    ok(
+                        "5.7c QRIS fallback link",
+                        "no provider page URL returned → local QR only"
+                    );
+                } else if (fallbackLink?.target === "_blank") {
+                    ok(
+                        "5.7c QRIS fallback link opens in a new tab",
+                        `href host=${new URL(fallbackLink.href).host}`
+                    );
+                } else {
+                    bad(
+                        "5.7c QRIS fallback link opens in a new tab",
+                        `link=${fallbackLink ? fallbackLink.target : "missing"}`
+                    );
+                }
+
+                !qrisInnerText.includes("Nomor Virtual Account")
+                    ? ok(
+                          "5.7d QRIS page shows no payment number",
+                          "no VA label / pay-to code rendered for QRIS"
+                      )
+                    : bad(
+                          "5.7d QRIS page shows no payment number",
+                          "VA label rendered on a QRIS payment page"
                       );
 
                 /* VIRTUAL ACCOUNT */
@@ -1861,11 +1931,11 @@ async function main(): Promise<void> {
 
         const buyNowInstruction = findObject(
             buyNowJson,
-            (o) => o.qrImageUrl || o.paymentNo || o.actionUrl
+            (o) => o.qrisPageUrl || o.paymentNo || o.actionUrl
         );
         const buyNowQrHost = hostOf(
-            typeof buyNowInstruction?.qrImageUrl === "string"
-                ? buyNowInstruction.qrImageUrl
+            typeof buyNowInstruction?.qrisPageUrl === "string"
+                ? buyNowInstruction.qrisPageUrl
                 : null
         );
 
@@ -1879,7 +1949,7 @@ async function main(): Promise<void> {
 
             ok(
                 "8.10 Buy Now (iPaymu) end-to-end",
-                `HTTP 201, real sandbox instruction returned (qrImage host=${buyNowQrHost}), ` +
+                `HTTP 201, real sandbox instruction returned (qris page host=${buyNowQrHost}), ` +
                     "order persisted and payable on our own page"
             );
         } else if (buyNowAfter === buyNowBefore) {

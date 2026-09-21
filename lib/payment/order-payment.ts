@@ -131,11 +131,16 @@ export type PaymentView = {
         channelLabel: string | null;
         /** VA number / payment code to pay to. */
         paymentNo: string | null;
-        /** QR image URL (QRIS) — provider URL, http(s) only. */
-        qrImageUrl: string | null;
         /**
-         * Raw QRIS payload (QRIS only). Rendered into a QR by the page
-         * when no image URL is servable. Never displayed as text.
+         * iPaymu QRIS payment PAGE url (QRIS only) — the provider's
+         * HTML QR page. Kept as a fallback LINK for the customer; it is
+         * never used as an `<img src>` (the endpoint is HTML, not an
+         * image binary) and never iframed/proxied.
+         */
+        qrisPageUrl: string | null;
+        /**
+         * Raw QRIS payload (QRIS only) — the PRIMARY source rendered
+         * into a QR image by the page. Never displayed as text.
          */
         qrString: string | null;
         /** E-wallet action URL — provider URL, http(s) only. */
@@ -183,7 +188,7 @@ export async function savePaymentInstruction(
         data: {
             paymentNo,
             paymentUrl:
-                instruction.qrImageUrl ?? instruction.paymentUrl ?? null,
+                instruction.qrisPageUrl ?? instruction.paymentUrl ?? null,
             qrString: instruction.qrString ?? null,
             paymentChannel: instruction.channel || null,
             paymentExpiresAt: instruction.expiresAt ?? null,
@@ -286,9 +291,10 @@ export function canReusePaymentInstruction(
         return Boolean(order.paymentNo);
     }
 
-    // QRIS pays through a QR image URL or, failing that, the raw
-    // payload rendered into a QR. A QRIS `paymentNo` is never a usable
-    // instruction (it is always null after the mapping fix).
+    // QRIS pays through the locally rendered QR (raw payload) or,
+    // failing that, the provider QRIS page link. A QRIS `paymentNo` is
+    // never a usable instruction (it is always null after the mapping
+    // fix).
     if (requestedMethod === "QRIS") {
         return Boolean(order.paymentUrl || order.qrString);
     }
@@ -390,7 +396,7 @@ export async function loadPaymentView(
         order.paymentStatus === "PENDING" &&
         !isExpired;
 
-    const qrImageUrl =
+    const qrisPageUrl =
         order.paymentMethod === "QRIS" ? order.paymentUrl : null;
 
     const qrString =
@@ -419,7 +425,7 @@ export async function loadPaymentView(
                 order.paymentChannel
             ),
             paymentNo: order.paymentNo,
-            qrImageUrl,
+            qrisPageUrl,
             qrString,
             actionUrl,
             amount,

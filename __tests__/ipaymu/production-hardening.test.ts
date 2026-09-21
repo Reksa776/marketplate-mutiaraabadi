@@ -179,7 +179,6 @@ import {
     classifyIpaymuNotification,
     isExpiryNotification,
     sanitizeProviderUrl,
-    sanitizeQrImageUrl,
     resolveProviderMethod,
 } from "@/lib/payment/ipaymu";
 
@@ -799,9 +798,15 @@ test("Direct payment amount is never rounded (webhook amount must match order.to
 
 test("Provider URLs are sanitized before they reach the UI", () => {
     assert(
-        ipaymuLib.includes("sanitizeQrImageUrl") &&
-            ipaymuLib.includes("sanitizeProviderUrl"),
+        ipaymuLib.includes("sanitizeProviderUrl"),
         "Must sanitize provider URLs"
+    );
+
+    // The QRIS provider URL is an HTML QR page, so it is only ever a
+    // link target — the image-source sanitizer is gone with the <img>.
+    assert(
+        !ipaymuLib.includes("sanitizeQrImageUrl"),
+        "No QR image source: the provider QRIS URL is a page link"
     );
 
     assert(
@@ -815,17 +820,18 @@ test("Provider URLs are sanitized before they reach the UI", () => {
         "https provider URLs must be kept"
     );
 
+    // The production shape: a QRIS PAGE (not an image binary).
     assert(
-        sanitizeQrImageUrl("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=") ===
-            null,
-        "SVG data URIs must be rejected"
+        sanitizeProviderUrl(
+            "https://my.ipaymu.com/qris-basic/260921-296289-37614776-225053"
+        ) ===
+            "https://my.ipaymu.com/qris-basic/260921-296289-37614776-225053",
+        "The iPaymu QRIS page URL must be kept as a link target"
     );
 
     assert(
-        typeof sanitizeQrImageUrl(
-            "data:image/png;base64,iVBORw0KGgo="
-        ) === "string",
-        "Raster data URIs must be accepted"
+        sanitizeProviderUrl("data:image/png;base64,iVBORw0KGgo=") === null,
+        "data URIs are never a provider link target"
     );
 });
 

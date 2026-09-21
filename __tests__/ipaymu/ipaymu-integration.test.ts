@@ -1147,7 +1147,11 @@ describe("iPaymu UI Integration", () => {
         expect(page).toContain("VIRTUAL_ACCOUNT");
         expect(page).toContain("QRIS");
         expect(page).toContain("EWALLET");
-        expect(page).toContain("qrImageUrl");
+        // QRIS is rendered from the raw payload, with the provider page
+        // only as a fallback link (never an <img>).
+        expect(page).toContain("qrString");
+        expect(page).toContain("qrisPageUrl");
+        expect(page).not.toContain("<img");
         expect(page).toContain("paymentNo");
     });
 

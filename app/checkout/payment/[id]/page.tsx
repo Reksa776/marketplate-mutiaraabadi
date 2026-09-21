@@ -394,13 +394,14 @@ export default function PaymentInstructionPage() {
                     </p>
 
                     {/*
-                     * QRIS renders a QR image (provider `QrImage`/`Url`); when
-                     * that is unavailable the raw provider payload is rendered
-                     * into a QR — never shown as a payment code.
+                     * The QR is generated LOCALLY from the raw QRIS payload
+                     * (`qrString`). The provider URL is an HTML QR page, not
+                     * an image, so it is only offered as a fallback link.
+                     * A QRIS payload is never shown as a payment code.
                      */}
                     <QrisPanel
-                        qrImageUrl={instruction.qrImageUrl}
                         qrString={instruction.qrString}
+                        qrisPageUrl={instruction.qrisPageUrl}
                     />
                 </div>
             )}

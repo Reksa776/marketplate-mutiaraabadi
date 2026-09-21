@@ -9,7 +9,7 @@
  *
  *   POST /api/v2/payment/direct
  *
- * iPaymu returns a payment instruction (VA number, QR image URL or
+ * iPaymu returns a payment instruction (VA number, QRIS payload/page or
  * e-wallet URL) that we render on OUR OWN payment page, so the customer
  * never leaves the store. Settlement still comes exclusively from the
  * signed webhook (see app/api/payment/ipaymu/notification/route.ts).
@@ -41,17 +41,18 @@
  *             Channel, PaymentNo, PaymentName, Total, Fee, Expired,
  *             Note, Url }
  *   Semantics: PaymentNo = VA number / payment code to pay to,
- *              Url = QR image URL (QRIS) / e-wallet URL.
+ *              Url = QRIS payment-page URL / e-wallet URL.
  *
  *   QRIS semantic rule (enforced by buildPaymentInstruction):
- *     - the scannable QR is sourced from `QrImage` (live shape) or `Url`
- *       (documented shape); a provider URL echoed in `PaymentNo` is ALSO
- *       accepted as the image source (it is never treated as a payment
- *       number).
+ *     - the scannable QR is generated LOCALLY by the payment page from
+ *       the raw QRIS payload (`qrString`). The provider URL is NOT an
+ *       image: the live production value is
+ *       `https://my.ipaymu.com/qris-basic/<path>`, an HTML payment/QR
+ *       page, so it is kept only as `qrisPageUrl` — a fallback link
+ *       the customer can open in a new tab. It is never used as an
+ *       `<img src>` and never iframed/proxied.
  *     - the raw QRIS payload (raw `QrString` or `PaymentNo`) is captured
- *       as `qrString` — it is rendered INTO a QR image by the payment
- *       page ONLY when no image URL is available, and is never shown to
- *       the customer as text.
+ *       as `qrString` and is never shown to the customer as text.
  *     - `paymentNo` is left null for QRIS: a QRIS payload is not a
  *       pay-to code and must never be persisted/rendered as such.
  */
@@ -236,23 +237,27 @@ export type IpaymuDirectData = {
     Expired?: string;
     Note?: string | null;
     /**
-     * Documented QR image URL / e-wallet action URL.
+     * Documented QRIS payment-page URL / e-wallet action URL.
      *
      * NOTE: the live QRIS direct response does NOT populate this; it
-     * returns the QR through `QrImage` instead (see below).
+     * returns the QRIS page through `QrImage` instead (see below).
      */
     Url?: string;
     /**
-     * QRIS QR **image** URL returned by the live direct-payment API
-     * (https URL on the iPaymu host). Verified against the iPaymu
-     * sandbox: `Url` is absent for QRIS while `QrImage` is present.
+     * QRIS payment-page URL returned by the live direct-payment API
+     * (https URL on the iPaymu host). Verified against iPaymu
+     * PRODUCTION: the value is
+     * `https://my.ipaymu.com/qris-basic/<path>` — an HTML QR/payment
+     * page, NOT an image binary. Persisted as `qrisPageUrl` and only
+     * ever used as a fallback link. (`Url` is absent for QRIS while
+     * `QrImage` is present.)
      */
     QrImage?: string;
     /**
      * Raw QRIS payload string. This is the actual QR **content** (for
      * QRIS typically an EMVCo "000201..." string). It is persisted as
-     * `qrString` so the payment page can render a QR from it when no
-     * image URL is servable — it is NEVER rendered as visible text.
+     * `qrString` and is the PRIMARY source the payment page renders
+     * into a QR image — it is NEVER rendered as visible text.
      */
     QrString?: string;
     /** QRIS template image URL (not used). */
@@ -410,12 +415,17 @@ export type PaymentInstruction = {
     channelLabel: string | null;
     /** VA number / payment code to pay to (Data.PaymentNo). QRIS → null. */
     paymentNo: string | null;
-    /** QR image URL for QRIS (Data.QrImage ?? Data.Url ?? URL-in-PaymentNo). */
-    qrImageUrl: string | null;
+    /**
+     * iPaymu QRIS payment-page URL (Data.QrImage ?? Data.Url ?? URL-in-
+     * PaymentNo). This is the provider's HTML QRIS page — an interaction
+     * link for the customer, NEVER a direct image and NEVER used as an
+     * <img src>.
+     */
+    qrisPageUrl: string | null;
     /**
      * Raw QRIS payload (Data.QrString ?? Data.PaymentNo). Only kept for
-     * QRIS. Rendered INTO a QR image by the payment page when no image
-     * URL is available — never displayed as text.
+     * QRIS — the PRIMARY source the payment page renders into a QR
+     * image. Never displayed to the customer as text.
      */
     qrString: string | null;
     /** E-wallet action URL (Data.Url). */
@@ -427,34 +437,6 @@ export type PaymentInstruction = {
     /** Provider-reported total (informational only). */
     total: number | null;
 };
-
-/**
- * Only accept http(s) URLs from the provider. This prevents a
- * javascript:/data: URL from ever reaching an href/src in our UI.
- */
-/**
- * QR image source accepted from the provider.
- *
- * The provider documents `Url` as a QR image URL, but a base64 data URI
- * is equally valid for an <img>. Only raster image data URIs are
- * accepted (never image/svg+xml, which can carry script), and only
- * http(s) URLs otherwise.
- */
-export function sanitizeQrImageUrl(
-    raw: unknown
-): string | null {
-    if (typeof raw !== "string") return null;
-    const value = raw.trim();
-    if (!value) return null;
-
-    if (/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(value)) {
-        return value;
-    }
-
-    if (value.startsWith("data:")) return null;
-
-    return sanitizeProviderUrl(value);
-}
 
 /**
  * Only accept http(s) URLs from the provider. This prevents a
@@ -550,11 +532,11 @@ export const QR_RAW_PAYLOAD_MAX_LENGTH = 4096;
  * Sanitize a raw QRIS payload (QR content, NOT an image).
  *
  * The value is provider data that the payment page renders INTO a QR
- * image. It must NEVER be a URL/data-URI (those belong to `qrString`'s
- * sibling `paymentUrl`/`qrImageUrl`) and is dropped when it cannot be
- * turned into a scannable QR. The result is still raw payload — it is
- * stored and later rendered as a QR, but never shown to the customer
- * as visible text.
+ * image. It must NEVER be a URL/data-URI (those belong to `qrisPageUrl`
+ * / `paymentUrl`) and is dropped when it cannot be turned into a
+ * scannable QR. The result is still raw payload — it is stored and
+ * later rendered as a QR, but never shown to the customer as visible
+ * text.
  */
 export function sanitizeQrPayload(
     raw: unknown
@@ -644,25 +626,29 @@ export function buildPaymentInstruction(
     if (!data) return null;
 
     /*
-     * QRIS mapping (verified against the live iPaymu sandbox):
+     * QRIS mapping (verified against the live iPaymu PRODUCTION
+     * response, 2026-09-21):
      *
-     *   QrImage   → the scannable QR image URL (live shape; `Url` is
-     *               absent for QRIS)
-     *   Url       → documented fallback QR image URL
+     *   QrImage   → the provider's QRIS page URL, e.g.
+     *               https://my.ipaymu.com/qris-basic/260921-... . It
+     *               renders a QR page in a browser but is NOT an image
+     *               binary, so it is only ever a link target
+     *               (`qrisPageUrl`) — never an `<img src>`.
+     *   Url       → documented fallback, same semantics.
      *   PaymentNo → for QRIS this carries the RAW QR payload, never a
-     *               pay-to number. An http(s)/data URL echoed here is
-     *               still accepted as the image source; anything else
-     *               becomes the `qrString` payload to render.
+     *               pay-to number. An http(s) URL echoed here is still
+     *               accepted as the page URL; anything else becomes the
+     *               `qrString` payload to render.
      *   QrString  → explicit raw payload, preferred over PaymentNo.
      *
      * `paymentNo` is intentionally kept null for QRIS so a QRIS payload
      * can never be persisted/displayed as a payment code.
      */
-    const qrImageUrl =
+    const qrisPageUrl =
         method === "QRIS"
             ? pickFirstSanitized(
                   [data.QrImage, data.Url, isUrlLikeValue(data.PaymentNo) ? data.PaymentNo : undefined],
-                  sanitizeQrImageUrl
+                  sanitizeProviderUrl
               )
             : null;
 
@@ -701,7 +687,7 @@ export function buildPaymentInstruction(
                 ? data.PaymentName.trim()
                 : null,
         paymentNo,
-        qrImageUrl,
+        qrisPageUrl,
         qrString,
         paymentUrl: method === "E_WALLET" ? providerUrl : null,
         expiresAt: parseIpaymuExpiredAt(data.Expired),
@@ -721,10 +707,12 @@ export function buildPaymentInstruction(
         return null;
     }
 
+    // QRIS is payable when the raw payload can be rendered into a QR
+    // locally, or — at worst — when the provider page can be opened.
     if (
         method === "QRIS" &&
-        !instruction.qrImageUrl &&
-        !instruction.qrString
+        !instruction.qrString &&
+        !instruction.qrisPageUrl
     ) {
         return null;
     }
@@ -999,7 +987,7 @@ async function postToIpaymu(options: {
  *
  * Endpoint: POST /api/v2/payment/direct
  *
- * The instruction (VA number / QR image URL / e-wallet URL) is
+ * The instruction (VA number / QRIS payload/page / e-wallet URL) is
  * returned to the server caller only — it is persisted by the
  * caller and rendered on our own payment page. The customer is
  * never redirected to iPaymu.

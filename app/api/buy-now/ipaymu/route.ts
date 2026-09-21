@@ -499,7 +499,7 @@ export async function POST(
                     channelLabel:
                         payment.instruction.channelLabel,
                     paymentNo: payment.instruction.paymentNo,
-                    qrImageUrl: payment.instruction.qrImageUrl,
+                    qrisPageUrl: payment.instruction.qrisPageUrl,
                     actionUrl: payment.instruction.paymentUrl,
                 },
             },
