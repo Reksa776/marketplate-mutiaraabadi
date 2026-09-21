@@ -13,6 +13,17 @@ module.exports = {
         "**/__tests__/order-refund/*.test.ts",
         "**/__tests__/security/*.test.ts",
     ],
+    testPathIgnorePatterns: [
+        "/node_modules/",
+        // Standalone tsx audit/verification scripts (each declares its own
+        // test() helper and exits the process); not Jest suites.
+        "__tests__/ipaymu/production-hardening.test.ts",
+        "__tests__/marketing/address-shipping-ux.test.ts",
+        "__tests__/marketing/campaign-optional-audit.test.ts",
+        "__tests__/marketing/m7-audit-fixes.test.ts",
+        "__tests__/marketing/profile-phone-shipping.test.ts",
+        "__tests__/marketing/pricing-engine.test.ts",
+    ],
     transform: {
         "^.+\\.tsx?$": [
             "ts-jest",

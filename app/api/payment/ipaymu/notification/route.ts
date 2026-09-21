@@ -60,17 +60,24 @@ export async function POST(
          *     6. HMAC-SHA256 with the merchant VA as the secret
          *     7. Timing-safe compare with X-Signature
          *
-         * Fail-closed: reject 401 if ANY required header, the raw
+         * Fail-closed: reject 401 if the X-Signature header, the raw
          * body, or the VA is missing/invalid.
          *
-         * NOTE (runtime verification required): the exact header
-         * set iPaymu sends (X-Signature only vs X-Signature +
-         * X-Timestamp + X-External-ID) must be confirmed against a
-         * real sandbox transaction. This route currently expects the
-         * three headers but only X-Signature is cryptographically
-         * verified. If sandbox testing shows iPaymu omits
-         * X-Timestamp/X-External-ID, relax only the non-cryptographic
-         * header checks here — never weaken signature verification.
+         * PROVIDER HEADER COMPATIBILITY (local audit):
+         * iPaymu's exact callback header set is NOT yet proven
+         * (PRODUCTION PROVIDER BEHAVIOR = UNVERIFIED). Only
+         * X-Signature is cryptographically meaningful; X-Timestamp
+         * and X-External-ID are informational and MUST NOT gate
+         * settlement, otherwise a provider that omits them would make
+         * every webhook 401 and no order could ever be paid.
+         *
+         * Policy:
+         *   - X-Signature            → REQUIRED, always verified.
+         *   - X-Timestamp/ExternalId → optional; logged when absent.
+         *
+         * Replay is already harmless: settlement is a CAS that only
+         * fires once (PENDING/PROCESSING → PAID); a replayed success
+         * is an idempotent no-op.
          */
         const receivedSignature =
             request.headers.get("x-signature") ||
@@ -82,14 +89,10 @@ export async function POST(
             request.headers.get("x-external-id") ||
             "";
 
-        if (
-            !receivedSignature ||
-            !receivedTimestamp ||
-            !receivedExternalId
-        ) {
+        if (!receivedSignature) {
             console.error(
-                "IPAYMU SECURITY: MISSING WEBHOOK AUTH HEADERS — " +
-                "X-Signature, X-Timestamp, X-External-ID required"
+                "IPAYMU SECURITY: MISSING WEBHOOK AUTH HEADER — " +
+                "X-Signature required"
             );
             return json(
                 {
@@ -97,6 +100,15 @@ export async function POST(
                     message: "Missing authentication headers.",
                 },
                 401
+            );
+        }
+
+        if (!receivedTimestamp || !receivedExternalId) {
+            console.warn(
+                "IPAYMU SECURITY: webhook missing optional header(s) — " +
+                `x-timestamp=${receivedTimestamp ? "present" : "absent"} ` +
+                `x-external-id=${receivedExternalId ? "present" : "absent"}; ` +
+                "proceeding with X-Signature verification only"
             );
         }
 
@@ -287,63 +299,15 @@ export async function POST(
                     "Order tidak ditemukan.",
             });
         }        /* ==========================================
-         * SECURITY: AMOUNT VALIDATION
+         * AMOUNT VALIDATION
          * ==========================================
          *
-         * iPaymu sends:
-         * - sub_total = product total (matches order.total)
-         * - amount/total = product total + fee (does NOT match)
-         *
-         * verifyNotificationAmount prefers sub_total.
-         * Fee iPaymu/escrow is excluded from comparison.
-         *
-         * This is a critical security check: attacker
-         * cannot forge a webhook with wrong amount.
+         * The amount comparison is mandatory for SETTLEMENT and is
+         * enforced inside the success branch below (before the CAS),
+         * because a pending/failed/refund notification may legitimately
+         * omit amount fields while a settlement must never settle an
+         * unverifiable amount.
          */
-
-        // Whenever the payload carries ANY recognizable amount field the
-        // comparison MUST run — including payloads that only send
-        // `sub_total` (the product total) without `amount`/`total`.
-        const hasNotificationAmount =
-            (body.Amount !== undefined && body.Amount !== null) ||
-            (body.sub_total !== undefined &&
-                body.sub_total !== null);
-
-        if (hasNotificationAmount) {
-            const orderAmount = Number(
-                existingOrder.total.toString()
-            );
-
-            if (
-                !verifyNotificationAmount(
-                    body,
-                    orderAmount
-                )
-            ) {
-                console.error(
-                    "IPAYMU SECURITY: AMOUNT MISMATCH — " +
-                    "potential webhook spoofing attempt",
-                    {
-                        orderNumber,
-                        notificationAmount:
-                            body.sub_total ?? body.Amount,
-                        orderAmount,
-                        referenceId:
-                            body.ReferenceId,
-                        sessionId:
-                            body.SessionId,
-                    }
-                );
-
-                return json(
-                    {
-                        success: false,
-                        message: "Amount tidak sesuai.",
-                    },
-                    400
-                );
-            }
-        }
 
         /* ==========================================
          * STATUS CLASSIFICATION (F14 FIX)
@@ -376,6 +340,47 @@ export async function POST(
          * ========================================== */
 
         if (isSuccess || statusClass === "success") {
+            /* ==========================================
+             * MANDATORY AMOUNT VALIDATION (SETTLEMENT ONLY)
+             * ==========================================
+             *
+             * A success notification MUST carry a product-total
+             * amount that matches the server-authoritative order
+             * total. An unverifiable amount fails closed so a
+             * malformed/forged success can never settle the order.
+             */
+            const orderAmount = Number(
+                existingOrder.total.toString()
+            );
+
+            if (
+                !verifyNotificationAmount(body, orderAmount)
+            ) {
+                console.error(
+                    "IPAYMU SECURITY: AMOUNT UNVERIFIABLE/MISMATCH — " +
+                    "refusing to settle",
+                    {
+                        orderNumber,
+                        notificationAmount:
+                            body.sub_total ??
+                            body.Amount ??
+                            body.amount ??
+                            body.total,
+                        orderAmount,
+                        referenceId: body.ReferenceId,
+                        sessionId: body.SessionId,
+                    }
+                );
+
+                return json(
+                    {
+                        success: false,
+                        message: "Amount tidak sesuai.",
+                    },
+                    400
+                );
+            }
+
             /* ==========================================
              * ATOMIC CAS SETTLEMENT GUARD
              * ==========================================

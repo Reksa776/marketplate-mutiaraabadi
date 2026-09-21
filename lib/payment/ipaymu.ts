@@ -1266,12 +1266,25 @@ export function verifyNotificationAmount(
      *
      * We compare sub_total against order.total to avoid
      * fee mismatch rejecting valid payments.
+     *
+     * Defense-in-depth: if sub_total is absent we still try the
+     * other amount fields rather than silently skipping the check.
+     * When NO amount field is present the comparison is impossible
+     * and MUST fail closed (callers only invoke this for
+     * settlement, where an unverifiable amount is not acceptable).
      */
-    const notificationAmount = Number(
-        notification.sub_total ?? notification.Amount
-    );
+    const rawAmount =
+        notification.sub_total ??
+        notification.Amount ??
+        notification.amount ??
+        notification.total;
+
+    const notificationAmount = Number(rawAmount);
 
     if (
+        rawAmount === undefined ||
+        rawAmount === null ||
+        rawAmount === "" ||
         !Number.isFinite(notificationAmount) ||
         notificationAmount !== expectedAmount
     ) {

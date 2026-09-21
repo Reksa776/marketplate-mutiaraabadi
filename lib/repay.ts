@@ -327,7 +327,11 @@ export type RepayOrderResult =
 export async function processRepayment(
     userId: string,
     orderId: number,
-    paymentMethod: string
+    paymentMethod: string,
+    expected?: {
+        status: string;
+        paymentStatus: string;
+    }
 ): Promise<RepayOrderResult> {
     // ==========================================
     // VALIDATE PAYMENT METHOD
@@ -342,7 +346,7 @@ export async function processRepayment(
     }
 
     return prisma.$transaction(
-        async (tx) => {
+        async (tx): Promise<RepayOrderResult> => {
             // ==========================================
             // 1. FIND ORDER + OWNERSHIP CHECK
             // ==========================================
@@ -386,34 +390,29 @@ export async function processRepayment(
             }
 
             // ==========================================
-            // 3. RE-RESERVE STOCK IF NEEDED
+            // 3. CAS: CLAIM THE ORDER (SINGLE WINNER)
             // ==========================================
             //
-            // If order was auto-cancelled (FAILED/EXPIRED),
-            // stock was already released. Re-reserve before
-            // creating new payment attempt.
-
-            if (eligibility.needsStockRestore) {
-                try {
-                    await reReserveStockForOrder(tx, orderId);
-                } catch (error: any) {
-                    return {
-                        ok: false,
-                        reason:
-                            error.message ||
-                            "Gagal mengembalikan stok untuk pembayaran ulang.",
-                    };
-                }
-            }
-
-            // ==========================================
-            // 4. CAS: RESET ORDER TO PENDING
-            // ==========================================
+            // Claim the order BEFORE touching stock/voucher.
             //
-            // Only if order was cancelled/failed/expired.
+            // When the caller supplies the state it observed before
+            // the transaction (`expected`), the CAS uses those exact
+            // values. This is what guarantees a single winner: a
+            // concurrent repay that read the same pre-state will find
+            // the order already moved and fail, instead of both
+            // succeeding because the intermediate PENDING/PENDING
+            // state also happens to be repayable.
+            //
             // Prevents:
             // - Resurrecting a PAID/COMPLETED order
             // - Race with concurrent webhook
+            // - Double reservation / duplicate instruction by
+            //   concurrent repays
+
+            const expectedStatus =
+                expected?.status ?? order.status;
+            const expectedPaymentStatus =
+                expected?.paymentStatus ?? order.paymentStatus;
 
             const affectedRows = await tx.$executeRaw`
                 UPDATE \`order\`
@@ -421,8 +420,8 @@ export async function processRepayment(
                     paymentStatus = 'PENDING',
                     paymentMethod = ${paymentMethod}
                 WHERE id = ${orderId}
-                  AND status IN ('PENDING', 'CANCELLED')
-                  AND paymentStatus IN ('PENDING', 'FAILED', 'EXPIRED')
+                  AND status = ${expectedStatus}
+                  AND paymentStatus = ${expectedPaymentStatus}
             `;
 
             if (affectedRows === 0) {
@@ -431,6 +430,20 @@ export async function processRepayment(
                     reason:
                         "Status order berubah saat pemrosesan. Silakan coba lagi.",
                 };
+            }
+
+            // ==========================================
+            // 4. RE-RESERVE STOCK IF NEEDED
+            // ==========================================
+            //
+            // If the order was auto-cancelled (FAILED/EXPIRED), stock
+            // was already released. Re-reserve AFTER the claim. Any
+            // failure THROWS so the claim and every partial
+            // reservation are rolled back atomically; the outer catch
+            // converts it to ok:false.
+
+            if (eligibility.needsStockRestore) {
+                await reReserveStockForOrder(tx, orderId);
             }
 
             // ==========================================
@@ -472,5 +485,11 @@ export async function processRepayment(
             timeout: 15000,
             maxWait: 10000,
         }
-    );
+    ).catch((error: unknown) => ({
+        ok: false as const,
+        reason:
+            error instanceof Error && error.message
+                ? error.message
+                : "Gagal memproses pembayaran ulang.",
+    }));
 }

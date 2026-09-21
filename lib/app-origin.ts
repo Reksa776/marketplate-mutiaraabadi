@@ -105,8 +105,12 @@ function buildAllowedHosts(): Set<string> {
     }
 
     // Known production/staging domains
-    // (from next.config.ts allowedDevOrigins)
+    // (mirrors next.config.ts allowedDevOrigins)
     hosts.add("demosolusisejalan.my.id");
+    hosts.add("mutiaraabadisnack.com");
+    hosts.add("103.93.132.214");
+    hosts.add("192.168.99.247");
+    hosts.add("202.73.25.122");
     hosts.add("debut-thanks-spray-wine.trycloudflare.com");
 
     // Localhost variants (development)

@@ -198,7 +198,11 @@ export async function POST(
         const result = await processRepayment(
             session.user.id,
             orderId,
-            paymentMethod
+            paymentMethod,
+            {
+                status: snapshot.status,
+                paymentStatus: snapshot.paymentStatus,
+            }
         );
 
         if (!result.ok) {

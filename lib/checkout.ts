@@ -26,6 +26,7 @@ import {
     calculateSpinRewardDiscount,
 } from "./spin-wheel";
 import { formatProductName } from "./payment/ipaymu";
+import { PAYMENT_EXPIRY_GRACE_MS } from "./payment/order-payment";
 
 export type CheckoutMode =
     | "CART"
@@ -557,6 +558,32 @@ function validateItemDetailsTotal(
  * pembayaran belum berhasil.
  */
 
+/**
+ * A pending provider order is still payable while its provider
+ * expiry window (plus grace) is open. Orders with no recorded expiry
+ * but a real instruction (paymentNo/paymentUrl) are treated as
+ * payable too: we must never cancel something the customer can still
+ * pay, otherwise a late payment becomes a paid-but-cancelled order.
+ */
+export function isPendingOrderStillPayable(
+    order: {
+        paymentNo: string | null;
+        paymentUrl: string | null;
+        paymentExpiresAt: Date | null;
+    },
+    now: number = Date.now()
+): boolean {
+    if (!order.paymentExpiresAt) {
+        return Boolean(order.paymentNo || order.paymentUrl);
+    }
+
+    return (
+        order.paymentExpiresAt.getTime() +
+            PAYMENT_EXPIRY_GRACE_MS >
+        now
+    );
+}
+
 export async function cleanupPendingCheckoutOrders(
     userId: string
 ) {
@@ -581,6 +608,9 @@ export async function cleanupPendingCheckoutOrders(
             select: {
                 id: true,
                 orderNumber: true,
+                paymentNo: true,
+                paymentUrl: true,
+                paymentExpiresAt: true,
             },
 
             orderBy: {
@@ -590,7 +620,19 @@ export async function cleanupPendingCheckoutOrders(
             take: 10,
         });
 
+    const now = Date.now();
+
     for (const order of pendingOrders) {
+        /*
+         * Only cancel orders whose payment window has actually
+         * closed. A still-payable instruction is left PENDING so a
+         * late (valid) payment is not rejected as paid-but-cancelled
+         * just because the customer started another checkout.
+         */
+        if (isPendingOrderStillPayable(order, now)) {
+            continue;
+        }
+
         try {
             await rollbackCheckoutOrder(
                 order.id,
