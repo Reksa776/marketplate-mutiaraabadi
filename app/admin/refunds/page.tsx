@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { useDialog } from "@/components/ui/Dialog";
@@ -23,6 +23,12 @@ type Refund = {
     requestedBy: string;
     processedBy: string | null;
     providerRef: string | null;
+    bank: {
+        bankName: string | null;
+        bankAccountName: string | null;
+        bankAccountNumber: string | null;
+    } | null;
+    proofFilePath: string | null;
     requestedAt: string;
     processedAt: string;
 };
@@ -78,6 +84,12 @@ function getStatusClass(status: string) {
     }
 }
 
+function maskAccount(value?: string | null) {
+    const digits = String(value || "").replace(/\D/g, "");
+    if (digits.length <= 4) return "****";
+    return "****" + digits.slice(-4);
+}
+
 export default function AdminRefundsPage() {
     const [refunds, setRefunds] = useState<Refund[]>([]);
     const [summary, setSummary] = useState<Summary>({ pending: 0, processing: 0, completed: 0, failed: 0, total: 0 });
@@ -86,6 +98,8 @@ export default function AdminRefundsPage() {
     const [search, setSearch] = useState("");
     const [statusFilter, setStatusFilter] = useState("");
     const [processingAction, setProcessingAction] = useState<number | null>(null);
+    const [revealedBank, setRevealedBank] = useState<Set<number>>(new Set());
+    const [uploadingProof, setUploadingProof] = useState<number | null>(null);
 
     async function loadRefunds(page: number = 1, searchQuery?: string, status?: string) {
         try {
@@ -197,6 +211,58 @@ export default function AdminRefundsPage() {
         } finally {
             setProcessingAction(null);
         }
+    }
+
+    async function handleProofUpload(refundId: number, file?: File | null) {
+        if (!file) return;
+
+        if (!["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(file.type)) {
+            toast.error("Tipe file tidak didukung. Gunakan JPG, PNG, WebP, atau PDF.");
+            return;
+        }
+
+        if (file.size > 5 * 1024 * 1024) {
+            toast.error("Ukuran file maksimal 5MB.");
+            return;
+        }
+
+        setUploadingProof(refundId);
+
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const response = await fetch(`/api/admin/refunds/${refundId}/proof`, {
+                method: "POST",
+                body: formData,
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || "Gagal upload bukti refund.");
+            }
+
+            toast.success("Bukti refund berhasil diupload.");
+            loadRefunds(pagination.page);
+        } catch (error) {
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal upload bukti refund."
+            );
+        } finally {
+            setUploadingProof(null);
+        }
+    }
+
+    function toggleBankReveal(refundId: number) {
+        setRevealedBank((prev) => {
+            const next = new Set(prev);
+            if (next.has(refundId)) next.delete(refundId);
+            else next.add(refundId);
+            return next;
+        });
     }
 
     return (
@@ -318,7 +384,8 @@ export default function AdminRefundsPage() {
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
                                     {refunds.map((refund) => (
-                                        <tr key={refund.id} className="hover:bg-gray-50">
+                                        <Fragment key={refund.id}>
+                                        <tr className="hover:bg-gray-50">
                                             <td className="px-6 py-4">
                                                 <Link
                                                     href={`/admin/orders/${refund.orderId}`}
@@ -394,21 +461,9 @@ export default function AdminRefundsPage() {
                                                     </div>
                                                 )}
                                                 {refund.status === "PROCESSING" && (
-                                                    <div className="flex items-center justify-center gap-2">
-                                                        <button
-                                                            onClick={() =>
-                                                                handleRefundAction(
-                                                                    refund.id,
-                                                                    refund.orderId,
-                                                                    "complete"
-                                                                )
-                                                            }
-                                                            disabled={processingAction === refund.id}
-                                                            className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50"
-                                                        >
-                                                            Selesai
-                                                        </button>
-                                                    </div>
+                                                    <span className="text-xs text-blue-600">
+                                                        Diproses Admin
+                                                    </span>
                                                 )}
                                                 {refund.status === "COMPLETED" && (
                                                     <span className="text-xs text-gray-400">
@@ -422,6 +477,125 @@ export default function AdminRefundsPage() {
                                                 )}
                                             </td>
                                         </tr>
+
+                                        {/* BANK + BUKTI REFUND DETAIL */}
+                                        <tr className="bg-amber-50/40">
+                                            <td colSpan={7} className="px-6 py-4">
+                                                <div className="flex flex-wrap items-start justify-between gap-4">
+                                                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+                                                        <div>
+                                                            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                                                                Bank Tujuan
+                                                            </p>
+                                                            <p className="text-sm font-medium text-gray-800">
+                                                                {refund.bank?.bankName || "-"}
+                                                            </p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                                                                Atas Nama
+                                                            </p>
+                                                            <p className="text-sm font-medium text-gray-800">
+                                                                {refund.bank?.bankAccountName || "-"}
+                                                            </p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                                                                No. Rekening
+                                                            </p>
+                                                            <p className="flex items-center gap-2 text-sm font-mono font-medium text-gray-800">
+                                                                {revealedBank.has(refund.id)
+                                                                    ? refund.bank?.bankAccountNumber
+                                                                    : maskAccount(refund.bank?.bankAccountNumber)}
+                                                                {refund.bank?.bankAccountNumber && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() =>
+                                                                            toggleBankReveal(refund.id)
+                                                                        }
+                                                                        className="rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-rose-600 ring-1 ring-rose-200 hover:bg-rose-50"
+                                                                    >
+                                                                        {revealedBank.has(refund.id)
+                                                                            ? "Sembunyikan"
+                                                                            : "Lihat"}
+                                                                    </button>
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                        <div>
+                                                            <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                                                                Bukti Refund
+                                                            </p>
+                                                            <div className="flex items-center gap-2">
+                                                                {(refund.status === "PENDING" ||
+                                                                    refund.status === "PROCESSING") && (
+                                                                    <label className="cursor-pointer rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-indigo-600 ring-1 ring-indigo-200 hover:bg-indigo-50">
+                                                                        {uploadingProof === refund.id
+                                                                            ? "Mengupload..."
+                                                                            : refund.proofFilePath
+                                                                              ? "Ganti Bukti"
+                                                                              : "Upload Bukti"}
+                                                                        <input
+                                                                            type="file"
+                                                                            accept=".jpg,.jpeg,.png,.webp,.pdf"
+                                                                            className="hidden"
+                                                                            onChange={(e) =>
+                                                                                handleProofUpload(
+                                                                                    refund.id,
+                                                                                    e.target.files?.[0]
+                                                                                )
+                                                                            }
+                                                                            disabled={
+                                                                                uploadingProof === refund.id
+                                                                            }
+                                                                        />
+                                                                    </label>
+                                                                )}
+                                                                {refund.proofFilePath && (
+                                                                    <a
+                                                                        href={`/api/admin/refunds/${refund.id}/proof`}
+                                                                        target="_blank"
+                                                                        rel="noreferrer"
+                                                                        className="rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-green-700 ring-1 ring-green-200 hover:bg-green-50"
+                                                                    >
+                                                                        Lihat Bukti
+                                                                    </a>
+                                                                )}
+                                                                {!refund.proofFilePath &&
+                                                                    refund.status !== "PENDING" &&
+                                                                    refund.status !== "PROCESSING" && (
+                                                                        <span className="text-xs text-gray-400">
+                                                                            -
+                                                                        </span>
+                                                                    )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    {refund.status === "PROCESSING" && (
+                                                        <button
+                                                            onClick={() =>
+                                                                handleRefundAction(
+                                                                    refund.id,
+                                                                    refund.orderId,
+                                                                    "complete"
+                                                                )
+                                                            }
+                                                            disabled={processingAction === refund.id}
+                                                            className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+                                                        >
+                                                            Konfirmasi Refund Selesai
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <p className="mt-2 text-[11px] text-gray-400">
+                                                    Catatan: upload bukti TIDAK mengubah status refund.
+                                                    Refund hanya selesai setelah admin menekan{" "}
+                                                    <strong>Konfirmasi Refund Selesai</strong>.
+                                                </p>
+                                            </td>
+                                        </tr>
+                                        </Fragment>
                                     ))}
                                 </tbody>
                             </table>

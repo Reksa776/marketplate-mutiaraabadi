@@ -20,6 +20,14 @@ const nextConfig: NextConfig = {
             ...(isDevelopment ? ["'unsafe-eval'"] : []),
         ];
 
+        // TikTok Pixel mengirim event (fetch/beacon) ke
+        // analytics.tiktok.com, jadi origin itu WAJIB ada di
+        // connect-src. Tidak ada wildcard — hanya origin TikTok.
+        const connectSrcDirectives = [
+            "'self'",
+            "https://analytics.tiktok.com",
+        ];
+
         return [
             {
                 source: "/(.*)",
@@ -58,9 +66,10 @@ const nextConfig: NextConfig = {
                         // NODE_ENV=development (React dev mode requirement).
                         // Production CSP NEVER contains 'unsafe-eval'.
                         //
-                        // NOTE: script-src uses 'unsafe-inline' because TikTok Pixel
-                        // injects a bootstrap script via innerHTML. Refactoring to
-                        // nonce-based CSP is recommended for stronger XSS protection.
+                        // NOTE: script-src uses 'unsafe-inline' because the TikTok
+                        // Pixel base code (and Next.js' own inline bootstrap) is
+                        // inline. Refactoring to nonce-based CSP is recommended for
+                        // stronger XSS protection.
                         //
                         // All domains below are verified in the codebase:
                         //   - analytics.tiktok.com → TikTok Pixel (components/analytics/TikTokPixel.tsx)
@@ -77,7 +86,7 @@ const nextConfig: NextConfig = {
                             "style-src 'self' 'unsafe-inline'",
                             "img-src 'self' https://down-id.img.susercontent.com https://unpkg.com https://*.tile.openstreetmap.org https://my.ipaymu.com https://sandbox.ipaymu.com data:",
                             "font-src 'self'",
-                            "connect-src 'self'",
+                            `connect-src ${connectSrcDirectives.join(" ")}`,
                             "frame-src 'none'",
                             "object-src 'none'",
                             "base-uri 'self'",

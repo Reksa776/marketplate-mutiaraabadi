@@ -18,7 +18,6 @@ const PUBLIC_API_PREFIXES = [
     "/api/payment/ipaymu/notification",
     "/api/payment/midtrans/notification",
     "/api/payment/payout/webhook",
-    "/api/analytics/",
     "/api/bulk-discounts",
     "/api/campaigns/",
     "/api/promotions/",

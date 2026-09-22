@@ -719,7 +719,8 @@ export async function POST(request: Request) {
  *
  * Generates clickable tracking URLs based
  * on courier name. Reuses same pattern as
- * admin order PATCH route.
+ * admin order PATCH route and mirrors
+ * lib/tracking-url.ts (used by resi-scan).
  */
 
 function createTrackingUrl(

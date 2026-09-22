@@ -127,8 +127,36 @@ describe("M4 — CSP Configuration Audit", () => {
         expect(config).toContain("font-src 'self'");
     });
 
-    test("connect-src is restricted to 'self'", () => {
-        expect(config).toContain("connect-src 'self'");
+    test("connect-src is restricted to 'self' + the TikTok pixel origin", async () => {
+        // CSP is now dynamically generated — validate runtime output.
+        const nextConfig = (await import("../../next.config")).default;
+        const headersFn = nextConfig.headers as () => Promise<unknown>;
+        const result = await headersFn();
+        const headersArray = result as Array<{
+            source: string;
+            headers: Array<{ key: string; value: string }>;
+        }>;
+        let csp = "";
+        for (const entry of headersArray) {
+            for (const h of entry.headers) {
+                if (h.key === "Content-Security-Policy") {
+                    csp = h.value;
+                }
+            }
+        }
+
+        const connectSrcMatch = csp.match(/connect-src\s+([^;]+)/);
+        expect(connectSrcMatch).not.toBeNull();
+
+        if (connectSrcMatch) {
+            expect(connectSrcMatch[1]).toContain("'self'");
+            // TikTok pixel beacon/fetch target
+            expect(connectSrcMatch[1]).toContain(
+                "https://analytics.tiktok.com"
+            );
+            // Still no wildcard connect sources
+            expect(connectSrcMatch[1]).not.toContain("*");
+        }
     });
 
     test("frame-src is set to 'none'", () => {
@@ -192,16 +220,32 @@ describe("M4 — CSP Configuration Audit", () => {
  * ========================================== */
 
 describe("M4 — External Origin Verification", () => {
-    test("TikTok Pixel script origin matches CSP allowance", async () => {
-        const tiktokCode = readFileSync(
-            resolve(
-                process.cwd(),
-                "components/analytics/TikTokPixel.tsx"
-            ),
-            "utf-8"
-        );
-        // TikTok Pixel loads from analytics.tiktok.com
-        expect(tiktokCode).toContain("analytics.tiktok.com");
+    test("TikTok Pixel origin matches CSP allowance", async () => {
+        // The pixel base code is now ADMIN-configurable
+        // (Admin Settings → TikTok Pixel), so there is no in-repo loader
+        // URL to read. The CSP allowance is the contract that keeps that
+        // admin code working on the storefront.
+        const nextConfig = (await import("../../next.config")).default;
+        const headersFn = nextConfig.headers as () => Promise<unknown>;
+        const result = await headersFn();
+        const headersArray = result as Array<{
+            source: string;
+            headers: Array<{ key: string; value: string }>;
+        }>;
+        let csp = "";
+        for (const entry of headersArray) {
+            for (const h of entry.headers) {
+                if (h.key === "Content-Security-Policy") {
+                    csp = h.value;
+                }
+            }
+        }
+
+        expect(csp).toContain("https://analytics.tiktok.com");
+
+        // Still no wildcard script sources
+        const scriptSrc = csp.match(/script-src\s+([^;]+)/);
+        expect(scriptSrc?.[1]).not.toContain("*");
     });
 
     test("Leaflet tile origin matches CSP allowance", async () => {

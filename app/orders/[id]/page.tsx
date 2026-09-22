@@ -553,6 +553,38 @@ export default function OrderDetailPage() {
                                         return;
                                     }
 
+                                    // Collect destination bank info (required —
+                                    // admin needs it to execute the transfer).
+                                    const bankName =
+                                        await dialog.prompt({
+                                            title: "Nama Bank Tujuan",
+                                            message: "Masukkan nama bank tujuan refund (contoh: BCA):",
+                                            placeholder: "Nama bank",
+                                            required: true,
+                                        });
+
+                                    if (!bankName) return;
+
+                                    const bankAccountName =
+                                        await dialog.prompt({
+                                            title: "Nama Pemilik Rekening",
+                                            message: "Masukkan nama pemilik rekening (atas nama):",
+                                            placeholder: "Atas nama",
+                                            required: true,
+                                        });
+
+                                    if (!bankAccountName) return;
+
+                                    const bankAccountNumber =
+                                        await dialog.prompt({
+                                            title: "Nomor Rekening",
+                                            message: "Masukkan nomor rekening tujuan:",
+                                            placeholder: "Nomor rekening",
+                                            required: true,
+                                        });
+
+                                    if (!bankAccountNumber) return;
+
                                     try {
                                         const response = await fetch(
                                             `/api/orders/${order.id}/refund`,
@@ -562,7 +594,11 @@ export default function OrderDetailPage() {
                                                     "Content-Type":
                                                         "application/json",
                                                 },
-                                                body: JSON.stringify({}),
+                                                body: JSON.stringify({
+                                                    bankName,
+                                                    bankAccountName,
+                                                    bankAccountNumber,
+                                                }),
                                             }
                                         );
 

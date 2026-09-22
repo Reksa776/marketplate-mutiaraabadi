@@ -39,13 +39,17 @@ export type AuditAction =
     | "ORDER_STATUS_CHANGED"
     | "ORDER_CANCELLED"
     | "ORDER_REFUNDED"
+    | "ORDER_TRACKING_ASSIGNED"
     // Refund
     | "REFUND_REQUESTED"
     | "REFUND_APPROVED"
     | "REFUND_COMPLETED"
     | "REFUND_FAILED"
+    | "REFUND_PROOF_UPLOADED"
     // Repayment
     | "REPAYMENT_INITIATED"
+    // Settings
+    | "TIKTOK_PIXEL_UPDATED"
     // System
     | "AFFILIATE_COMMISSION_AUTO_CANCELLED";
 
@@ -55,6 +59,7 @@ export type EntityType =
     | "AffiliatePayout"
     | "Order"
     | "Refund"
+    | "StoreSetting"
     | "System";
 
 interface AuditLogParams {
@@ -104,17 +109,18 @@ function sanitizeMetadata(
 ): Record<string, any> {
     const sanitized = { ...meta };
 
-    // Mask bank account numbers
-    if (
-        sanitized.bankAccountNumber &&
-        typeof sanitized.bankAccountNumber ===
-            "string"
-    ) {
-        const num =
-            sanitized.bankAccountNumber;
-        if (num.length > 4) {
-            sanitized.bankAccountNumber =
-                "****" + num.slice(-4);
+    // Mask bank account numbers (any key ending in
+    // AccountNumber or accountNumber)
+    for (const key of Object.keys(sanitized)) {
+        if (/accountnumber$/i.test(key)) {
+            const value = sanitized[key];
+            if (
+                typeof value === "string" &&
+                value.length > 4
+            ) {
+                sanitized[key] =
+                    "****" + value.slice(-4);
+            }
         }
     }
 

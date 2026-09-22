@@ -1,57 +1,26 @@
-"use client";
-
-import { useEffect, useState } from "react";
 import TikTokPixel from "./TikTokPixel";
 
-export default function AnalyticsProvider() {
-    const [tiktokPixelId, setTiktokPixelId] =
-        useState<string | null>(null);
+import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
 
-    useEffect(() => {
-        let cancelled = false;
-
-        async function loadAnalytics() {
-            try {
-                const response = await fetch(
-                    "/api/analytics/settings",
-                    {
-                        cache: "no-store",
-                    }
-                );
-
-                if (!response.ok) {
-                    return;
-                }
-
-                const data =
-                    await response.json();
-
-                if (cancelled) {
-                    return;
-                }
-
-                setTiktokPixelId(
-                    data?.data?.tiktokPixelId ??
-                    null
-                );
-            } catch (error) {
-                console.error(
-                    "LOAD ANALYTICS SETTINGS ERROR:",
-                    error
-                );
-            }
-        }
-
-        loadAnalytics();
-
-        return () => {
-            cancelled = true;
-        };
-    }, []);
+/**
+ * Server component: resolusi konfigurasi TikTok Pixel
+ * dari database.
+ *
+ * Browser tidak pernah memanggil API pengaturan untuk
+ * mendapatkan Pixel ID / Pixel Code — yang dikirim ke
+ * client hanya konfigurasi yang diperlukan untuk
+ * rendering storefront.
+ */
+export default async function AnalyticsProvider() {
+    const tiktokPixel =
+        await getTikTokPixelConfig();
 
     return (
         <TikTokPixel
-            pixelId={tiktokPixelId}
+            enabled={tiktokPixel.enabled}
+            pixelId={tiktokPixel.pixelId}
+            pixelName={tiktokPixel.pixelName}
+            script={tiktokPixel.script}
         />
     );
 }

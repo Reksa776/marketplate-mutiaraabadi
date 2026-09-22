@@ -33,6 +33,7 @@ import {
     FiStar,
     FiTrendingUp,
     FiClock,
+    FiSearch,
     FiShoppingBag as FiCartReminder,
     FiArrowRight,
     FiHeart,
@@ -74,6 +75,11 @@ const menuItems: NavItem[] = [
         label: "Orderan",
         href: "/admin/orders",
         icon: FiShoppingBag,
+    },
+    {
+        label: "Scan Resi",
+        href: "/admin/scan-resi",
+        icon: FiSearch,
     },
     {
         label: "Refund",

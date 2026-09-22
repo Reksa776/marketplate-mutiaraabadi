@@ -322,7 +322,10 @@ model StoreSetting {
   address   String  @db.Text
 
   // TikTok Pixel
-  tiktokPixelId String?
+  tiktokPixelEnabled Boolean @default(false)
+  tiktokPixelId      String?
+  tiktokPixelName    String?
+  tiktokPixelCode    String? @db.Text
 
   province                String?
   city                    String?
@@ -1202,16 +1205,20 @@ enum SpinWheelSpinStatus {
 // ==========================================
 
 model Refund {
-  id          Int          @id @default(autoincrement())
-  orderId     Int          @unique
-  amount      Decimal      @db.Decimal(12, 2)
-  reason      String?      @db.Text
-  status      RefundStatus @default(PENDING)
-  requestedBy String       // userId or "ADMIN"
-  processedBy String?      // admin userId who approved/processed
-  providerRef String?      // provider refund transaction reference
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id                Int          @id @default(autoincrement())
+  orderId           Int          @unique
+  amount            Decimal      @db.Decimal(12, 2)
+  reason            String?      @db.Text
+  status            RefundStatus @default(PENDING)
+  requestedBy       String       // userId or "ADMIN"
+  processedBy       String?      // admin userId who approved/processed
+  providerRef       String?      // provider refund transaction reference
+  bankName          String?      // customer destination bank
+  bankAccountName   String?      // customer account holder name (atas nama)
+  bankAccountNumber String?      // customer account number (masked in UI/audit)
+  proofFilePath     String?      // uploaded refund proof (local storage path)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 

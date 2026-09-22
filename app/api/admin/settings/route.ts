@@ -1,15 +1,44 @@
 import { NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { rajaOngkirFetch } from "@/lib/rajaongkir";
+import { normalizeTikTokPixelId } from "@/lib/analytics/tiktok";
+import {
+    MAX_TIKTOK_PIXEL_CODE_LENGTH,
+    analyzeTikTokPixelCode,
+    findTikTokPixelIdMismatch,
+    normalizeTikTokPixelCode,
+    normalizeTikTokPixelName,
+} from "@/lib/analytics/tiktok-pixel-code";
+import {
+    buildTikTokPixelAuditMetadata,
+    hasTikTokPixelChanges,
+} from "@/lib/analytics/tiktok-pixel-audit";
+import { createAuditLog } from "@/lib/admin/audit-log";
 
-async function isAdmin() {
+/**
+ * Session ADMIN yang valid, atau null.
+ */
+async function getAdminUserId(): Promise<string | null> {
     const session = await auth();
 
-    return (
-        !!session?.user &&
-        (session.user as any).role === "ADMIN"
-    );
+    if (!session?.user) {
+        return null;
+    }
+
+    if (
+        (session.user as { role?: string })
+            .role !== "ADMIN"
+    ) {
+        return null;
+    }
+
+    return session.user.id ?? null;
+}
+
+async function isAdmin() {
+    return (await getAdminUserId()) !== null;
 }
 function nullableNumber(
     value: unknown
@@ -132,7 +161,17 @@ export async function PUT(
     request: Request
 ) {
     try {
-        if (!(await isAdmin())) {
+        /*
+         * HANYA ADMIN yang boleh mengubah pengaturan
+         * (termasuk melihat & menyimpan Pixel Code).
+         *
+         * Otorisasi server-side: menyembunyikan UI
+         * saja tidak cukup.
+         */
+        const adminId =
+            await getAdminUserId();
+
+        if (!adminId) {
             return NextResponse.json(
                 {
                     success: false,
@@ -166,6 +205,144 @@ export async function PUT(
                     body.subdistrictId
                 )
                 : null;
+
+        /**
+         * ============================
+         * TIKTOK PIXEL
+         * ============================
+         *
+         * Pixel ID: hanya nilai yang sudah dinormalisasi
+         * (uppercase, alfanumerik) yang masuk database.
+         *
+         * Pixel Code: kode MILIK ADMIN, disimpan apa
+         * adanya (multiline dipertahankan) karena memang
+         * berisi JavaScript. Tidak ada sanitasi yang
+         * menghapus <script> — keamanannya berasal dari
+         * akses ADMIN-only + CSP + eksekusi hanya di
+         * storefront.
+         *
+         * Validasi client-side tidak pernah dipercaya.
+         */
+        const rawTikTokPixelId =
+            typeof body.tiktokPixelId ===
+            "string"
+                ? body.tiktokPixelId.trim()
+                : "";
+
+        const tiktokPixelId =
+            normalizeTikTokPixelId(
+                rawTikTokPixelId
+            );
+
+        if (
+            rawTikTokPixelId &&
+            !tiktokPixelId
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "TikTok Pixel ID tidak valid.",
+                },
+                { status: 400 }
+            );
+        }
+
+        const tiktokPixelName =
+            normalizeTikTokPixelName(
+                body.tiktokPixelName
+            );
+
+        const rawTikTokPixelCode =
+            typeof body.tiktokPixelCode ===
+            "string"
+                ? body.tiktokPixelCode.trim()
+                : "";
+
+        if (
+            rawTikTokPixelCode.length >
+            MAX_TIKTOK_PIXEL_CODE_LENGTH
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: `TikTok Pixel Code maksimal ${MAX_TIKTOK_PIXEL_CODE_LENGTH} karakter.`,
+                },
+                { status: 400 }
+            );
+        }
+
+        const tiktokPixelCode =
+            normalizeTikTokPixelCode(
+                rawTikTokPixelCode
+            );
+
+        const pixelCodeAnalysis =
+            analyzeTikTokPixelCode(
+                tiktokPixelCode
+            );
+
+        /*
+         * Kode yang hanya berisi <script src="..."> tidak
+         * punya JavaScript inline untuk dijalankan lewat
+         * next/script — tolak dengan pesan jelas daripada
+         * diam-diam tidak jalan.
+         */
+        if (
+            tiktokPixelCode &&
+            pixelCodeAnalysis.isEmpty
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "TikTok Pixel Code tidak berisi JavaScript inline. Tempel kode dari TikTok Events Manager (bukan hanya tag <script src=\"...\">).",
+                },
+                { status: 400 }
+            );
+        }
+
+        const tiktokPixelEnabled =
+            body.tiktokPixelEnabled === true;
+
+        if (
+            tiktokPixelEnabled &&
+            !tiktokPixelCode
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Isi Kode Pixel TikTok sebelum mengaktifkan pixel.",
+                },
+                { status: 400 }
+            );
+        }
+
+        /*
+         * ID di dalam kode yang berbeda dengan ID di
+         * settings TIDAK di-rewrite otomatis — hanya
+         * dilaporkan sebagai warning ke admin.
+         */
+        const pixelIdMismatch =
+            findTikTokPixelIdMismatch(
+                tiktokPixelId,
+                tiktokPixelCode
+            );
+
+        /*
+         * Snapshot nilai lama untuk audit log.
+         */
+        const previousSetting =
+            await prisma.storeSetting.findUnique({
+                where: { id: 1 },
+                select: {
+                    tiktokPixelEnabled: true,
+                    tiktokPixelId: true,
+                    tiktokPixelName: true,
+                    tiktokPixelCode: true,
+                },
+            });
 
         /**
          * Jangan percaya destination ID
@@ -213,9 +390,13 @@ export async function PUT(
                     address:
                         body.address?.trim() ||
                         "",
-                    tiktokPixelId:
-                        body.tiktokPixelId?.trim() ||
-                        null,
+                    tiktokPixelEnabled,
+
+                    tiktokPixelId,
+
+                    tiktokPixelName,
+
+                    tiktokPixelCode,
 
                     provinceId,
 
@@ -291,9 +472,13 @@ export async function PUT(
                     address:
                         body.address?.trim() ||
                         "",
-                    tiktokPixelId:
-                        body.tiktokPixelId?.trim() ||
-                        null,
+                    tiktokPixelEnabled,
+
+                    tiktokPixelId,
+
+                    tiktokPixelName,
+
+                    tiktokPixelCode,
 
                     provinceId,
 
@@ -350,11 +535,90 @@ export async function PUT(
                 },
             });
 
+        /*
+         * ============================
+         * AUDIT LOG
+         * ============================
+         *
+         * Hanya dicatat kalau konfigurasi TikTok Pixel
+         * berubah.
+         *
+         * RAW PIXEL CODE TIDAK PERNAH masuk log — yang
+         * disimpan hanya metadata + hash.
+         */
+        const previousSnapshot =
+            previousSetting
+                ? {
+                    enabled:
+                        previousSetting.tiktokPixelEnabled,
+                    pixelId:
+                        previousSetting.tiktokPixelId,
+                    pixelName:
+                        previousSetting.tiktokPixelName,
+                    code:
+                        previousSetting.tiktokPixelCode,
+                }
+                : null;
+
+        const nextSnapshot = {
+            enabled: tiktokPixelEnabled,
+            pixelId: tiktokPixelId,
+            pixelName: tiktokPixelName,
+            code: tiktokPixelCode,
+        };
+
+        if (
+            hasTikTokPixelChanges(
+                previousSnapshot,
+                nextSnapshot
+            )
+        ) {
+            await createAuditLog({
+                adminId,
+                action: "TIKTOK_PIXEL_UPDATED",
+                entityType: "StoreSetting",
+                entityId: 1,
+                description:
+                    "Pengaturan TikTok Pixel diperbarui.",
+                metadata:
+                    buildTikTokPixelAuditMetadata(
+                        previousSnapshot,
+                        nextSnapshot
+                    ),
+            });
+        }
+
+        /*
+         * StoreSetting dipakai oleh root layout (storefront),
+         * termasuk halaman yang di-prerender saat build.
+         *
+         * Revalidate layout supaya perubahan TikTok Pixel
+         * (enable/disable + Pixel Code) langsung berlaku di
+         * seluruh halaman tanpa deploy ulang.
+         */
+        revalidatePath("/", "layout");
+
         return NextResponse.json({
             success: true,
             message:
                 "Pengaturan toko berhasil disimpan.",
             data: setting,
+
+            /*
+             * Warning untuk admin (bukan error):
+             * kode tidak diubah otomatis.
+             */
+            warnings: {
+                pixelIdMismatch,
+                pixelCodeHasLoadCall:
+                    pixelCodeAnalysis.hasLoadCall,
+                pixelCodeHasPageCall:
+                    pixelCodeAnalysis.hasPageCall,
+                pixelCodeHasIdentifyCall:
+                    pixelCodeAnalysis.hasIdentifyCall,
+                pixelCodePixelIds:
+                    pixelCodeAnalysis.pixelIds,
+            },
         });
     } catch (error) {
         console.error(

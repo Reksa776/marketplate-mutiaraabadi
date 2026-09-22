@@ -87,7 +87,12 @@ export type CreateRefundResult =
 export async function createRefundRequest(
     userId: string,
     orderId: number,
-    reason?: string
+    reason?: string,
+    bank?: {
+        bankName?: string | null;
+        bankAccountName?: string | null;
+        bankAccountNumber?: string | null;
+    }
 ): Promise<CreateRefundResult> {
     return prisma.$transaction(
         async (tx) => {
@@ -151,6 +156,11 @@ export async function createRefundRequest(
                     reason: reason || null,
                     status: "PENDING",
                     requestedBy: userId,
+                    bankName: bank?.bankName?.trim() || null,
+                    bankAccountName:
+                        bank?.bankAccountName?.trim() || null,
+                    bankAccountNumber:
+                        bank?.bankAccountNumber?.trim() || null,
                 },
             });
 

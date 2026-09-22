@@ -5,6 +5,13 @@ import Link from "next/link";
 import { FiArrowLeft, FiSave } from "react-icons/fi";
 import toast from "react-hot-toast";
 
+import {
+    MAX_TIKTOK_PIXEL_CODE_LENGTH,
+    analyzeTikTokPixelCode,
+    findTikTokPixelIdMismatch,
+} from "@/lib/analytics/tiktok-pixel-code";
+import { normalizeTikTokPixelId } from "@/lib/analytics/tiktok";
+
 type Region = {
     id: number;
     name: string;
@@ -20,7 +27,10 @@ type StoreForm = {
     logo: string;
     address: string;
 
+    tiktokPixelEnabled: boolean;
     tiktokPixelId: string;
+    tiktokPixelName: string;
+    tiktokPixelCode: string;
 
     provinceId: number | null;
     province: string;
@@ -50,7 +60,10 @@ const initialForm: StoreForm = {
     logo: "",
     address: "",
 
+    tiktokPixelEnabled: false,
     tiktokPixelId: "",
+    tiktokPixelName: "",
+    tiktokPixelCode: "",
 
     provinceId: null,
     province: "",
@@ -376,8 +389,24 @@ export default function AdminSettingsForm() {
 
                 address:
                     data.data.address ?? "",
+
+                tiktokPixelEnabled:
+                    data.data
+                        .tiktokPixelEnabled ===
+                    true,
+
                 tiktokPixelId:
                     data.data.tiktokPixelId ?? "",
+
+                tiktokPixelName:
+                    data.data.tiktokPixelName ?? "",
+
+                /*
+                 * Kode ditampilkan apa adanya —
+                 * tidak ada formatting otomatis.
+                 */
+                tiktokPixelCode:
+                    data.data.tiktokPixelCode ?? "",
 
                 provinceId:
                     data.data.provinceId ?? null,
@@ -794,6 +823,45 @@ export default function AdminSettingsForm() {
             return;
         }
 
+        /*
+         * Validasi ringan di client; server tetap
+         * memvalidasi ulang Pixel ID dan Pixel Code.
+         */
+        if (form.tiktokPixelId.trim()) {
+            if (
+                !normalizeTikTokPixelId(
+                    form.tiktokPixelId
+                )
+            ) {
+                toast.error(
+                    "TikTok Pixel ID tidak valid."
+                );
+                return;
+            }
+        }
+
+        if (
+            form.tiktokPixelEnabled &&
+            !form.tiktokPixelCode.trim()
+        ) {
+            toast.error(
+                "Isi Kode Pixel TikTok sebelum mengaktifkan TikTok Pixel."
+            );
+            return;
+        }
+
+        if (
+            form.tiktokPixelEnabled &&
+            analyzeTikTokPixelCode(
+                form.tiktokPixelCode
+            ).isEmpty
+        ) {
+            toast.error(
+                "Kode Pixel TikTok tidak berisi JavaScript inline."
+            );
+            return;
+        }
+
         try {
             setSaving(true);
 
@@ -870,6 +938,21 @@ export default function AdminSettingsForm() {
             </main>
         );
     }
+
+    /*
+     * Analisa kode untuk warning di UI.
+     * Hanya membaca metadata — kode tidak diubah.
+     */
+    const pixelCodeAnalysis =
+        analyzeTikTokPixelCode(
+            form.tiktokPixelCode
+        );
+
+    const pixelIdMismatch =
+        findTikTokPixelIdMismatch(
+            form.tiktokPixelId,
+            form.tiktokPixelCode
+        );
 
     return (
         <main className="min-h-screen bg-gray-50 px-4 py-8 sm:px-6">
@@ -981,46 +1064,234 @@ export default function AdminSettingsForm() {
                     </section>
 
                     {/* =====================
-    TRACKING & PIXEL
-====================== */}
+                        TIKTOK PIXEL
+                    ====================== */}
 
                     <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
                         <h2 className="text-lg font-bold text-gray-900">
-                            Tracking & Pixel
+                            TikTok Pixel
                         </h2>
 
                         <p className="mt-1 text-sm text-gray-500">
-                            Masukkan TikTok Pixel ID untuk melacak
-                            aktivitas pengunjung dan pembelian dari
-                            TikTok Ads.
+                            Digunakan untuk mengukur aktivitas
+                            website dan event TikTok Pixel.
                         </p>
+
+                        <label className="mt-5 flex items-start gap-3 rounded-xl border border-gray-200 p-4">
+                            <input
+                                type="checkbox"
+                                checked={
+                                    form.tiktokPixelEnabled
+                                }
+                                onChange={(e) =>
+                                    updateField(
+                                        "tiktokPixelEnabled",
+                                        e.target.checked
+                                    )
+                                }
+                                className="mt-0.5 h-4 w-4 accent-rose-600"
+                            />
+
+                            <span>
+                                <span className="block text-sm font-medium text-gray-700">
+                                    Aktifkan TikTok Pixel
+                                </span>
+
+                                <span className="mt-1 block text-xs text-gray-500">
+                                    Pixel hanya dimuat di
+                                    halaman toko (bukan
+                                    dashboard admin).
+                                </span>
+                            </span>
+                        </label>
+
+                        {/* PIXEL ID + NAME */}
+
+                        <div className="mt-5 grid gap-5 md:grid-cols-2">
+                            <div>
+                                <label className="text-sm font-medium text-gray-700">
+                                    TikTok Pixel ID
+                                </label>
+
+                                <input
+                                    type="text"
+                                    value={
+                                        form.tiktokPixelId
+                                    }
+                                    onChange={(e) =>
+                                        updateField(
+                                            "tiktokPixelId",
+                                            e.target.value
+                                                .trim()
+                                                .toUpperCase()
+                                        )
+                                    }
+                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
+                                    placeholder="Contoh: C1A2B3C4D5E6F7G8H9J0"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                />
+
+                                <p className="mt-2 text-xs text-gray-500">
+                                    Contoh Pixel ID:{" "}
+                                    <span className="font-mono">
+                                        C1A2B3C4D5E6F7G8H9J0
+                                    </span>
+                                </p>
+                            </div>
+
+                            <div>
+                                <label className="text-sm font-medium text-gray-700">
+                                    TikTok Pixel Name
+                                </label>
+
+                                <input
+                                    type="text"
+                                    value={
+                                        form.tiktokPixelName
+                                    }
+                                    onChange={(e) =>
+                                        updateField(
+                                            "tiktokPixelName",
+                                            e.target.value
+                                        )
+                                    }
+                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
+                                    placeholder="Contoh: Web Tiktok"
+                                    autoComplete="off"
+                                />
+
+                                <p className="mt-2 text-xs text-gray-500">
+                                    Label pixel sesuai nama di TikTok
+                                    Events Manager.
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* PIXEL CODE */}
 
                         <div className="mt-5">
                             <label className="text-sm font-medium text-gray-700">
-                                TikTok Pixel ID
+                                Kode Pixel TikTok
                             </label>
 
-                            <input
-                                type="text"
-                                value={form.tiktokPixelId}
+                            <textarea
+                                value={
+                                    form.tiktokPixelCode
+                                }
                                 onChange={(e) =>
                                     updateField(
-                                        "tiktokPixelId",
-                                        e.target.value.trim()
+                                        "tiktokPixelCode",
+                                        e.target.value
                                     )
                                 }
-                                className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
-                                placeholder="Contoh: DA2N6IBC77U575JEFETG"
+                                rows={12}
+                                spellCheck={false}
+                                className="mt-2 w-full resize-y rounded-xl border border-gray-300 px-4 py-3 font-mono text-xs leading-relaxed outline-none transition focus:border-rose-500"
+                                placeholder={'<script>\n!function (w, d, t) { ... }(window, document, \'ttq\');\n</script>'}
                             />
 
-                            <p className="mt-2 text-xs text-gray-500">
-                                Contoh Pixel ID:
-                                {" "}
+                            <p className="mt-2 text-xs font-medium text-amber-700">
+                                Kode ini akan dijalankan pada
+                                website storefront. Masukkan
+                                hanya kode tracking yang
+                                dipercaya.
+                            </p>
+
+                            <p className="mt-1 text-xs text-gray-500">
+                                Tempel kode apa adanya dari
+                                TikTok Events Manager. Tag{" "}
                                 <span className="font-mono">
-                                    DA2N6IBC77U575JEFETG
-                                </span>
+                                    {"<script>"}
+                                </span>{" "}
+                                dan{" "}
+                                <span className="font-mono">
+                                    {"</script>"}
+                                </span>{" "}
+                                diambil otomatis, isi kode tidak
+                                diubah. Maksimal{" "}
+                                {MAX_TIKTOK_PIXEL_CODE_LENGTH}{" "}
+                                karakter.
                             </p>
                         </div>
+
+                        {/* WARNINGS */}
+
+                        {pixelIdMismatch && (
+                            <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                                Pixel ID berbeda dengan ID yang
+                                ditemukan di Pixel Code:{" "}
+                                <span className="font-mono">
+                                    {pixelIdMismatch}
+                                </span>
+                                {" "}
+                                vs{" "}
+                                <span className="font-mono">
+                                    {form.tiktokPixelId ||
+                                        "-"}
+                                </span>
+                                . Kode tidak diubah otomatis —
+                                periksa dan sesuaikan sendiri.
+                            </p>
+                        )}
+
+                        {form.tiktokPixelCode.trim() &&
+                            pixelCodeAnalysis.isEmpty && (
+                                <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+                                    Kode tidak berisi JavaScript
+                                    inline. Tempel kode lengkap dari
+                                    TikTok Events Manager.
+                                </p>
+                            )}
+
+                        {form.tiktokPixelCode.trim() &&
+                            !pixelCodeAnalysis.isEmpty && (
+                                <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600">
+                                    <p className="font-medium text-gray-700">
+                                        Terdeteksi pada kode:
+                                    </p>
+
+                                    <ul className="mt-1 list-inside list-disc space-y-0.5">
+                                        <li>
+                                            ttq.load:{" "}
+                                            {pixelCodeAnalysis.hasLoadCall
+                                                ? "ya"
+                                                : "tidak"}
+                                            {pixelCodeAnalysis
+                                                .pixelIds
+                                                .length > 0 &&
+                                                ` (${pixelCodeAnalysis.pixelIds.join(
+                                                    ", "
+                                                )})`}
+                                        </li>
+
+                                        <li>
+                                            ttq.page:{" "}
+                                            {pixelCodeAnalysis.hasPageCall
+                                                ? "ya"
+                                                : "tidak"}
+                                        </li>
+                                    </ul>
+
+                                    {!pixelCodeAnalysis.hasPageCall && (
+                                        <p className="mt-1 text-amber-700">
+                                            Kode tidak memanggil{" "}
+                                            ttq.page() — PageView
+                                            tidak akan terkirim.
+                                        </p>
+                                    )}
+
+                                    {pixelCodeAnalysis.hasIdentifyCall && (
+                                        <p className="mt-1 text-amber-700">
+                                            Kode memanggil{" "}
+                                            ttq.identify() (Advanced
+                                            Matching). Pastikan data
+                                            yang dikirim sudah sesuai
+                                            kebijakan privasi.
+                                        </p>
+                                    )}
+                                </div>
+                            )}
                     </section>
 
                     {/* =====================

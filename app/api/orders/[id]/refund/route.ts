@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { createRefundRequest } from "@/lib/refund";
 import { rateLimiters } from "@/lib/rate-limit";
+import {
+    maskAccountNumber,
+    validateBankFields,
+} from "@/lib/refund-bank";
 
 /* ==========================================
  * POST /api/orders/[id]/refund
@@ -84,17 +88,51 @@ export async function POST(
         }
 
         // ==========================================
-        // PARSE REASON (optional)
+        // PARSE REASON + DESTINATION BANK
         // ==========================================
 
         let reason: string | undefined;
+        let bankName: string | undefined;
+        let bankAccountName: string | undefined;
+        let bankAccountNumber: string | undefined;
+
         try {
             const body = await req.json();
+
             if (typeof body.reason === "string" && body.reason.trim()) {
                 reason = body.reason.trim().substring(0, 500);
             }
+
+            bankName = typeof body.bankName === "string" ? body.bankName.trim() : "";
+            bankAccountName = typeof body.bankAccountName === "string" ? body.bankAccountName.trim() : "";
+            bankAccountNumber = typeof body.bankAccountNumber === "string" ? body.bankAccountNumber.trim() : "";
         } catch {
             // Body is optional
+        }
+
+        // ==========================================
+        // VALIDATE DESTINATION BANK (REQUIRED)
+        // ==========================================
+        //
+        // The admin needs the customer's destination
+        // bank to execute the transfer. Fields are
+        // server-validated (length/charset) and
+        // stored on the Refund record.
+
+        const bankValidation = validateBankFields(
+            bankName,
+            bankAccountName,
+            bankAccountNumber
+        );
+
+        if (!bankValidation.ok) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: bankValidation.error,
+                },
+                { status: 400 }
+            );
         }
 
         // ==========================================
@@ -107,7 +145,12 @@ export async function POST(
         const result = await createRefundRequest(
             session.user.id,
             orderId,
-            reason
+            reason,
+            {
+                bankName: bankName,
+                bankAccountName: bankAccountName,
+                bankAccountNumber: bankAccountNumber,
+            }
         );
 
         if (!result.ok) {
@@ -127,6 +170,9 @@ export async function POST(
             data: {
                 refundId: result.refundId,
                 status: "PENDING",
+                bankAccountNumber: maskAccountNumber(
+                    bankAccountNumber || ""
+                ),
             },
         });
     } catch (error) {

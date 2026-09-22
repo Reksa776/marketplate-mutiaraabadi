@@ -184,6 +184,13 @@ export async function GET(request: Request) {
             requestedBy: refund.requestedBy,
             processedBy: refund.processedBy,
             providerRef: refund.providerRef,
+            bank: {
+                bankName: refund.bankName,
+                bankAccountName: refund.bankAccountName,
+                bankAccountNumber:
+                    refund.bankAccountNumber,
+            },
+            proofFilePath: refund.proofFilePath,
             requestedAt: refund.createdAt.toISOString(),
             processedAt: refund.updatedAt.toISOString(),
         }));
