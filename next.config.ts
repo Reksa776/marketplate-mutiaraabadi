@@ -127,10 +127,53 @@ const nextConfig: NextConfig = {
      *    should not be bundled
      * 3. We only use text messaging — no media deps
      *    needed at bundle time
+     *
+     * tesseract.js MUST be externalized because it
+     * spawns a worker_threads Worker whose path is
+     * computed at runtime as
+     *
+     *   path.join(__dirname, '..', '..',
+     *             'worker-script', 'node', 'index.js')
+     *
+     * When the package is bundled, `__dirname` is
+     * frozen to the build machine's location, so the
+     * deployed server tries to load a worker script
+     * that no longer exists there and the process
+     * dies with:
+     *   Cannot find module
+     *   '<root>/node_modules/tesseract.js/src/
+     *     worker-script/node/index.js'
+     *
+     * Externalizing keeps `require('tesseract.js')`
+     * pointing at the runtime node_modules, so both
+     * the worker script and tesseract.js-core resolve
+     * from real paths on the server. Never import
+     * tesseract.js internals (src/**, dist/**) or
+     * hardcode workerPath instead.
      */
     serverExternalPackages: [
         "@whiskeysockets/baileys",
+        "tesseract.js",
     ],
+    /**
+     * Runtime assets that tracing cannot discover on
+     * its own, needed by the OCR worker when the app
+     * is deployed as a traced/standalone build.
+     *
+     * The tesseract worker script is referenced only
+     * through a runtime `path.join(__dirname, ...)`,
+     * and tesseract.js-core loads its .wasm files
+     * dynamically, so neither is statically visible
+     * to the file tracer.
+     */
+    outputFileTracingIncludes: {
+        "/api/admin/resi-scan": [
+            // worker script + its runtime deps (node-fetch,
+            // wasm-feature-detect) and the WASM core
+            "./node_modules/tesseract.js/**/*",
+            "./node_modules/tesseract.js-core/**/*",
+        ],
+    },
 };
 
 export default nextConfig;

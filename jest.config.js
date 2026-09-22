@@ -4,6 +4,9 @@ module.exports = {
     testEnvironment: "node",
     moduleNameMapper: {
         "^@/(.*)$": "<rootDir>/$1",
+        // Next.js resolves the `server-only` marker internally; Jest
+        // runs in plain Node and needs the empty stub instead.
+        "^server-only$": "<rootDir>/__mocks__/server-only.js",
     },
     testMatch: [
         "**/__tests__/auth/*.test.ts",

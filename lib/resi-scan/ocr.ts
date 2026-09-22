@@ -24,8 +24,25 @@
  * Every failure degrades gracefully to an
  * OcrResult { ok:false } — the scan pipeline marks
  * the item needs-review instead of crashing.
+ *
+ * Deployment notes:
+ *   - tesseract.js spawns a worker_threads worker
+ *     from a path derived from its own __dirname.
+ *     It is therefore listed in
+ *     `serverExternalPackages` (next.config.ts) so
+ *     it is resolved from node_modules at runtime
+ *     instead of being bundled — a bundled copy
+ *     freezes the worker path to the build machine
+ *     and crashes with "Cannot find module
+ *     .../tesseract.js/src/worker-script/node/
+ *     index.js".
+ *   - This module is server-only. It must never be
+ *     imported from a client component; the
+ *     `server-only` guard turns such an import
+ *     into a build-time error.
  */
 
+import "server-only";
 import { createWorker, OEM } from "tesseract.js";
 import sharp from "sharp";
 
