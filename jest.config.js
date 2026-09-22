@@ -6,6 +6,7 @@ module.exports = {
         "^@/(.*)$": "<rootDir>/$1",
     },
     testMatch: [
+        "**/__tests__/auth/*.test.ts",
         "**/__tests__/ipaymu/*.test.ts",
         "**/__tests__/marketing/*.test.ts",
         "!**/__tests__/marketing/pricing-engine.test.ts",
@@ -17,6 +18,7 @@ module.exports = {
         "/node_modules/",
         // Standalone tsx audit/verification scripts (each declares its own
         // test() helper and exits the process); not Jest suites.
+        "__tests__/auth/register-rate-limit.test.ts",
         "__tests__/ipaymu/production-hardening.test.ts",
         "__tests__/marketing/address-shipping-ux.test.ts",
         "__tests__/marketing/campaign-optional-audit.test.ts",
