@@ -7,6 +7,12 @@ import toast from "react-hot-toast";
 import { trackTikTokEvent } from "@/lib/analytics/tiktok";
 import VoucherPickerModal from "@/components/VoucherPickerModal";
 import type { VoucherPickerSelection } from "@/components/VoucherPickerModal";
+import {
+    IPAYMU_MIN_AMOUNT,
+    IPAYMU_MIN_AMOUNT_FULL_MESSAGE,
+    IPAYMU_MIN_AMOUNT_UI_NOTE,
+    isIpaymuAmountAllowed,
+} from "@/lib/payment/ipaymu-min-amount";
 
 type Address = {
     id: string;
@@ -1658,6 +1664,22 @@ export default function CheckoutPage() {
         }
 
         /*
+         * IPAYMU MIN-AMOUNT RULE
+         *
+         * Client-side mirror of the backend rule: below Rp10.000 only
+         * QRIS is accepted by iPaymu. The server enforces this anyway —
+         * this guard only gives instant feedback when the total dropped
+         * below the threshold after a method was already selected.
+         */
+        if (
+            paymentMethod !== "COD" &&
+            !isIpaymuAmountAllowed(grandTotal, paymentMethod)
+        ) {
+            toast.error(IPAYMU_MIN_AMOUNT_FULL_MESSAGE);
+            return;
+        }
+
+        /*
          * ==========================================
          * TIKTOK PIXEL - ADD PAYMENT INFO
          * ==========================================
@@ -1930,6 +1952,8 @@ export default function CheckoutPage() {
         spinWheelDisplayDiscount +
         finalShippingCost
     );
+
+    const iPaymuMinBlocked = grandTotal < IPAYMU_MIN_AMOUNT;
 
     /*
      * ==========================================
@@ -2831,12 +2855,13 @@ export default function CheckoutPage() {
                             </label>
 
                             {/* BANK TRANSFER */}
-                            <div className="rounded-lg border p-4">
-                                <label className="flex cursor-pointer items-center gap-3">
+                            <div className={`rounded-lg border p-4 ${iPaymuMinBlocked ? "opacity-60" : ""}`}>
+                                <label className={`flex items-center gap-3 ${iPaymuMinBlocked ? "cursor-not-allowed" : "cursor-pointer"}`}>
                                     <input
                                         type="radio"
                                         name="paymentMethod"
                                         value="BANK_TRANSFER"
+                                        disabled={iPaymuMinBlocked}
                                         checked={
                                             paymentMethod === "BANK_TRANSFER"
                                         }
@@ -2857,6 +2882,12 @@ export default function CheckoutPage() {
                                         </div>
                                     </div>
                                 </label>
+
+                                {iPaymuMinBlocked && (
+                                    <div className="mt-2 text-xs font-medium text-amber-600">
+                                        {IPAYMU_MIN_AMOUNT_UI_NOTE}
+                                    </div>
+                                )}
 
                                 {paymentMethod === "BANK_TRANSFER" && (
                                     <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -2884,12 +2915,13 @@ export default function CheckoutPage() {
                             </div>
 
                             {/* E-WALLET */}
-                            <div className="rounded-lg border p-4">
-                                <label className="flex cursor-pointer items-center gap-3">
+                            <div className={`rounded-lg border p-4 ${iPaymuMinBlocked ? "opacity-60" : ""}`}>
+                                <label className={`flex items-center gap-3 ${iPaymuMinBlocked ? "cursor-not-allowed" : "cursor-pointer"}`}>
                                     <input
                                         type="radio"
                                         name="paymentMethod"
                                         value="E_WALLET"
+                                        disabled={iPaymuMinBlocked}
                                         checked={
                                             paymentMethod === "E_WALLET"
                                         }
@@ -2909,6 +2941,12 @@ export default function CheckoutPage() {
                                         </div>
                                     </div>
                                 </label>
+
+                                {iPaymuMinBlocked && (
+                                    <div className="mt-2 text-xs font-medium text-amber-600">
+                                        {IPAYMU_MIN_AMOUNT_UI_NOTE}
+                                    </div>
+                                )}
 
                                 {paymentMethod === "E_WALLET" && (
                                     <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">

@@ -11,6 +11,14 @@ import {
     getPaymentPagePath,
 } from "@/lib/payment/order-payment";
 
+import {
+    IPAYMU_MIN_AMOUNT_CODE,
+    IPAYMU_MIN_AMOUNT_FULL_MESSAGE,
+    IPAYMU_MIN_AMOUNT_SUGGESTION,
+    isIpaymuAmountAllowed,
+    isIpaymuMinAmountError,
+} from "@/lib/payment/ipaymu-min-amount";
+
 /* ==========================================
  * POST /api/orders/[id]/repay
  * ==========================================
@@ -166,6 +174,7 @@ export async function POST(
             where: { id: orderId, userId: session.user.id },
             select: {
                 id: true,
+                total: true,
                 status: true,
                 paymentStatus: true,
                 paymentMethod: true,
@@ -184,6 +193,28 @@ export async function POST(
                     message: "Order tidak ditemukan.",
                 },
                 { status: 404 }
+            );
+        }
+
+        // ==========================================
+        // IPAYMU MIN-AMOUNT RULE (REPAY)
+        // ==========================================
+        //
+        // Only QRIS is available below Rp10.000. The amount is the
+        // PERSISTED order total from the DB (never recalculated) and is
+        // checked BEFORE any state is reset, so a blocked repayment
+        // leaves the original order untouched — and no second provider
+        // payment can ever be created for a sub-minimum non-QRIS order.
+
+        if (!isIpaymuAmountAllowed(Number(snapshot.total), paymentMethod)) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    code: IPAYMU_MIN_AMOUNT_CODE,
+                    message: IPAYMU_MIN_AMOUNT_FULL_MESSAGE,
+                    detail: IPAYMU_MIN_AMOUNT_SUGGESTION,
+                },
+                { status: 400 }
             );
         }
 
@@ -332,6 +363,18 @@ export async function POST(
             });
         } catch (ipaymuError: any) {
             console.error("IPAYMU REPAYMENT CREATE FAILED:", ipaymuError);
+
+            if (isIpaymuMinAmountError(ipaymuError)) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        code: ipaymuError.code,
+                        message: ipaymuError.message,
+                        detail: ipaymuError.suggestion,
+                    },
+                    { status: 400 }
+                );
+            }
 
             // Never pretend this succeeded: the client must be able to
             // show a clear error instead of silently doing nothing.

@@ -33,6 +33,10 @@ import {
     type IpaymuDirectPaymentMethod,
     type PaymentInstruction,
 } from "./ipaymu";
+import {
+    isIpaymuAmountAllowed,
+    IpaymuMinAmountError,
+} from "./ipaymu-min-amount";
 
 /* ==========================================
  * CONSTANTS
@@ -305,6 +309,16 @@ export function canReusePaymentInstruction(
 export async function createDirectOrderPayment(
     input: CreateDirectOrderPaymentInput
 ): Promise<CreateDirectOrderPaymentResult> {
+    // Min-amount rule: below Rp10.000 only QRIS is accepted by iPaymu.
+    // Enforced here — the one choke point every checkout/repay flow
+    // uses — so a low total can never reach the provider.
+    if (!isIpaymuAmountAllowed(input.amount, input.paymentMethod)) {
+        throw new IpaymuMinAmountError(
+            input.amount,
+            input.paymentMethod
+        );
+    }
+
     // Validate the requested channel before we touch the provider.
     const { method, channel } = resolveProviderMethod(
         input.paymentMethod,

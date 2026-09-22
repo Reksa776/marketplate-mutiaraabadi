@@ -59,6 +59,7 @@
 
 import crypto from "crypto";
 import { getIpaymuConfig } from "./config";
+import { detectIpaymuMinAmountMessage, IpaymuMinAmountError } from "./ipaymu-min-amount";
 
 /* ==========================================
  * CONFIGURATION
@@ -973,8 +974,17 @@ async function postToIpaymu(options: {
     }
 
     if (response.status !== 200) {
+        const providerMessage = result.Message || "unknown";
+
+        // Safety net: if a low amount still reached the provider and it
+        // answered with the Indonesian minimum-amount rejection, map it
+        // back to the same application error the pre-check produces.
+        if (detectIpaymuMinAmountMessage(providerMessage)) {
+            throw new IpaymuMinAmountError();
+        }
+
         throw new Error(
-            `[IPAYMU_HTTP_ERROR] iPaymu returned HTTP ${response.status}: ${result.Message || "unknown"}`
+            `[IPAYMU_HTTP_ERROR] iPaymu returned HTTP ${response.status}: ${providerMessage}`
         );
     }
 
@@ -1104,6 +1114,12 @@ export async function createDirectPayment(
     // IPAYMU BUSINESS-LEVEL VALIDATION
     // ==========================================
     if (result.Status !== 200) {
+        // If the provider reports the minimum-amount rejection at the
+        // business level, normalize it to the app error as well.
+        if (detectIpaymuMinAmountMessage(result.Message)) {
+            throw new IpaymuMinAmountError();
+        }
+
         const message =
             process.env.NODE_ENV === "production"
                 ? "[IPAYMU_API_ERROR] Gagal membuat pembayaran iPaymu."

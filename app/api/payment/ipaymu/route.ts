@@ -21,6 +21,8 @@ import {
     getInstructionKind,
 } from "@/lib/payment/order-payment";
 
+import { isIpaymuMinAmountError } from "@/lib/payment/ipaymu-min-amount";
+
 import {
     getIpaymuConfig,
 } from "@/lib/payment/config";
@@ -585,6 +587,38 @@ export async function POST(request: Request) {
                     rollbackError
                 );
             }
+        }
+
+        /* ==========================================
+         * IPAYMU MIN-AMOUNT RULE
+         * ==========================================
+         *
+         * Only QRIS is available below Rp10.000. The error thrown by
+         * createDirectOrderPayment is answered with a structured,
+         * friendly message instead of the generic failure text.
+         */
+
+        if (isIpaymuMinAmountError(error)) {
+            console.error(
+                JSON.stringify({
+                    event: "CHECKOUT_MIN_AMOUNT_REJECTED",
+                    checkoutType: "CART_IPAYMU",
+                    orderId: createdOrderId,
+                    amount: error.amount,
+                    method: error.method,
+                    timestamp: new Date().toISOString(),
+                })
+            );
+
+            return NextResponse.json(
+                {
+                    success: false,
+                    code: error.code,
+                    message: error.message,
+                    detail: error.suggestion,
+                },
+                { status: 400 }
+            );
         }
 
         const status = Number.isInteger(

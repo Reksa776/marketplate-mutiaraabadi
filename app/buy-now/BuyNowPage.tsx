@@ -7,6 +7,12 @@ import toast from "react-hot-toast";
 import { trackTikTokEvent } from "@/lib/analytics/tiktok";
 import VoucherPickerModal from "@/components/VoucherPickerModal";
 import type { VoucherPickerSelection } from "@/components/VoucherPickerModal";
+import {
+    IPAYMU_MIN_AMOUNT,
+    IPAYMU_MIN_AMOUNT_FULL_MESSAGE,
+    IPAYMU_MIN_AMOUNT_UI_NOTE,
+    isIpaymuAmountAllowed,
+} from "@/lib/payment/ipaymu-min-amount";
 
 /*
  * =========================================================
@@ -2155,6 +2161,8 @@ export default function BuyNowPage({
             finalShippingCost,
         ]);
 
+    const iPaymuMinBlocked = grandTotal < IPAYMU_MIN_AMOUNT;
+
     /*
      * =====================================================
      * APPLY VOUCHER
@@ -2333,6 +2341,23 @@ export default function BuyNowPage({
             toast.error(
                 "Pilih pengiriman."
             );
+
+            return;
+        }
+
+        /*
+         * IPAYMU MIN-AMOUNT RULE
+         *
+         * Client-side mirror of the backend rule: below Rp10.000 only
+         * QRIS is accepted by iPaymu. The server enforces this anyway —
+         * this guard only gives instant feedback when the total dropped
+         * below the threshold after a method was already selected.
+         */
+        if (
+            paymentMethod !== "COD" &&
+            !isIpaymuAmountAllowed(grandTotal, paymentMethod)
+        ) {
+            toast.error(IPAYMU_MIN_AMOUNT_FULL_MESSAGE);
 
             return;
         }
@@ -3648,16 +3673,17 @@ export default function BuyNowPage({
                                 {/* BANK TRANSFER */}
 
                                 <div
-                                    className={`rounded-2xl border p-4 ${paymentMethod ===
+                                    className={`rounded-2xl border p-4 ${iPaymuMinBlocked ? "opacity-60" : ""} ${paymentMethod ===
                                         "BANK_TRANSFER"
                                         ? "border-rose-500 bg-rose-50"
                                         : "border-gray-200"
                                         }`}
                                 >
-                                    <label className="flex cursor-pointer items-center gap-3">
+                                    <label className={`flex items-center gap-3 ${iPaymuMinBlocked ? "cursor-not-allowed" : "cursor-pointer"}`}>
                                         <input
                                             type="radio"
                                             name="payment"
+                                            disabled={iPaymuMinBlocked}
                                             checked={
                                                 paymentMethod ===
                                                 "BANK_TRANSFER"
@@ -3682,6 +3708,12 @@ export default function BuyNowPage({
                                             </div>
                                         </div>
                                     </label>
+
+                                    {iPaymuMinBlocked && (
+                                        <div className="mt-2 text-xs font-medium text-amber-600">
+                                            {IPAYMU_MIN_AMOUNT_UI_NOTE}
+                                        </div>
+                                    )}
 
                                     {paymentMethod ===
                                         "BANK_TRANSFER" && (
@@ -3714,16 +3746,17 @@ export default function BuyNowPage({
                                 {/* E-WALLET */}
 
                                 <div
-                                    className={`rounded-2xl border p-4 ${paymentMethod ===
+                                    className={`rounded-2xl border p-4 ${iPaymuMinBlocked ? "opacity-60" : ""} ${paymentMethod ===
                                         "E_WALLET"
                                         ? "border-rose-500 bg-rose-50"
                                         : "border-gray-200"
                                         }`}
                                 >
-                                    <label className="flex cursor-pointer items-center gap-3">
+                                    <label className={`flex items-center gap-3 ${iPaymuMinBlocked ? "cursor-not-allowed" : "cursor-pointer"}`}>
                                         <input
                                             type="radio"
                                             name="payment"
+                                            disabled={iPaymuMinBlocked}
                                             checked={
                                                 paymentMethod ===
                                                 "E_WALLET"
@@ -3746,6 +3779,12 @@ export default function BuyNowPage({
                                             </div>
                                         </div>
                                     </label>
+
+                                    {iPaymuMinBlocked && (
+                                        <div className="mt-2 text-xs font-medium text-amber-600">
+                                            {IPAYMU_MIN_AMOUNT_UI_NOTE}
+                                        </div>
+                                    )}
 
                                     {paymentMethod ===
                                         "E_WALLET" && (

@@ -21,6 +21,8 @@ import {
     getInstructionKind,
 } from "@/lib/payment/order-payment";
 
+import { isIpaymuMinAmountError } from "@/lib/payment/ipaymu-min-amount";
+
 import {
     getIpaymuConfig,
 } from "@/lib/payment/config";
@@ -59,10 +61,11 @@ type Body = {
 
 function jsonError(
     message: string,
-    status = 400
+    status = 400,
+    extra: Record<string, unknown> = {}
 ) {
     return NextResponse.json(
-        { success: false, message },
+        { success: false, message, ...extra },
         { status }
     );
 }
@@ -518,6 +521,36 @@ export async function POST(
                     new Date().toISOString(),
             })
         );
+
+        /* ==========================================
+         * IPAYMU MIN-AMOUNT RULE
+         * ==========================================
+         *
+         * Only QRIS is available below Rp10.000. Answer the
+         * createDirectOrderPayment rejection with a structured,
+         * friendly error instead of the generic failure text.
+         */
+
+        if (isIpaymuMinAmountError(error)) {
+            console.error(
+                JSON.stringify({
+                    event: "CHECKOUT_MIN_AMOUNT_REJECTED",
+                    checkoutType: "BUY_NOW_IPAYMU",
+                    amount: error.amount,
+                    method: error.method,
+                    timestamp: new Date().toISOString(),
+                })
+            );
+
+            return jsonError(
+                error.message,
+                400,
+                {
+                    code: error.code,
+                    detail: error.suggestion,
+                }
+            );
+        }
 
         const message =
             error instanceof Error
