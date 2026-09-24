@@ -327,6 +327,10 @@ model StoreSetting {
   tiktokPixelName    String?
   tiktokPixelCode    String? @db.Text
 
+  // TikTok Events API (server-side). SECRET: never returned to the
+  // browser and never included in the storefront pixel config.
+  tiktokPixelAccessToken String? @db.Text
+
   province                String?
   city                    String?
   district                String?

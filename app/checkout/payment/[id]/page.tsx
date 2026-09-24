@@ -3,7 +3,10 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { trackTikTokEvent } from "@/lib/analytics/tiktok";
+import {
+    buildTikTokEventId,
+    trackTikTokEvent,
+} from "@/lib/analytics/tiktok";
 import type { PaymentView } from "@/lib/payment/order-payment";
 import QrisPanel from "./QrisPanel";
 
@@ -176,12 +179,25 @@ export default function PaymentInstructionPage() {
 
         completedTracked.current = true;
 
-        trackTikTokEvent("CompletePayment", {
-            content_id: view.orderNumber,
-            value: view.amount,
-            currency: "IDR",
-            contents: [],
-        });
+        trackTikTokEvent(
+            "CompletePayment",
+            {
+                content_id: view.orderNumber,
+                value: view.amount,
+                currency: "IDR",
+                contents: [],
+            },
+            {
+                /*
+                 * Shared dedup id — identical to the server-side
+                 * Events API CompletePayment event_id.
+                 */
+                eventId: buildTikTokEventId(
+                    "CompletePayment",
+                    view.orderNumber
+                ),
+            }
+        );
     }, [view]);
 
     /* ==========================================

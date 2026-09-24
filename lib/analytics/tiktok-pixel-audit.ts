@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto";
 
+import { last4OfTikTokAccessToken } from "@/lib/analytics/tiktok-access-token";
+
 export type TikTokPixelSnapshot = {
     enabled: boolean;
     pixelId: string | null;
     pixelName: string | null;
     code: string | null;
+    /**
+     * Server-only Events API credential. Optional so older
+     * callers/tests that predate the token keep compiling.
+     * NEVER written to the audit log in raw form.
+     */
+    accessToken?: string | null;
 };
 
 /**
@@ -16,12 +24,30 @@ export type TikTokPixelSnapshot = {
 export function hashTikTokPixelCode(
     code: string | null | undefined
 ): string | null {
-    if (!code) {
+    return shortHash(code);
+}
+
+/**
+ * Hash pendek dari Access Token.
+ *
+ * Dipakai untuk mendeteksi pergantian token di audit log
+ * TANPA menyimpan token itu sendiri.
+ */
+export function hashTikTokAccessToken(
+    token: string | null | undefined
+): string | null {
+    return shortHash(token);
+}
+
+function shortHash(
+    value: string | null | undefined
+): string | null {
+    if (!value) {
         return null;
     }
 
     return createHash("sha256")
-        .update(code)
+        .update(value)
         .digest("hex")
         .slice(0, 16);
 }
@@ -40,6 +66,9 @@ export function buildTikTokPixelAuditMetadata(
     const previousCode = previous?.code ?? null;
     const nextCode = next.code ?? null;
 
+    const previousToken = previous?.accessToken ?? null;
+    const nextToken = next.accessToken ?? null;
+
     return {
         enabled: next.enabled,
         pixelId: next.pixelId,
@@ -56,6 +85,23 @@ export function buildTikTokPixelAuditMetadata(
         pixelCodeLength: nextCode?.length ?? 0,
         pixelCodeHash: hashTikTokPixelCode(
             nextCode
+        ),
+
+        /*
+         * Access Token: HANYA metadata aman. Raw token tidak
+         * pernah masuk audit log — yang disimpan cuma status,
+         * panjang, last-4, dan hash-nya.
+         */
+        accessTokenChanged:
+            previousToken !== nextToken,
+        accessTokenConfigured:
+            nextToken !== null,
+        accessTokenLength: nextToken?.length ?? 0,
+        accessTokenLast4: last4OfTikTokAccessToken(
+            nextToken
+        ),
+        accessTokenHash: hashTikTokAccessToken(
+            nextToken
         ),
     };
 }
@@ -76,6 +122,8 @@ export function hasTikTokPixelChanges(
         previous.pixelId !== next.pixelId ||
         previous.pixelName !== next.pixelName ||
         (previous.code ?? null) !==
-        (next.code ?? null)
+        (next.code ?? null) ||
+        (previous.accessToken ?? null) !==
+            (next.accessToken ?? null)
     );
 }

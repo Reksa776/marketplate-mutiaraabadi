@@ -1,39 +1,39 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+/* ==========================================
+ * ADMIN — SCAN RESI
+ * ==========================================
+ *
+ * UI/UX only. The scan + apply flow below is
+ * unchanged: same endpoints, same payloads, same
+ * validation, same authorization. Everything in
+ * this file is presentation and local view state.
+ */
+
+import { useCallback, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
+import {
+    FiAlertTriangle,
+    FiCheckCircle,
+    FiFileText,
+    FiInfo,
+    FiLoader,
+    FiRefreshCw,
+    FiTrash2,
+    FiUploadCloud,
+    FiX,
+} from "react-icons/fi";
+
 import { useDialog } from "@/components/ui/Dialog";
-
-type ScanStatus =
-    | "MATCHED_READY"
-    | "NEEDS_REVIEW"
-    | "CONFLICT"
-    | "NOT_FOUND"
-    | "INVALID"
-    | "DUPLICATE_SAME"
-    | "EXTRACTION_FAILED";
-
-type ScanResult = {
-    index: number;
-    fileName: string;
-    fileSize: number;
-    source: "pdf-text" | "ocr" | null;
-    orderReference: string | null;
-    trackingNumber: string | null;
-    warnings: string[];
-    confidence: number;
-    status: ScanStatus;
-    resolution: {
-        orderId: number | null;
-        orderNumber: string | null;
-        orderStatus: string | null;
-        orderExists: boolean;
-        alreadyHasTracking: boolean;
-        existingTracking: string | null;
-        trackingInUseByOtherOrder: boolean;
-        trackingValid: boolean;
-    };
-};
+import {
+    ConfidenceBadge,
+    ScanResiDetailPanel,
+    StatusBadge,
+    fileIcon,
+    formatFileSize,
+    sourceLabel,
+} from "@/components/admin/scan-resi/ScanResiUi";
+import type { ScanDocumentResult } from "@/lib/resi-scan/types";
 
 type Summary = {
     total: number;
@@ -47,47 +47,26 @@ type Summary = {
 const ACCEPTED =
     ".pdf,.jpg,.jpeg,.png,.webp";
 
-const STATUS_META: Record<
-    ScanStatus,
-    { label: string; className: string }
-> = {
-    MATCHED_READY: {
-        label: "Matched — Siap Terapkan",
-        className: "bg-green-100 text-green-700",
-    },
-    NEEDS_REVIEW: {
-        label: "Perlu Tinjauan",
-        className: "bg-amber-100 text-amber-700",
-    },
-    CONFLICT: {
-        label: "Konflik",
-        className: "bg-red-100 text-red-700",
-    },
-    NOT_FOUND: {
-        label: "Order Tidak Ditemukan",
-        className: "bg-slate-200 text-slate-600",
-    },
-    INVALID: {
-        label: "Resi Tidak Valid",
-        className: "bg-slate-200 text-slate-600",
-    },
-    DUPLICATE_SAME: {
-        label: "Resi Sudah Ada (sama)",
-        className: "bg-blue-100 text-blue-700",
-    },
-    EXTRACTION_FAILED: {
-        label: "Gagal Dibaca",
-        className: "bg-slate-200 text-slate-600",
-    },
+const MAX_FILES_HINT = 10;
+
+type QueuedFile = {
+    name: string;
+    size: number;
+    type: string;
 };
 
-function confidencePercent(value: number) {
-    return `${Math.round((value || 0) * 100)}%`;
+function resultKey(
+    result: ScanDocumentResult
+) {
+    return `${result.resolution.orderId}:${result.trackingNumber}`;
 }
 
-function formatFileSize(bytes: number) {
-    if (!bytes) return "-";
-    return `${(bytes / 1024).toFixed(0)} KB`;
+function isApplicable(result: ScanDocumentResult) {
+    return (
+        (result.status === "MATCHED_READY" ||
+            result.status === "NEEDS_REVIEW") &&
+        result.resolution.orderId !== null
+    );
 }
 
 export default function AdminScanResiPage() {
@@ -96,22 +75,51 @@ export default function AdminScanResiPage() {
 
     const [scanning, setScanning] = useState(false);
     const [results, setResults] = useState<
-        ScanResult[]
+        ScanDocumentResult[]
     >([]);
     const [summary, setSummary] =
         useState<Summary | null>(null);
     const [applyingIds, setApplyingIds] = useState<
         Set<string>
     >(new Set());
+    const [applyingAll, setApplyingAll] =
+        useState(false);
 
-    const handleScan = useCallback(
-        async (fileList: FileList | null) => {
-            const files = Array.from(fileList ?? []);
+    /* View-only state */
+    const [dragging, setDragging] = useState(false);
+    const [scanError, setScanError] = useState<
+        string | null
+    >(null);
+    const [queuedFiles, setQueuedFiles] = useState<
+        QueuedFile[]
+    >([]);
+    const [pendingFiles, setPendingFiles] = useState<
+        File[]
+    >([]);
+    const [detail, setDetail] =
+        useState<ScanDocumentResult | null>(null);
+
+    /* ==========================================
+     * SCAN
+     * ========================================== */
+
+    const runScan = useCallback(
+        async (files: File[]) => {
             if (files.length === 0) return;
 
             setScanning(true);
+            setScanError(null);
             setResults([]);
             setSummary(null);
+            setDetail(null);
+            setQueuedFiles(
+                files.map((f) => ({
+                    name: f.name,
+                    size: f.size,
+                    type: f.type,
+                }))
+            );
+            setPendingFiles(files);
 
             const formData = new FormData();
             for (const file of files) {
@@ -138,6 +146,11 @@ export default function AdminScanResiPage() {
                     "Pemindaian selesai. Tinjau hasil sebelum menerapkan."
                 );
             } catch (error) {
+                setScanError(
+                    error instanceof Error
+                        ? error.message
+                        : "Gagal memindai dokumen."
+                );
                 toast.error(
                     error instanceof Error
                         ? error.message
@@ -153,9 +166,39 @@ export default function AdminScanResiPage() {
         []
     );
 
+    const handleScan = useCallback(
+        (fileList: FileList | null) => {
+            void runScan(Array.from(fileList ?? []));
+        },
+        [runScan]
+    );
+
+    const handleRetry = useCallback(() => {
+        if (pendingFiles.length === 0) return;
+        void runScan(pendingFiles);
+    }, [pendingFiles, runScan]);
+
+    const handleDrop = useCallback(
+        (event: React.DragEvent<HTMLDivElement>) => {
+            event.preventDefault();
+            setDragging(false);
+            if (scanning) return;
+            void runScan(
+                Array.from(
+                    event.dataTransfer?.files ?? []
+                )
+            );
+        },
+        [runScan, scanning]
+    );
+
+    /* ==========================================
+     * APPLY (unchanged logic)
+     * ========================================== */
+
     const applyItem = useCallback(
         async (
-            result: ScanResult,
+            result: ScanDocumentResult,
             explicitConfirm = true
         ) => {
             const ready =
@@ -241,6 +284,7 @@ export default function AdminScanResiPage() {
                                 r.index !== result.index
                         )
                     );
+                    setDetail(null);
                 } else {
                     toast.error(
                         item?.message ||
@@ -303,8 +347,7 @@ export default function AdminScanResiPage() {
                             orderNumber:
                                 r.resolution.orderNumber,
                             reference: r.orderReference,
-                            trackingNumber:
-                                r.trackingNumber,
+                            trackingNumber: r.trackingNumber,
                             courier: null,
                             source: r.source,
                             confidence: r.confidence,
@@ -365,204 +408,869 @@ export default function AdminScanResiPage() {
         }
     }, [results, dialog]);
 
-    const canApplyAny =
-        results.some(
-            (r) =>
-                r.status === "MATCHED_READY" ||
-                r.status === "NEEDS_REVIEW"
-        );
+    /*
+     * UI convenience only: runs the exact same
+     * single-item apply the operator could click
+     * one by one. No new payload, no new endpoint.
+     */
+    const applyAllApplicable = useCallback(async () => {
+        const applicable = results.filter(isApplicable);
+
+        if (applicable.length === 0) {
+            toast.error(
+                "Tidak ada hasil yang dapat diterapkan."
+            );
+            return;
+        }
+
+        const readyCount = applicable.filter(
+            (r) => r.status === "MATCHED_READY"
+        ).length;
+        const reviewCount =
+            applicable.length - readyCount;
+
+        const ok = await dialog.confirm({
+            title: "Terapkan Semua Resi",
+            message:
+                reviewCount > 0
+                    ? `Terapkan ${applicable.length} resi? ${readyCount} siap diterapkan dan ${reviewCount} perlu ditinjau akan diproses satu per satu.`
+                    : `Terapkan ${applicable.length} resi sekaligus?`,
+            variant: "warning",
+            confirmText: "Ya, Terapkan Semua",
+        });
+
+        if (!ok) return;
+
+        setApplyingAll(true);
+        try {
+            for (const item of applicable) {
+                await applyItem(item, false);
+            }
+        } finally {
+            setApplyingAll(false);
+        }
+    }, [results, dialog, applyItem]);
+
+    const handleApplyMatchedClick =
+        useCallback(async () => {
+            setApplyingAll(true);
+            try {
+                await applyAllMatched();
+            } finally {
+                setApplyingAll(false);
+            }
+        }, [applyAllMatched]);
+
+    const removeFromList = useCallback(
+        (result: ScanDocumentResult) => {
+            setResults((prev) =>
+                prev.filter((r) => r.index !== result.index)
+            );
+            setDetail(null);
+        },
+        []
+    );
+
+    /* ==========================================
+     * DERIVED
+     * ========================================== */
+
+    const counts = useMemo(() => {
+        const matched = results.filter(
+            (r) => r.status === "MATCHED_READY"
+        ).length;
+        const review = results.filter(
+            (r) => r.status === "NEEDS_REVIEW"
+        ).length;
+
+        return {
+            matched,
+            review,
+            applicable: matched + review,
+        };
+    }, [results]);
+
+    const anyApplicable = counts.applicable > 0;
+    const busy = scanning || applyingAll;
+    const showEmptyState =
+        !scanning &&
+        !scanError &&
+        results.length === 0;
+
+    const summaryCards = summary
+        ? [
+              {
+                  key: "total",
+                  label: "Total dokumen",
+                  value: summary.total,
+                  tone: "text-gray-900 bg-gray-100",
+                  icon: FiFileText,
+              },
+              {
+                  key: "matched",
+                  label: "Siap diterapkan",
+                  value: summary.matched,
+                  tone: "text-emerald-600 bg-emerald-50",
+                  icon: FiCheckCircle,
+              },
+              {
+                  key: "review",
+                  label: "Perlu ditinjau",
+                  value: summary.review,
+                  tone: "text-amber-600 bg-amber-50",
+                  icon: FiAlertTriangle,
+              },
+              {
+                  key: "conflict",
+                  label: "Konflik",
+                  value: summary.conflict,
+                  tone: "text-rose-600 bg-rose-50",
+                  icon: FiX,
+              },
+              {
+                  key: "skipped",
+                  label: "Sudah ada",
+                  value: summary.skipped,
+                  tone: "text-sky-600 bg-sky-50",
+                  icon: FiInfo,
+              },
+              {
+                  key: "failed",
+                  label: "Tidak cocok",
+                  value: summary.failed,
+                  tone: "text-gray-600 bg-gray-100",
+                  icon: FiAlertTriangle,
+              },
+          ]
+        : [];
+
+    /* ==========================================
+     * RENDER
+     * ========================================== */
 
     return (
-        <div className="space-y-6">
-            <div>
-                <h1 className="text-2xl font-bold text-slate-800">
-                    Scan Resi (Resi Otomatis)
-                </h1>
-                <p className="mt-1 text-sm text-slate-500">
-                    Upload PDF atau foto bukti pengiriman
-                    untuk mendeteksi nomor order & nomor
-                    resi. Hasil dengan keyakinan tinggi
-                    bisa diterapkan otomatis; hasil lain
-                    wajib ditinjau admin. Data hanya
-                    disimpan setelah Anda menerapkan.
-                </p>
-            </div>
+        <div className="min-h-full bg-gray-50/70 p-4 md:p-6 lg:p-8">
+            <div className="mx-auto max-w-[1500px] space-y-6">
+                {/* ============ HEADER ============ */}
+                <div>
+                    <div className="mb-2 flex items-center gap-2 text-xs text-gray-400">
+                        <span>Admin</span>
+                        <span aria-hidden>/</span>
+                        <span className="text-gray-600">
+                            Scan Resi
+                        </span>
+                    </div>
 
-            {/* UPLOAD */}
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-6">
-                <input
-                    ref={inputRef}
-                    type="file"
-                    accept={ACCEPTED}
-                    multiple
-                    className="block w-full text-sm text-slate-600 file:mr-4 file:cursor-pointer file:rounded-xl file:border-0 file:bg-indigo-50 file:px-4 file:py-2 file:font-semibold file:text-indigo-600 hover:file:bg-indigo-100"
-                    onChange={(e) =>
-                        handleScan(e.target.files)
-                    }
-                />
-                <p className="mt-3 text-xs text-slate-400">
-                    Format: PDF, JPG, JPEG, PNG, WEBP.
-                    Maks 8MB/file, 10 file/batch.
-                </p>
-                {scanning && (
-                    <p className="mt-3 text-sm font-medium text-indigo-600">
-                        Memindai dokumen... (OCR pada
-                        dokumen terscan mungkin butuh
-                        beberapa saat)
+                    <h1 className="text-2xl font-bold tracking-tight text-gray-950">
+                        Scan Resi
+                    </h1>
+
+                    <p className="mt-1 text-sm text-gray-500">
+                        Upload dokumen dan cocokkan nomor
+                        resi dengan order secara otomatis.
                     </p>
-                )}
-            </div>
 
-            {canApplyAny && results.length > 0 && (
-                <button
-                    type="button"
-                    onClick={applyAllMatched}
-                    disabled={scanning}
-                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                    Terapkan Semua ({summary?.matched ?? 0})
-                    Matched
-                </button>
-            )}
-
-            {summary && (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
-                    <SummaryChip
-                        label="Total"
-                        value={summary.total}
-                        className="bg-slate-100 text-slate-700"
-                    />
-                    <SummaryChip
-                        label="Matched (HIGH)"
-                        value={summary.matched}
-                        className="bg-green-100 text-green-700"
-                    />
-                    <SummaryChip
-                        label="Perlu Tinjauan"
-                        value={summary.review}
-                        className="bg-amber-100 text-amber-700"
-                    />
-                    <SummaryChip
-                        label="Konflik"
-                        value={summary.conflict}
-                        className="bg-red-100 text-red-700"
-                    />
-                    <SummaryChip
-                        label="Sudah Ada"
-                        value={summary.skipped}
-                        className="bg-blue-100 text-blue-700"
-                    />
-                    <SummaryChip
-                        label="Gagal"
-                        value={summary.failed}
-                        className="bg-stone-200 text-stone-600"
-                    />
+                    <p className="mt-4 flex max-w-3xl items-start gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-xs leading-relaxed text-gray-500">
+                        <FiInfo
+                            aria-hidden
+                            className="mt-0.5 shrink-0 text-gray-400"
+                            size={14}
+                        />
+                        <span>
+                            Upload PDF atau gambar yang
+                            berisi Order ID dan nomor resi.
+                            Periksa hasil pencocokan
+                            sebelum menerapkan perubahan.
+                        </span>
+                    </p>
                 </div>
-            )}
 
-            {/* RESULTS */}
-            {results.length > 0 && (
-                <div className="space-y-3">
-                    {results.map((result) => {
-                        const meta =
-                            STATUS_META[
-                                result.status
-                            ];
-                        const ready =
-                            result.status ===
-                                "MATCHED_READY" ||
-                            result.status ===
-                                "NEEDS_REVIEW";
-                        const applying =
-                            result.resolution.orderId !==
-                                null &&
-                            applyingIds.has(
-                                `${result.resolution.orderId}:${result.trackingNumber}`
+                {/* ============ UPLOAD (FOCAL) ============ */}
+                <section
+                    aria-labelledby="scan-resi-upload-title"
+                    className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6"
+                >
+                    <div
+                        onDragEnter={(e) => {
+                            e.preventDefault();
+                            if (!scanning) setDragging(true);
+                        }}
+                        onDragOver={(e) => {
+                            e.preventDefault();
+                            if (!scanning) setDragging(true);
+                        }}
+                        onDragLeave={(e) => {
+                            e.preventDefault();
+                            setDragging(false);
+                        }}
+                        onDrop={handleDrop}
+                        className={`group flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-9 text-center transition-all duration-200 focus-within:ring-2 focus-within:ring-gray-900/10 sm:py-11 ${
+                            dragging
+                                ? "border-gray-900 bg-gray-50"
+                                : "border-gray-200 hover:border-gray-300 hover:bg-gray-50/60"
+                        } ${scanning ? "opacity-60" : ""}`}
+                    >
+                        <span
+                            className={`flex h-14 w-14 items-center justify-center rounded-2xl transition-transform duration-200 ${
+                                dragging
+                                    ? "scale-105 bg-gray-900 text-white"
+                                    : "bg-gray-100 text-gray-500 group-hover:scale-[1.03]"
+                            }`}
+                        >
+                            <FiUploadCloud
+                                aria-hidden
+                                size={26}
+                            />
+                        </span>
+
+                        <p
+                            id="scan-resi-upload-title"
+                            className="mt-4 text-base font-semibold text-gray-950"
+                        >
+                            Upload dokumen resi
+                        </p>
+                        <p className="mt-1 text-sm text-gray-500">
+                            Tarik file ke sini atau pilih dari
+                            perangkat
+                        </p>
+
+                        <label
+                            htmlFor="scan-resi-file-input"
+                            className="sr-only"
+                        >
+                            Pilih dokumen resi (PDF atau
+                            gambar)
+                        </label>
+                        <input
+                            id="scan-resi-file-input"
+                            ref={inputRef}
+                            type="file"
+                            accept={ACCEPTED}
+                            multiple
+                            disabled={scanning}
+                            aria-describedby="scan-resi-file-help"
+                            onChange={(e) =>
+                                handleScan(e.target.files)
+                            }
+                            className="sr-only"
+                        />
+
+                        <button
+                            type="button"
+                            onClick={() =>
+                                inputRef.current?.click()
+                            }
+                            disabled={scanning}
+                            className="mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gray-950 px-5 text-sm font-semibold text-white transition hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            <FiUploadCloud
+                                aria-hidden
+                                size={16}
+                            />
+                            Pilih File
+                        </button>
+
+                        <p
+                            id="scan-resi-file-help"
+                            className="mt-3 text-xs text-gray-400"
+                        >
+                            PDF, JPG, PNG, WEBP · Maks. 8
+                            MB/file · Maks. {MAX_FILES_HINT}{" "}
+                            file per proses
+                        </p>
+                    </div>
+                </section>
+
+                {/* ============ PROCESSING ============ */}
+                {scanning && (
+                    <section
+                        role="status"
+                        aria-live="polite"
+                        className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6"
+                    >
+                        <div className="flex items-start gap-3">
+                            <span
+                                aria-hidden
+                                className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900"
+                            />
+                            <div>
+                                <p className="text-sm font-semibold text-gray-950">
+                                    Memproses dokumen...
+                                </p>
+                                <p className="mt-1 text-sm text-gray-500">
+                                    Mengekstrak Order ID dan
+                                    nomor resi. Dokumen hasil
+                                    scan (OCR) membutuhkan
+                                    waktu lebih lama.
+                                </p>
+                            </div>
+                        </div>
+
+                        {queuedFiles.length > 0 && (
+                            <ul className="mt-4 space-y-2">
+                                {queuedFiles.map((file, i) => {
+                                    const Icon =
+                                        fileIcon(file.name);
+                                    return (
+                                        <li
+                                            key={`${file.name}-${i}`}
+                                            className="scan-resi-enter flex items-center justify-between gap-3 rounded-xl border border-gray-100 bg-gray-50/60 px-4 py-3"
+                                        >
+                                            <span className="flex min-w-0 items-center gap-3">
+                                                <Icon
+                                                    aria-hidden
+                                                    className="shrink-0 text-gray-400"
+                                                    size={16}
+                                                />
+                                                <span className="min-w-0">
+                                                    <span className="block truncate text-sm font-medium text-gray-800">
+                                                        {file.name}
+                                                    </span>
+                                                    <span className="block text-xs text-gray-400">
+                                                        {formatFileSize(
+                                                            file.size
+                                                        )}
+                                                    </span>
+                                                </span>
+                                            </span>
+                                            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-gray-600">
+                                                <FiLoader
+                                                    aria-hidden
+                                                    className="animate-spin"
+                                                    size={12}
+                                                />
+                                                Memproses
+                                            </span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        )}
+                    </section>
+                )}
+
+                {/* ============ ERROR ============ */}
+                {scanError && !scanning && (
+                    <section
+                        role="alert"
+                        className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm sm:p-6"
+                    >
+                        <div className="flex items-start gap-3">
+                            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-100 text-rose-600">
+                                <FiAlertTriangle
+                                    aria-hidden
+                                    size={18}
+                                />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                                <p className="text-sm font-semibold text-rose-900">
+                                    Tidak dapat memproses
+                                    dokumen
+                                </p>
+                                <p className="mt-1 text-sm break-words text-rose-700">
+                                    {scanError}
+                                </p>
+
+                                {pendingFiles.length > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={handleRetry}
+                                        className="mt-4 inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-rose-200 bg-white px-4 text-sm font-semibold text-rose-700 transition hover:bg-rose-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
+                                    >
+                                        <FiRefreshCw
+                                            aria-hidden
+                                            size={14}
+                                        />
+                                        Coba Lagi
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                {/* ============ EMPTY ============ */}
+                {showEmptyState && (
+                    <section className="rounded-2xl border border-dashed border-gray-200 bg-white/60 px-6 py-10 text-center">
+                        <p className="text-sm font-semibold text-gray-900">
+                            Belum ada dokumen
+                        </p>
+                        <p className="mx-auto mt-1 max-w-md text-sm text-gray-500">
+                            Upload PDF atau gambar untuk mulai
+                            mencocokkan Order ID dan nomor
+                            resi. Hasil pencocokan akan
+                            muncul di sini.
+                        </p>
+                    </section>
+                )}
+
+                {/* ============ SUMMARY ============ */}
+                {summary && results.length > 0 && (
+                    <section
+                        aria-label="Ringkasan hasil scan"
+                        className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6"
+                    >
+                        {summaryCards.map((card) => {
+                            const Icon = card.icon;
+                            return (
+                                <div
+                                    key={card.key}
+                                    className="scan-resi-enter rounded-2xl border border-gray-200 bg-white p-4 shadow-sm"
+                                >
+                                    <span
+                                        aria-hidden
+                                        className={`flex h-8 w-8 items-center justify-center rounded-lg ${card.tone}`}
+                                    >
+                                        <Icon size={15} />
+                                    </span>
+                                    <p className="mt-3 text-2xl font-bold tracking-tight text-gray-950">
+                                        {card.value}
+                                    </p>
+                                    <p className="text-xs font-medium text-gray-500">
+                                        {card.label}
+                                    </p>
+                                </div>
                             );
+                        })}
+                    </section>
+                )}
 
-                        return (
-                            <div
-                                key={result.index}
-                                className="rounded-2xl border border-slate-200 bg-white p-4"
+                {/* ============ ACTION BAR ============ */}
+                {results.length > 0 && (
+                    <section
+                        aria-label="Aksi penerapan resi"
+                        className="flex flex-col gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                    >
+                        <div className="text-sm text-gray-500">
+                            <span className="font-semibold text-gray-950">
+                                {results.length} hasil scan
+                            </span>
+                            <span className="mx-2 text-gray-300">
+                                •
+                            </span>
+                            {counts.matched} siap diterapkan
+                            <span className="mx-2 text-gray-300">
+                                •
+                            </span>
+                            {counts.review} perlu ditinjau
+                        </div>
+
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                            <button
+                                type="button"
+                                onClick={
+                                    handleApplyMatchedClick
+                                }
+                                disabled={
+                                    busy ||
+                                    counts.matched === 0
+                                }
+                                aria-busy={
+                                    applyingAll &&
+                                    counts.matched > 0
+                                }
+                                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gray-950 px-5 text-sm font-semibold text-white transition hover:bg-gray-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                        <p className="truncate font-semibold text-slate-800">
-                                            {result.fileName}{" "}
-                                            <span className="ml-1 text-xs font-normal text-slate-400">
-                                                ({formatFileSize(
-                                                    result.fileSize
-                                                )})
-                                            </span>
-                                        </p>
-                                        <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-slate-600">
-                                            <span>
-                                                Order:{" "}
-                                                <strong>
-                                                    {result.resolution
-                                                        .orderNumber ??
-                                                        result
-                                                            .orderReference ??
-                                                        "-"}
-                                                </strong>
-                                            </span>
-                                            <span>•</span>
-                                            <span>
-                                                Resi:{" "}
-                                                <strong className="font-mono">
-                                                    {result.trackingNumber ??
-                                                        "-"}
-                                                </strong>
-                                            </span>
-                                            <span>•</span>
-                                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                                                {result.source ===
-                                                "pdf-text"
-                                                    ? "PDF Text"
-                                                    : result.source ===
-                                                        "ocr"
-                                                      ? "OCR"
-                                                      : "—"}
-                                            </span>
-                                            <span>•</span>
-                                            <span
-                                                title={`Keyakinan otomatis ${confidencePercent(
-                                                    result.confidence
-                                                )}`}
+                                {applyingAll && (
+                                    <span
+                                        aria-hidden
+                                        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                                    />
+                                )}
+                                {applyingAll
+                                    ? "Menerapkan..."
+                                    : `Terapkan yang Siap (${counts.matched})`}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={applyAllApplicable}
+                                disabled={busy || !anyApplicable}
+                                aria-busy={applyingAll}
+                                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                Terapkan Semua (
+                                {counts.applicable})
+                            </button>
+                        </div>
+                    </section>
+                )}
+
+                {/* ============ RESULTS — DESKTOP ============ */}
+                {results.length > 0 && (
+                    <section className="hidden overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm md:block">
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-5 py-4">
+                            <div>
+                                <h2 className="text-sm font-semibold text-gray-950">
+                                    Hasil pencocokan
+                                </h2>
+                                <p className="mt-0.5 text-xs text-gray-400">
+                                    {results.length} dokumen ·
+                                    periksa sebelum menerapkan
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            <table className="w-full min-w-[900px] text-left">
+                                <caption className="sr-only">
+                                    Hasil pencocokan nomor resi
+                                    per dokumen
+                                </caption>
+                                <thead>
+                                    <tr className="border-b border-gray-200 bg-gray-50/80">
+                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                                            File
+                                        </th>
+                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                                            Order
+                                        </th>
+                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                                            Nomor Resi
+                                        </th>
+                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                                            Confidence
+                                        </th>
+                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                                            Status
+                                        </th>
+                                        <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                                            Aksi
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                    {results.map((result) => {
+                                        const Icon = fileIcon(
+                                            result.fileName
+                                        );
+                                        const ready =
+                                            isApplicable(result);
+                                        const applying =
+                                            result.resolution
+                                                .orderId !==
+                                                null &&
+                                            applyingIds.has(
+                                                resultKey(
+                                                    result
+                                                )
+                                            );
+
+                                        return (
+                                            <tr
+                                                key={result.index}
+                                                className="scan-resi-enter align-top transition-colors hover:bg-gray-50/70"
                                             >
-                                                Confidence:{" "}
-                                                {confidencePercent(
-                                                    result.confidence
+                                                <td className="max-w-[240px] px-5 py-4">
+                                                    <div className="flex items-start gap-3">
+                                                        <Icon
+                                                            aria-hidden
+                                                            className="mt-0.5 shrink-0 text-gray-400"
+                                                            size={16}
+                                                        />
+                                                        <div className="min-w-0">
+                                                            <p
+                                                                className="truncate text-sm font-semibold text-gray-900"
+                                                                title={
+                                                                    result.fileName
+                                                                }
+                                                            >
+                                                                {
+                                                                    result.fileName
+                                                                }
+                                                            </p>
+                                                            <p className="mt-0.5 text-xs text-gray-400">
+                                                                {formatFileSize(
+                                                                    result.fileSize
+                                                                )}{" "}
+                                                                ·{" "}
+                                                                {sourceLabel(
+                                                                    result.source
+                                                                )}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-5 py-4">
+                                                    <p className="text-sm font-medium text-gray-900">
+                                                        {result
+                                                            .resolution
+                                                            .orderNumber ??
+                                                            result.orderReference ??
+                                                            "—"}
+                                                    </p>
+                                                    {result
+                                                        .resolution
+                                                        .orderStatus && (
+                                                        <p className="mt-0.5 text-xs text-gray-400">
+                                                            {
+                                                                result
+                                                                    .resolution
+                                                                    .orderStatus
+                                                            }
+                                                        </p>
+                                                    )}
+                                                </td>
+
+                                                <td className="px-5 py-4">
+                                                    <span className="font-mono text-sm text-gray-900">
+                                                        {result.trackingNumber ??
+                                                            "—"}
+                                                    </span>
+                                                </td>
+
+                                                <td className="px-5 py-4">
+                                                    <ConfidenceBadge
+                                                        confidence={
+                                                            result.confidence
+                                                        }
+                                                        showScore
+                                                    />
+                                                </td>
+
+                                                <td className="px-5 py-4">
+                                                    <StatusBadge
+                                                        status={
+                                                            result.status
+                                                        }
+                                                    />
+                                                    {result
+                                                        .warnings
+                                                        .length >
+                                                        0 && (
+                                                        <p
+                                                            className="mt-1 max-w-[230px] truncate text-[11px] text-amber-700"
+                                                            title={result.warnings.join(
+                                                                " "
+                                                            )}
+                                                        >
+                                                            {
+                                                                result
+                                                                    .warnings[0]
+                                                            }
+                                                        </p>
+                                                    )}
+                                                </td>
+
+                                                <td className="px-5 py-4">
+                                                    <div className="flex justify-end gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setDetail(
+                                                                    result
+                                                                )
+                                                            }
+                                                            className="inline-flex h-9 items-center justify-center rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2"
+                                                        >
+                                                            Detail
+                                                        </button>
+
+                                                        {ready && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                    applyItem(
+                                                                        result
+                                                                    )
+                                                                }
+                                                                disabled={
+                                                                    applying
+                                                                }
+                                                                aria-busy={
+                                                                    applying
+                                                                }
+                                                                className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 ${
+                                                                    result.status ===
+                                                                    "MATCHED_READY"
+                                                                        ? "bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-600"
+                                                                        : "bg-amber-600 hover:bg-amber-700 focus-visible:ring-amber-600"
+                                                                }`}
+                                                            >
+                                                                {applying && (
+                                                                    <span
+                                                                        aria-hidden
+                                                                        className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                                                                    />
+                                                                )}
+                                                                {applying
+                                                                    ? "Menerapkan..."
+                                                                    : result.status ===
+                                                                        "MATCHED_READY"
+                                                                      ? "Terapkan"
+                                                                      : "Tinjau & Terapkan"}
+                                                            </button>
+                                                        )}
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                removeFromList(
+                                                                    result
+                                                                )
+                                                            }
+                                                            aria-label={`Hapus ${result.fileName} dari daftar hasil`}
+                                                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-400 transition hover:bg-gray-50 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2"
+                                                        >
+                                                            <FiTrash2
+                                                                aria-hidden
+                                                                size={14}
+                                                            />
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                )}
+
+                {/* ============ RESULTS — MOBILE ============ */}
+                {results.length > 0 && (
+                    <div className="space-y-3 md:hidden">
+                        {results.map((result) => {
+                            const Icon = fileIcon(
+                                result.fileName
+                            );
+                            const ready =
+                                isApplicable(result);
+                            const applying =
+                                result.resolution.orderId !==
+                                    null &&
+                                applyingIds.has(
+                                    resultKey(result)
+                                );
+
+                            return (
+                                <article
+                                    key={result.index}
+                                    className="scan-resi-enter rounded-2xl border border-gray-200 bg-white p-4 shadow-sm"
+                                >
+                                    <div className="flex items-start gap-3">
+                                        <Icon
+                                            aria-hidden
+                                            className="mt-0.5 shrink-0 text-gray-400"
+                                            size={16}
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                            <p
+                                                className="truncate text-sm font-semibold text-gray-900"
+                                                title={
+                                                    result.fileName
+                                                }
+                                            >
+                                                {
+                                                    result.fileName
+                                                }
+                                            </p>
+                                            <p className="mt-0.5 text-xs text-gray-400">
+                                                {formatFileSize(
+                                                    result.fileSize
+                                                )}{" "}
+                                                ·{" "}
+                                                {sourceLabel(
+                                                    result.source
                                                 )}
-                                            </span>
+                                            </p>
                                         </div>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                removeFromList(
+                                                    result
+                                                )
+                                            }
+                                            aria-label={`Hapus ${result.fileName} dari daftar hasil`}
+                                            className="-mr-1 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2"
+                                        >
+                                            <FiTrash2
+                                                aria-hidden
+                                                size={14}
+                                            />
+                                        </button>
                                     </div>
 
-                                    <div className="flex items-center gap-2">
-                                        <span
-                                            className={`rounded-full px-3 py-1 text-xs font-semibold ${meta.className}`}
+                                    <dl className="mt-4 space-y-2 border-t border-gray-100 pt-3">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <dt className="text-xs font-medium text-gray-400">
+                                                Order
+                                            </dt>
+                                            <dd className="min-w-0 text-right text-sm font-semibold break-words text-gray-900">
+                                                {result
+                                                    .resolution
+                                                    .orderNumber ??
+                                                    result.orderReference ??
+                                                    "—"}
+                                            </dd>
+                                        </div>
+                                        <div className="flex items-start justify-between gap-3">
+                                            <dt className="text-xs font-medium text-gray-400">
+                                                Nomor Resi
+                                            </dt>
+                                            <dd className="min-w-0 text-right font-mono text-sm break-words text-gray-900">
+                                                {result.trackingNumber ??
+                                                    "—"}
+                                            </dd>
+                                        </div>
+                                    </dl>
+
+                                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                                        <ConfidenceBadge
+                                            confidence={
+                                                result.confidence
+                                            }
+                                            showScore
+                                        />
+                                        <StatusBadge
+                                            status={result.status}
+                                        />
+                                    </div>
+
+                                    {result.warnings.length >
+                                        0 && (
+                                        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800">
+                                            {result.warnings[0]}
+                                        </p>
+                                    )}
+
+                                    <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setDetail(result)
+                                            }
+                                            className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-200 bg-white px-4 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-gray-900 focus-visible:ring-offset-2 sm:flex-1"
                                         >
-                                            {meta.label}
-                                        </span>
+                                            Lihat Detail
+                                        </button>
 
                                         {ready && (
                                             <button
                                                 type="button"
                                                 onClick={() =>
-                                                    applyItem(
-                                                        result
-                                                    )
+                                                    applyItem(result)
                                                 }
-                                                disabled={
+                                                disabled={applying}
+                                                aria-busy={
                                                     applying
                                                 }
-                                                className={`rounded-xl px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60 ${
+                                                className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-semibold text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60 sm:flex-1 ${
                                                     result.status ===
                                                     "MATCHED_READY"
-                                                        ? "bg-green-600 hover:bg-green-700"
-                                                        : "bg-amber-600 hover:bg-amber-700"
+                                                        ? "bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-emerald-600"
+                                                        : "bg-amber-600 hover:bg-amber-700 focus-visible:ring-amber-600"
                                                 }`}
                                             >
+                                                {applying && (
+                                                    <span
+                                                        aria-hidden
+                                                        className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white"
+                                                    />
+                                                )}
                                                 {applying
                                                     ? "Menerapkan..."
                                                     : result.status ===
@@ -572,48 +1280,29 @@ export default function AdminScanResiPage() {
                                             </button>
                                         )}
                                     </div>
-                                </div>
+                                </article>
+                            );
+                        })}
+                    </div>
+                )}
 
-                                {result.warnings.length >
-                                    0 && (
-                                    <ul className="mt-2 space-y-0.5 text-xs text-amber-700">
-                                        {result.warnings.map(
-                                            (w, i) => (
-                                                <li
-                                                    key={
-                                                        i
-                                                    }
-                                                >
-                                                    ⚠ {w}
-                                                </li>
-                                            )
-                                        )}
-                                    </ul>
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-            )}
-        </div>
-    );
-}
-
-function SummaryChip({
-    label,
-    value,
-    className,
-}: {
-    label: string;
-    value: number;
-    className: string;
-}) {
-    return (
-        <div
-            className={`rounded-2xl p-3 text-center ${className}`}
-        >
-            <p className="text-2xl font-bold">{value}</p>
-            <p className="text-xs font-medium">{label}</p>
+                {/* ============ DETAIL PANEL ============ */}
+                {detail && (
+                    <ScanResiDetailPanel
+                        result={detail}
+                        applying={
+                            detail.resolution.orderId !==
+                                null &&
+                            applyingIds.has(
+                                resultKey(detail)
+                            )
+                        }
+                        canApply={isApplicable(detail)}
+                        onApply={() => applyItem(detail)}
+                        onClose={() => setDetail(null)}
+                    />
+                )}
+            </div>
         </div>
     );
 }

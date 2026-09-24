@@ -102,6 +102,16 @@ export async function createAuditLog(
 }
 
 /**
+ * Keys that must NEVER reach the audit log, regardless of case.
+ *
+ * Covers the TikTok Events API credential and any OAuth-style
+ * token/authorization material that could otherwise be persisted
+ * verbatim in AdminAuditLog.metadata.
+ */
+const SENSITIVE_METADATA_KEY_PATTERN =
+    /^(password|token|secret|cookie|ktpimagebase64|access[-_]?token|refresh[-_]?token|id[-_]?token|authorization|auth[-_]?token)$/i;
+
+/**
  * Remove sensitive fields from metadata before storage.
  */
 function sanitizeMetadata(
@@ -130,6 +140,19 @@ function sanitizeMetadata(
     delete sanitized.secret;
     delete sanitized.cookie;
     delete sanitized.ktpImageBase64;
+
+    // Case-insensitive removal for token/credential keys:
+    // accessToken, access_token, ACCESS_TOKEN, authorization,
+    // Authorization, refresh_token, id_token, etc.
+    for (const key of Object.keys(sanitized)) {
+        if (
+            SENSITIVE_METADATA_KEY_PATTERN.test(
+                key
+            )
+        ) {
+            delete sanitized[key];
+        }
+    }
 
     return sanitized;
 }

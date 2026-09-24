@@ -11,6 +11,10 @@ import {
     findTikTokPixelIdMismatch,
 } from "@/lib/analytics/tiktok-pixel-code";
 import { normalizeTikTokPixelId } from "@/lib/analytics/tiktok";
+import {
+    MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH,
+    normalizeTikTokPixelAccessToken,
+} from "@/lib/analytics/tiktok-access-token";
 
 type Region = {
     id: number;
@@ -31,6 +35,18 @@ type StoreForm = {
     tiktokPixelId: string;
     tiktokPixelName: string;
     tiktokPixelCode: string;
+
+    /**
+     * Server-side Events API credential.
+     *
+     * NEVER pre-filled from the server: the input always starts
+     * empty and is only used to SET/REPLACE the token. The stored
+     * value is represented by the configured flag + last-4 hint.
+     */
+    tiktokPixelAccessToken: string;
+    tiktokPixelAccessTokenConfigured: boolean;
+    tiktokPixelAccessTokenLast4: string;
+    clearTiktokPixelAccessToken: boolean;
 
     provinceId: number | null;
     province: string;
@@ -65,6 +81,11 @@ const initialForm: StoreForm = {
     tiktokPixelName: "",
     tiktokPixelCode: "",
 
+    tiktokPixelAccessToken: "",
+    tiktokPixelAccessTokenConfigured: false,
+    tiktokPixelAccessTokenLast4: "",
+    clearTiktokPixelAccessToken: false,
+
     provinceId: null,
     province: "",
 
@@ -88,6 +109,8 @@ const initialForm: StoreForm = {
 export default function AdminSettingsForm() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [showAccessToken, setShowAccessToken] =
+        useState(false);
 
     const [provinces, setProvinces] = useState<Region[]>([]);
     const [cities, setCities] = useState<Region[]>([]);
@@ -407,6 +430,27 @@ export default function AdminSettingsForm() {
                  */
                 tiktokPixelCode:
                     data.data.tiktokPixelCode ?? "",
+
+                /*
+                 * Token TIDAK pernah di-prefill dari server.
+                 * Yang kita simpan hanya status + last-4.
+                 */
+                tiktokPixelAccessToken: "",
+
+                tiktokPixelAccessTokenConfigured:
+                    data.data
+                        .tiktokPixelAccessTokenConfigured ===
+                    true,
+
+                tiktokPixelAccessTokenLast4:
+                    typeof data.data
+                        .tiktokPixelAccessTokenLast4 ===
+                    "string"
+                        ? data.data
+                              .tiktokPixelAccessTokenLast4
+                        : "",
+
+                clearTiktokPixelAccessToken: false,
 
                 provinceId:
                     data.data.provinceId ?? null,
@@ -862,6 +906,34 @@ export default function AdminSettingsForm() {
             return;
         }
 
+        /*
+         * Access Token: hanya divalidasi kalau diisi.
+         * Kosong = pertahankan token lama.
+         */
+        if (
+            form.tiktokPixelAccessToken.trim() &&
+            form.tiktokPixelAccessToken.trim()
+                .length >
+                MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH
+        ) {
+            toast.error(
+                `TikTok Pixel Access Token maksimal ${MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH} karakter.`
+            );
+            return;
+        }
+
+        if (
+            form.tiktokPixelAccessToken.trim() &&
+            !normalizeTikTokPixelAccessToken(
+                form.tiktokPixelAccessToken
+            )
+        ) {
+            toast.error(
+                "TikTok Pixel Access Token tidak valid."
+            );
+            return;
+        }
+
         try {
             setSaving(true);
 
@@ -1166,6 +1238,109 @@ export default function AdminSettingsForm() {
                                     Events Manager.
                                 </p>
                             </div>
+                        </div>
+
+                        {/* ACCESS TOKEN (SERVER-SIDE EVENTS API) */}
+
+                        <div className="mt-5">
+                            <label className="text-sm font-medium text-gray-700">
+                                TikTok Pixel Access Token
+                            </label>
+
+                            <p className="mt-2 text-xs font-medium text-gray-600">
+                                {form.tiktokPixelAccessTokenConfigured
+                                    ? "Access Token tersimpan"
+                                    : "Belum ada Access Token tersimpan"}
+
+                                {form.tiktokPixelAccessTokenConfigured &&
+                                    form.tiktokPixelAccessTokenLast4 && (
+                                        <span className="ml-1 font-mono text-gray-400">
+                                            ({"••••"}
+                                            {
+                                                form.tiktokPixelAccessTokenLast4
+                                            }
+                                            )
+                                        </span>
+                                    )}
+                            </p>
+
+                            <div className="mt-2 flex gap-2">
+                                <input
+                                    type={
+                                        showAccessToken
+                                            ? "text"
+                                            : "password"
+                                    }
+                                    value={
+                                        form.tiktokPixelAccessToken
+                                    }
+                                    onChange={(e) =>
+                                        updateField(
+                                            "tiktokPixelAccessToken",
+                                            e.target.value
+                                        )
+                                    }
+                                    disabled={
+                                        form.clearTiktokPixelAccessToken
+                                    }
+                                    className="w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500 disabled:bg-gray-100"
+                                    placeholder={
+                                        form.tiktokPixelAccessTokenConfigured
+                                            ? "Kosongkan untuk mempertahankan token lama"
+                                            : "Tempel Access Token dari TikTok Events Manager"
+                                    }
+                                    autoComplete="new-password"
+                                    spellCheck={false}
+                                />
+
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        setShowAccessToken(
+                                            (value) =>
+                                                !value
+                                        )
+                                    }
+                                    className="shrink-0 rounded-xl border border-gray-300 px-4 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+                                >
+                                    {showAccessToken
+                                        ? "Sembunyikan"
+                                        : "Lihat"}
+                                </button>
+                            </div>
+
+                            <p className="mt-2 text-xs text-gray-500">
+                                Dipakai hanya oleh server untuk
+                                TikTok Events API. Nilainya tidak
+                                pernah dikirim ke browser / client
+                                bundle. Token yang tersimpan tidak
+                                pernah ditampilkan kembali.
+                            </p>
+
+                            {form.tiktokPixelAccessTokenConfigured && (
+                                <label className="mt-3 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-3">
+                                    <input
+                                        type="checkbox"
+                                        checked={
+                                            form.clearTiktokPixelAccessToken
+                                        }
+                                        onChange={(e) =>
+                                            updateField(
+                                                "clearTiktokPixelAccessToken",
+                                                e.target.checked
+                                            )
+                                        }
+                                        className="mt-0.5 h-4 w-4 accent-red-600"
+                                    />
+
+                                    <span className="text-xs text-red-700">
+                                        Hapus Access Token yang
+                                        tersimpan (TikTok Events API
+                                        server-side akan berhenti
+                                        mengirim event).
+                                    </span>
+                                </label>
+                            )}
                         </div>
 
                         {/* PIXEL CODE */}

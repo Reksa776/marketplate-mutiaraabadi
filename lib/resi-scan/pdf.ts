@@ -8,7 +8,32 @@
  * NO system PDF packages; the package bundles
  * @napi-rs/canvas for optional page rendering
  * (used to OCR scanned PDFs via getScreenshot).
+ *
+ * Deployment notes:
+ *   - pdf.js resolves its worker with a RELATIVE
+ *     runtime import (GlobalWorkerOptions.workerSrc
+ *     defaults to './pdf.worker.mjs' in Node). That
+ *     path is legitimate from the real package
+ *     (node_modules/pdfjs-dist/legacy/build/
+ *     pdf.worker.mjs) but breaks when the package is
+ *     bundled, because the import then runs from a
+ *     generated chunk and resolves to
+ *     <project>/.next/server/chunks/pdf.worker.mjs,
+ *     which is never emitted. pdf-parse and
+ *     pdfjs-dist are therefore listed in
+ *     `serverExternalPackages` (next.config.ts) so
+ *     they load from node_modules at runtime.
+ *   - Only the public `pdf-parse` entry is imported.
+ *     Never import package internals (pdf-parse/dist/**
+ *     or pdfjs-dist/**) and never hardcode a worker
+ *     path — the library owns that resolution.
+ *   - This module is server-only. It must never be
+ *     imported from a client component; the
+ *     `server-only` guard turns such an import into a
+ *     build-time error.
  */
+
+import "server-only";
 
 import { PDFParse } from "pdf-parse";
 

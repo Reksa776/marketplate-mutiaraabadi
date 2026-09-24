@@ -271,6 +271,17 @@ export async function GET(
                     where: {
                         id: 1,
                     },
+                    /*
+                     * Explicit select: only the store identity fields
+                     * this route uses. Avoids pulling server-only
+                     * settings (incl. the TikTok Access Token) into
+                     * memory.
+                     */
+                    select: {
+                        id: true,
+                        storeName: true,
+                        rajaOngkirDestinationId: true,
+                    },
                 }),
             ]);
 

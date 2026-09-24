@@ -3,7 +3,10 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { trackTikTokEvent } from "@/lib/analytics/tiktok";
+import {
+    buildTikTokEventId,
+    trackTikTokEvent,
+} from "@/lib/analytics/tiktok";
 
 type OrderStatus = {
     id: number;
@@ -171,12 +174,25 @@ export default function PaymentFinishContent() {
             return;
         }
 
-        trackTikTokEvent("CompletePayment", {
-            content_id: order.orderNumber,
-            value: order.total,
-            currency: "IDR",
-            contents: [],
-        });
+        trackTikTokEvent(
+            "CompletePayment",
+            {
+                content_id: order.orderNumber,
+                value: order.total,
+                currency: "IDR",
+                contents: [],
+            },
+            {
+                /*
+                 * Shared dedup id — identical to the server-side
+                 * Events API CompletePayment event_id.
+                 */
+                eventId: buildTikTokEventId(
+                    "CompletePayment",
+                    order.orderNumber
+                ),
+            }
+        );
     }, [isPaid, order]);
 
     return (

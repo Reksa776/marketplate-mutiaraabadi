@@ -12,10 +12,116 @@ import {
     normalizeTikTokPixelName,
 } from "@/lib/analytics/tiktok-pixel-code";
 import {
+    MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH,
+    last4OfTikTokAccessToken,
+    normalizeTikTokPixelAccessToken,
+} from "@/lib/analytics/tiktok-access-token";
+import {
     buildTikTokPixelAuditMetadata,
     hasTikTokPixelChanges,
 } from "@/lib/analytics/tiktok-pixel-audit";
 import { createAuditLog } from "@/lib/admin/audit-log";
+
+/**
+ * Fields the admin settings UI may read. Deliberately explicit —
+ * `tiktokPixelAccessToken` is NOT in this list, so it can never
+ * be serialised to the browser by accident.
+ */
+const SETTINGS_SELECT = {
+    storeName: true,
+    phone: true,
+    email: true,
+    logo: true,
+    address: true,
+
+    tiktokPixelEnabled: true,
+    tiktokPixelId: true,
+    tiktokPixelName: true,
+    tiktokPixelCode: true,
+
+    provinceId: true,
+    province: true,
+    cityId: true,
+    city: true,
+    districtId: true,
+    district: true,
+    subdistrictId: true,
+    subdistrict: true,
+    postalCode: true,
+    rajaOngkirDestinationId: true,
+    latitude: true,
+    longitude: true,
+} as const;
+
+/**
+ * Safe admin-facing projection of StoreSetting.
+ *
+ * NEVER includes the Access Token. The token is represented only
+ * as a configured flag + last-4 hint.
+ */
+type SettingsProjectionSource = {
+    storeName: string;
+    phone: string | null;
+    email: string | null;
+    logo: string | null;
+    address: string;
+    tiktokPixelEnabled: boolean;
+    tiktokPixelId: string | null;
+    tiktokPixelName: string | null;
+    tiktokPixelCode: string | null;
+    provinceId: number | null;
+    province: string | null;
+    cityId: number | null;
+    city: string | null;
+    districtId: number | null;
+    district: string | null;
+    subdistrictId: number | null;
+    subdistrict: string | null;
+    postalCode: string | null;
+    rajaOngkirDestinationId: number | null;
+    latitude: unknown;
+    longitude: unknown;
+};
+
+function toSettingsResponse(
+    setting: SettingsProjectionSource,
+    accessToken: string | null
+) {
+    return {
+        storeName: setting.storeName,
+        phone: setting.phone,
+        email: setting.email,
+        logo: setting.logo,
+        address: setting.address,
+
+        tiktokPixelEnabled:
+            setting.tiktokPixelEnabled,
+        tiktokPixelId: setting.tiktokPixelId,
+        tiktokPixelName:
+            setting.tiktokPixelName,
+        tiktokPixelCode:
+            setting.tiktokPixelCode,
+
+        tiktokPixelAccessTokenConfigured:
+            accessToken !== null,
+        tiktokPixelAccessTokenLast4:
+            last4OfTikTokAccessToken(accessToken),
+
+        provinceId: setting.provinceId,
+        province: setting.province,
+        cityId: setting.cityId,
+        city: setting.city,
+        districtId: setting.districtId,
+        district: setting.district,
+        subdistrictId: setting.subdistrictId,
+        subdistrict: setting.subdistrict,
+        postalCode: setting.postalCode,
+        rajaOngkirDestinationId:
+            setting.rajaOngkirDestinationId,
+        latitude: setting.latitude,
+        longitude: setting.longitude,
+    };
+}
 
 /**
  * Session ADMIN yang valid, atau null.
@@ -134,11 +240,26 @@ export async function GET() {
                 where: {
                     id: 1,
                 },
+                /*
+                 * Explicit select + safe projection. The raw
+                 * Access Token is read only to derive the
+                 * configured flag / last-4 and is NEVER returned.
+                 */
+                select: {
+                    ...SETTINGS_SELECT,
+                    tiktokPixelAccessToken: true,
+                },
             });
 
         return NextResponse.json({
             success: true,
-            data: setting,
+            data: setting
+                ? toSettingsResponse(
+                      setting,
+                      setting.tiktokPixelAccessToken ??
+                          null
+                  )
+                : null,
         });
     } catch (error) {
         console.error(
@@ -302,6 +423,60 @@ export async function PUT(
             );
         }
 
+        /*
+         * ============================
+         * TIKTOK EVENTS API ACCESS TOKEN (SECRET)
+         * ============================
+         *
+         * Semantics:
+         *   - `clearTiktokPixelAccessToken === true` → hapus token
+         *   - token baru valid              → ganti token
+         *   - token kosong tanpa clear      → pertahankan token lama
+         *
+         * Nilai mentah tidak pernah dikembalikan ke client.
+         */
+        const clearTikTokPixelAccessToken =
+            body.clearTiktokPixelAccessToken ===
+            true;
+
+        const rawTikTokPixelAccessToken =
+            typeof body.tiktokPixelAccessToken ===
+            "string"
+                ? body.tiktokPixelAccessToken
+                : "";
+
+        if (
+            rawTikTokPixelAccessToken.length >
+            MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: `TikTok Pixel Access Token maksimal ${MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH} karakter.`,
+                },
+                { status: 400 }
+            );
+        }
+
+        const providedTikTokPixelAccessToken =
+            normalizeTikTokPixelAccessToken(
+                rawTikTokPixelAccessToken
+            );
+
+        if (
+            rawTikTokPixelAccessToken.trim() &&
+            !providedTikTokPixelAccessToken
+        ) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "TikTok Pixel Access Token tidak valid.",
+                },
+                { status: 400 }
+            );
+        }
+
         const tiktokPixelEnabled =
             body.tiktokPixelEnabled === true;
 
@@ -341,8 +516,20 @@ export async function PUT(
                     tiktokPixelId: true,
                     tiktokPixelName: true,
                     tiktokPixelCode: true,
+                    tiktokPixelAccessToken: true,
                 },
             });
+
+        /*
+         * Resolusi token final: clear > replace > keep.
+         */
+        const nextTikTokPixelAccessToken =
+            clearTikTokPixelAccessToken
+                ? null
+                : providedTikTokPixelAccessToken ??
+                  previousSetting
+                      ?.tiktokPixelAccessToken ??
+                  null;
 
         /**
          * Jangan percaya destination ID
@@ -397,6 +584,9 @@ export async function PUT(
                     tiktokPixelName,
 
                     tiktokPixelCode,
+
+                    tiktokPixelAccessToken:
+                        nextTikTokPixelAccessToken,
 
                     provinceId,
 
@@ -480,6 +670,9 @@ export async function PUT(
 
                     tiktokPixelCode,
 
+                    tiktokPixelAccessToken:
+                        nextTikTokPixelAccessToken,
+
                     provinceId,
 
                     province:
@@ -557,6 +750,10 @@ export async function PUT(
                         previousSetting.tiktokPixelName,
                     code:
                         previousSetting.tiktokPixelCode,
+                    accessToken:
+                        previousSetting
+                            .tiktokPixelAccessToken ??
+                        null,
                 }
                 : null;
 
@@ -565,6 +762,7 @@ export async function PUT(
             pixelId: tiktokPixelId,
             pixelName: tiktokPixelName,
             code: tiktokPixelCode,
+            accessToken: nextTikTokPixelAccessToken,
         };
 
         if (
@@ -602,7 +800,14 @@ export async function PUT(
             success: true,
             message:
                 "Pengaturan toko berhasil disimpan.",
-            data: setting,
+            /*
+             * Safe projection — the Access Token is NEVER echoed
+             * back, only its configured flag + last-4.
+             */
+            data: toSettingsResponse(
+                setting,
+                nextTikTokPixelAccessToken
+            ),
 
             /*
              * Warning untuk admin (bukan error):

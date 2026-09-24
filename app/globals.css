@@ -24,3 +24,41 @@
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 } */
+
+/* ==========================================
+ * SCAN RESI — MICRO INTERACTIONS
+ * ==========================================
+ *
+ * Light entrance animation for result rows,
+ * cards and summary tiles (see
+ * app/admin/scan-resi/page.tsx).
+ *
+ * Disabled entirely when the user asks for
+ * reduced motion.
+ */
+
+@keyframes scan-resi-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.scan-resi-enter {
+  animation: scan-resi-enter 220ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-resi-enter {
+    animation: none;
+  }
+
+  .scan-resi-enter * {
+    transition-duration: 0ms !important;
+  }
+}

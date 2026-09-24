@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect } from "react";
-import { trackTikTokEvent } from "@/lib/analytics/tiktok";
+import {
+    buildTikTokEventId,
+    trackTikTokEvent,
+} from "@/lib/analytics/tiktok";
 
 type PurchaseItem = {
     content_id: string;
@@ -31,12 +34,25 @@ export default function PurchaseTracker({
     contents,
 }: PurchaseTrackerProps) {
     useEffect(() => {
-        trackTikTokEvent("CompletePayment", {
-            content_id: orderId,
-            value: total,
-            currency,
-            contents: contents ?? [],
-        });
+        trackTikTokEvent(
+            "CompletePayment",
+            {
+                content_id: orderId,
+                value: total,
+                currency,
+                contents: contents ?? [],
+            },
+            {
+                /*
+                 * Shared dedup id — identical to the server-side
+                 * Events API CompletePayment event_id.
+                 */
+                eventId: buildTikTokEventId(
+                    "CompletePayment",
+                    orderId
+                ),
+            }
+        );
     }, [orderId, total, currency, contents]);
 
     return null;

@@ -150,10 +150,45 @@ const nextConfig: NextConfig = {
      * from real paths on the server. Never import
      * tesseract.js internals (src/**, dist/**) or
      * hardcode workerPath instead.
+     *
+     * pdf-parse / pdfjs-dist MUST be externalized for
+     * the same class of reason: pdf.js resolves its
+     * worker with a RELATIVE runtime import
+     *
+     *   GlobalWorkerOptions.workerSrc ||= './pdf.worker.mjs'
+     *   await import('./pdf.worker.mjs')
+     *
+     * (pdfjs-dist/legacy/build/pdf.mjs). A relative
+     * specifier resolves against the module that runs
+     * it — legitimately
+     * node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs,
+     * but when pdfjs-dist is bundled it runs from a
+     * generated chunk instead and resolves to
+     *
+     *   <project>/.next/server/chunks/pdf.worker.mjs
+     *
+     * which Turbopack never emits, so PDF parsing dies
+     * with:
+     *   Setting up fake worker failed: Cannot find
+     *   module '<project>/.next/server/chunks/
+     *     pdf.worker.mjs'
+     *
+     * pdfjs-dist is the package that owns the worker
+     * import, so it is externalized explicitly (it is
+     * otherwise pulled into the server bundle as a
+     * plain dependency of pdf-parse).
+     *
+     * @napi-rs/canvas is a native addon required by
+     * pdf.js (`createRequire(...)('@napi-rs/canvas')`)
+     * for the page-render path used to OCR scanned
+     * PDFs; native modules must stay unbundled.
      */
     serverExternalPackages: [
         "@whiskeysockets/baileys",
         "tesseract.js",
+        "pdf-parse",
+        "pdfjs-dist",
+        "@napi-rs/canvas",
     ],
     /**
      * Runtime assets that tracing cannot discover on
@@ -165,6 +200,13 @@ const nextConfig: NextConfig = {
      * and tesseract.js-core loads its .wasm files
      * dynamically, so neither is statically visible
      * to the file tracer.
+     *
+     * The pdf.js worker is requested through a runtime
+     * relative import and @napi-rs/canvas loads a
+     * prebuilt .node binary, so both are invisible to
+     * the tracer as well. They are traced here so a
+     * traced/standalone deploy keeps the real package
+     * layout the worker path is resolved from.
      */
     outputFileTracingIncludes: {
         "/api/admin/resi-scan": [
@@ -172,6 +214,15 @@ const nextConfig: NextConfig = {
             // wasm-feature-detect) and the WASM core
             "./node_modules/tesseract.js/**/*",
             "./node_modules/tesseract.js-core/**/*",
+            // pdf.js text engine + its runtime worker
+            // asset (legacy/build/pdf.worker.mjs) and the
+            // cmaps/standard fonts it loads lazily
+            "./node_modules/pdf-parse/**/*",
+            "./node_modules/pdfjs-dist/**/*",
+            // native canvas addon (page render for scanned
+            // PDFs) + its platform-specific binary
+            "./node_modules/@napi-rs/canvas/**/*",
+            "./node_modules/@napi-rs/canvas-linux-x64-gnu/**/*",
         ],
     },
 };

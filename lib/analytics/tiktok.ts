@@ -47,11 +47,53 @@ declare global {
         ttq?: {
             track: (
                 event: string,
-                properties?: TikTokEventProperties
+                properties?: TikTokEventProperties,
+                /*
+                 * TikTok Pixel's own third argument. The pixel
+                 * expects the snake_case `event_id` key.
+                 */
+                options?: { event_id?: string }
             ) => void;
             page?: () => void;
         };
     }
+}
+
+/**
+ * TikTok Pixel event options.
+ *
+ * `event_id` is the deduplication key: the SAME value must be
+ * sent by the browser Pixel and the server-side Events API so
+ * TikTok keeps a single conversion.
+ */
+export type TikTokEventOptions = {
+    eventId?: string;
+};
+
+export const TIKTOK_EVENT_ID_PREFIX = "ttq";
+
+/**
+ * Build a deterministic event id shared by the browser Pixel and
+ * the server Events API.
+ *
+ * Deterministic (not random) so both channels produce the exact
+ * same string for the same logical action.
+ *
+ * Contains NO secret: only the event name and a public reference
+ * (e.g. the order number, which is already exposed to the buyer).
+ */
+export function buildTikTokEventId(
+    event: string,
+    reference: string | number
+): string {
+    const safeEvent = String(event)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_");
+
+    const safeReference = String(reference).trim();
+
+    return `${TIKTOK_EVENT_ID_PREFIX}:${safeEvent}:${safeReference}`;
 }
 
 /**
@@ -116,25 +158,38 @@ export function isAdminPath(
  * TIDAK ada Advanced Matching / PII di sini:
  * hanya event + parameter yang sudah dipilih
  * pemanggil (harga, nama produk, dsb).
- */
-export function trackTikTokEvent(
+ */export function trackTikTokEvent(
     event: string,
-    properties?: TikTokEventProperties
+    properties?: TikTokEventProperties,
+    options?: TikTokEventOptions
 ) {
     if (
         typeof window === "undefined" ||
         !window.ttq ||
         typeof window.ttq.track !==
-        "function"
+            "function"
     ) {
         return;
     }
 
     try {
-        window.ttq.track(
-            event,
-            properties
-        );
+        /*
+         * When an event id is present we pass it as the pixel's
+         * third argument so TikTok can deduplicate this event
+         * against the server-side Events API copy.
+         */
+        if (options?.eventId) {
+            window.ttq.track(
+                event,
+                properties,
+                { event_id: options.eventId }
+            );
+        } else {
+            window.ttq.track(
+                event,
+                properties
+            );
+        }
     } catch (error) {
         console.error(
             "TIKTOK TRACK ERROR:",

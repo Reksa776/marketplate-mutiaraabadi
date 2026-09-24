@@ -434,6 +434,27 @@ export async function POST(
                         err
                     )
                 );
+
+                /*
+                 * TIKTOK EVENTS API — server-side CompletePayment.
+                 *
+                 * Fires ONLY after the atomic CAS actually settled
+                 * this order (authoritative PAID). Fire-and-forget:
+                 * the service never throws, so a TikTok failure can
+                 * never affect settlement.
+                 */
+                const {
+                    trackTikTokServerCompletePayment,
+                } = await import(
+                    "@/lib/analytics/tiktok-events-api"
+                );
+
+                await trackTikTokServerCompletePayment({
+                    orderNumber:
+                        existingOrder.orderNumber,
+                    total: existingOrder.total,
+                    items: existingOrder.items,
+                });
             }
 
             return json({
