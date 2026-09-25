@@ -77,6 +77,13 @@ import {
     trackTikTokServerCompletePayment,
 } from "@/lib/analytics/tiktok-events-api";
 
+import {
+    MAX_TIKTOK_TEST_EVENT_CODE_LENGTH,
+    TIKTOK_TEST_EVENT_CODE_ENV,
+    getTikTokTestEventCode,
+    normalizeTikTokTestEventCode,
+} from "@/lib/analytics/tiktok-events-config";
+
 import { GET, PUT } from "@/app/api/admin/settings/route";
 
 function readFile(relativePath: string): string {
@@ -821,6 +828,287 @@ describe("TikTok Events API — service", () => {
 
         errorSpy.mockRestore();
         logSpy.mockRestore();
+    });
+
+    /* ==========================================
+     * C2. TEST EVENT CODE (OPT-IN, ENV DRIVEN)
+     * ==========================================
+     *
+     * TikTok accepts at most one TOP-LEVEL `test_event_code`
+     * per request; it only routes the event to the Events
+     * Manager "Test Events" view. These tests pin the contract:
+     * added when configured, absent otherwise, and never able
+     * to change the event, the event_id, or failure handling.
+     */
+
+    describe("test event code", () => {
+        const TEST_CODE = "TEST68129";
+
+        const originalTestCode =
+            process.env[TIKTOK_TEST_EVENT_CODE_ENV];
+
+        afterEach(() => {
+            if (originalTestCode === undefined) {
+                delete process.env[TIKTOK_TEST_EVENT_CODE_ENV];
+            } else {
+                process.env[TIKTOK_TEST_EVENT_CODE_ENV] =
+                    originalTestCode;
+            }
+        });
+
+        test("absent → request has NO test_event_code", async () => {
+            delete process.env[TIKTOK_TEST_EVENT_CODE_ENV];
+            configured();
+            fetchMock.mockResolvedValue(
+                jsonResponse({ code: 0, message: "OK" })
+            );
+
+            const result = await sendTikTokEvent({
+                event: "CompletePayment",
+                eventId: buildTikTokEventId(
+                    "CompletePayment",
+                    "PAY-1"
+                ),
+                value: 30000,
+                currency: "IDR",
+                orderId: "PAY-1",
+            });
+
+            expect(result.ok).toBe(true);
+
+            const payload = JSON.parse(
+                fetchMock.mock.calls[0][1].body
+            );
+
+            expect("test_event_code" in payload).toBe(false);
+            expect(payload.test_event_code).toBeUndefined();
+        });
+
+        test("set → test_event_code is added at the TOP level", async () => {
+            process.env[TIKTOK_TEST_EVENT_CODE_ENV] = TEST_CODE;
+            configured();
+            fetchMock.mockResolvedValue(
+                jsonResponse({ code: 0, message: "OK" })
+            );
+
+            const result = await sendTikTokEvent({
+                event: "CompletePayment",
+                eventId: buildTikTokEventId(
+                    "CompletePayment",
+                    "PAY-1"
+                ),
+                value: 30000,
+                currency: "IDR",
+                orderId: "PAY-1",
+                contents: [
+                    {
+                        content_id: "4",
+                        quantity: 1,
+                        price: 30000,
+                    },
+                ],
+            });
+
+            const [url, init] = fetchMock.mock.calls[0];
+
+            expect(result.ok).toBe(true);
+            expect(url).toBe(TIKTOK_EVENTS_API_URL);
+            expect(init.headers["Access-Token"]).toBe(TOKEN);
+
+            const payload = JSON.parse(init.body);
+
+            expect(payload.test_event_code).toBe(TEST_CODE);
+            // Top level only — never inside data[] / properties.
+            expect(
+                payload.data[0].test_event_code
+            ).toBeUndefined();
+            expect(
+                payload.data[0].properties?.test_event_code
+            ).toBeUndefined();
+        });
+
+        test("event, event_id, properties and headers are unchanged by test mode", async () => {
+            const input = {
+                event: "CompletePayment",
+                eventId: buildTikTokEventId(
+                    "CompletePayment",
+                    "PAY-2"
+                ),
+                eventTime: new Date(
+                    "2026-09-25T10:00:00.000Z"
+                ),
+                value: 30000,
+                currency: "IDR",
+                orderId: "PAY-2",
+                contents: [
+                    {
+                        content_id: "4",
+                        quantity: 1,
+                        price: 30000,
+                    },
+                ],
+            };
+
+            configured();
+            fetchMock.mockResolvedValue(
+                jsonResponse({ code: 0, message: "OK" })
+            );
+
+            delete process.env[TIKTOK_TEST_EVENT_CODE_ENV];
+            await sendTikTokEvent(input);
+            const withoutTestCode = JSON.parse(
+                fetchMock.mock.calls[0][1].body
+            );
+
+            process.env[TIKTOK_TEST_EVENT_CODE_ENV] = TEST_CODE;
+            await sendTikTokEvent(input);
+            const [url, init] = fetchMock.mock.calls[1];
+            const withTestCode = JSON.parse(init.body);
+
+            expect(url).toBe(TIKTOK_EVENTS_API_URL);
+            expect(init.headers["Access-Token"]).toBe(TOKEN);
+
+            expect(withTestCode.data).toEqual(
+                withoutTestCode.data
+            );
+            expect(withTestCode.event_source).toBe(
+                withoutTestCode.event_source
+            );
+            expect(withTestCode.event_source_id).toBe(
+                withoutTestCode.event_source_id
+            );
+            expect(withTestCode.data[0].event).toBe(
+                "CompletePayment"
+            );
+            expect(withTestCode.data[0].event_id).toBe(
+                "ttq:completepayment:PAY-2"
+            );
+        });
+
+        test("malformed env values fail closed (no field, no request change)", async () => {
+            configured();
+            fetchMock.mockResolvedValue(
+                jsonResponse({ code: 0, message: "OK" })
+            );
+
+            for (const value of [
+                "   ",
+                "TEST 68129",
+                "TEST\n68129",
+                "TEST68129;",
+                "a".repeat(
+                    MAX_TIKTOK_TEST_EVENT_CODE_LENGTH + 1
+                ),
+            ]) {
+                process.env[TIKTOK_TEST_EVENT_CODE_ENV] = value;
+                expect(getTikTokTestEventCode()).toBeNull();
+            }
+
+            await sendTikTokEvent({
+                event: "CompletePayment",
+                eventId: "e1",
+            });
+
+            const payload = JSON.parse(
+                fetchMock.mock.calls[0][1].body
+            );
+
+            expect("test_event_code" in payload).toBe(false);
+        });
+
+        test("normalizer accepts a plain code and rejects junk", () => {
+            expect(
+                normalizeTikTokTestEventCode(TEST_CODE)
+            ).toBe(TEST_CODE);
+            expect(
+                normalizeTikTokTestEventCode(`  ${TEST_CODE}  `)
+            ).toBe(TEST_CODE);
+            expect(
+                normalizeTikTokTestEventCode("tt-test_1")
+            ).toBe("tt-test_1");
+
+            expect(
+                normalizeTikTokTestEventCode(null)
+            ).toBeNull();
+            expect(
+                normalizeTikTokTestEventCode(undefined)
+            ).toBeNull();
+            expect(
+                normalizeTikTokTestEventCode(68129)
+            ).toBeNull();
+            expect(normalizeTikTokTestEventCode("")).toBeNull();
+            expect(
+                normalizeTikTokTestEventCode(
+                    "a".repeat(
+                        MAX_TIKTOK_TEST_EVENT_CODE_LENGTH + 1
+                    )
+                )
+            ).toBeNull();
+            expect(
+                normalizeTikTokTestEventCode("TEST\u000068129")
+            ).toBeNull();
+        });
+
+        test("failure handling is unchanged and the code is never logged", async () => {
+            process.env[TIKTOK_TEST_EVENT_CODE_ENV] = TEST_CODE;
+            configured();
+            fetchMock.mockResolvedValue(
+                jsonResponse(
+                    { code: 40002, message: "bad" },
+                    200
+                )
+            );
+
+            const errorSpy = jest
+                .spyOn(console, "error")
+                .mockImplementation(() => {});
+
+            const result = await sendTikTokEvent({
+                event: "CompletePayment",
+                eventId: "e1",
+            });
+
+            expect(result.ok).toBe(false);
+            expect(result.code).toBe(40002);
+
+            const logged = errorSpy.mock.calls
+                .map((args) => JSON.stringify(args))
+                .join("\n");
+
+            expect(logged).not.toContain(TEST_CODE);
+            expect(logged).not.toContain(TOKEN);
+
+            errorSpy.mockRestore();
+        });
+
+        test("a network failure in test mode still resolves", async () => {
+            process.env[TIKTOK_TEST_EVENT_CODE_ENV] = TEST_CODE;
+            configured();
+            fetchMock.mockRejectedValue(
+                new Error("tiktok down")
+            );
+
+            await expect(
+                sendTikTokEvent({
+                    event: "CompletePayment",
+                    eventId: "e1",
+                })
+            ).resolves.toMatchObject({ ok: false });
+        });
+
+        test("payment webhooks never read the test code env var", () => {
+            for (const file of [
+                "app/api/payment/midtrans/notification/route.ts",
+                "app/api/payment/ipaymu/notification/route.ts",
+            ]) {
+                const code = readFile(file);
+
+                expect(code).not.toContain(
+                    TIKTOK_TEST_EVENT_CODE_ENV
+                );
+                expect(code).not.toContain("test_event_code");
+            }
+        });
     });
 });
 

@@ -18,6 +18,15 @@ import { getTikTokEventsApiConfig } from "@/lib/analytics/tiktok-events-config";
  *             data: [{ event, event_time, event_id, properties, ... }] }
  *   Response: JSON with `code` (0 = accepted).
  *
+ * Test mode (opt-in):
+ *   When TIKTOK_TEST_EVENT_CODE is set, the SAME request also
+ *   carries the top-level field `test_event_code`, which routes
+ *   the event to the TikTok Events Manager "Test Events" view.
+ *   It does NOT change the event name, the event_id, the
+ *   properties, the endpoint, the Access-Token header, or any
+ *   settlement/database behaviour — it only adds one field, and
+ *   only while the environment variable is present.
+ *
  * Guarantees:
  *   - server-only (never bundled to the client)
  *   - reads Pixel ID + Access Token from StoreSetting
@@ -70,12 +79,19 @@ export type TikTokSendResult = {
 type TikTokEventPayload = {
     event_source: "web";
     event_source_id: string;
+    /**
+     * Present ONLY in test mode (TIKTOK_TEST_EVENT_CODE set).
+     * TikTok reads it at the top level of the request, NOT
+     * inside data[] or properties.
+     */
+    test_event_code?: string;
     data: Array<Record<string, unknown>>;
 };
 
 function buildPayload(
     pixelId: string,
-    input: TikTokServerEventInput
+    input: TikTokServerEventInput,
+    testEventCode: string | null = null
 ): TikTokEventPayload {
     const properties: Record<string, unknown> = {};
 
@@ -115,6 +131,14 @@ function buildPayload(
     return {
         event_source: "web",
         event_source_id: pixelId,
+        /*
+         * Test mode tag: spread only when configured, so the
+         * default (production) body is byte-for-byte what it
+         * was before this feature existed.
+         */
+        ...(testEventCode
+            ? { test_event_code: testEventCode }
+            : {}),
         data: [event],
     };
 }
@@ -163,7 +187,8 @@ export async function sendTikTokEvent(
 
         const payload = buildPayload(
             config.pixelId,
-            input
+            input,
+            config.testEventCode
         );
 
         const controller = new AbortController();
