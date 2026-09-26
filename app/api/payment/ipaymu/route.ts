@@ -10,6 +10,7 @@ import {
 import { getReferralCode } from "@/lib/affiliate/referral";
 
 import { rateLimiters } from "@/lib/rate-limit";
+import { readOrderAttribution } from "@/lib/analytics/attribution-server";
 
 import {
     formatProductName,
@@ -297,6 +298,8 @@ export async function POST(request: Request) {
             quantity,
 
             affiliateCode,
+
+            attribution: readOrderAttribution(request),
 
             spinWheelSpinId:
                 typeof spinWheelSpinId === "number"

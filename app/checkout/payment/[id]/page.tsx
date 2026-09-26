@@ -7,6 +7,8 @@ import {
     buildTikTokEventId,
     trackTikTokEvent,
 } from "@/lib/analytics/tiktok";
+import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
+import { buildTikTokOrderProperties } from "@/lib/analytics/tiktok-catalog";
 import type { PaymentView } from "@/lib/payment/order-payment";
 import QrisPanel from "./QrisPanel";
 
@@ -179,25 +181,34 @@ export default function PaymentInstructionPage() {
 
         completedTracked.current = true;
 
-        trackTikTokEvent(
-            "CompletePayment",
-            {
-                content_id: view.orderNumber,
-                value: view.amount,
-                currency: "IDR",
-                contents: [],
-            },
-            {
+        whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "CompletePayment",
                 /*
-                 * Shared dedup id — identical to the server-side
-                 * Events API CompletePayment event_id.
+                 * This page knows the authoritative amount only (the
+                 * product lines are not part of the payment view), so
+                 * the payload carries value + currency + order_id and
+                 * no product identity. The server-side Events API copy,
+                 * fired by the settlement webhook with the SAME
+                 * event_id, carries the full contents[] — and an order
+                 * number is never used as a content_id.
                  */
-                eventId: buildTikTokEventId(
-                    "CompletePayment",
-                    view.orderNumber
-                ),
-            }
-        );
+                buildTikTokOrderProperties([], {
+                    value: view.amount,
+                    orderId: view.orderNumber,
+                }),
+                {
+                    /*
+                     * Shared dedup id — identical to the server-side
+                     * Events API CompletePayment event_id.
+                     */
+                    eventId: buildTikTokEventId(
+                        "CompletePayment",
+                        view.orderNumber
+                    ),
+                }
+            );
+        });
     }, [view]);
 
     /* ==========================================

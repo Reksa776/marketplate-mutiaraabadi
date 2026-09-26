@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { trackTikTokEvent } from "@/lib/analytics/tiktok";
+import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
+import { buildTikTokCartProperties } from "@/lib/analytics/tiktok-catalog";
 import VoucherPickerModal from "@/components/VoucherPickerModal";
 import type { VoucherPickerSelection } from "@/components/VoucherPickerModal";
 import {
@@ -1486,17 +1488,31 @@ export default function BuyNowPage({
             return;
         }
 
-        trackTikTokEvent("InitiateCheckout", {
-            value: data.subtotal,
-            currency: "IDR",
-            contents: [{
-                content_id: String(data.product.id),
-                content_type: "product",
-                content_name: data.product.name,
-                quantity: data.quantity,
-                price: data.variant.price,
-            }],
-            num_items: 1,
+        /*
+         * Standard TikTok parameters with the catalog identity of
+         * the single buy-now product; `value` is the server-computed
+         * subtotal.
+         */
+        return whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "InitiateCheckout",
+                buildTikTokCartProperties(
+                    [
+                        {
+                            productId: data.product.id,
+                            variantId: data.variant.id,
+                            productName: data.product.name,
+                            quantity: data.quantity,
+                            /* Effective (charged) unit price. */
+                            price:
+                                data.variant
+                                    .effectivePrice ??
+                                data.variant.price,
+                        },
+                    ],
+                    { value: data.subtotal }
+                )
+            );
         });
     }, [data]);
 
@@ -2571,17 +2587,31 @@ export default function BuyNowPage({
          *
          * Fire when user submits buy-now order.
          */
-        trackTikTokEvent("AddPaymentInfo", {
-            value: grandTotal,
-            currency: "IDR",
-            payment_method: paymentMethod,
-            contents: [{
-                content_id: String(data.product.id),
-                content_type: "product",
-                content_name: data.product.name,
-                quantity: data.quantity,
-                price: data.variant.price,
-            }],
+        whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "AddPaymentInfo",
+                buildTikTokCartProperties(
+                    [
+                        {
+                            productId: data.product.id,
+                            variantId: data.variant.id,
+                            productName: data.product.name,
+                            quantity: data.quantity,
+                            /* Effective (charged) unit price. */
+                            price:
+                                data.variant
+                                    .effectivePrice ??
+                                data.variant.price,
+                        },
+                    ],
+                    {
+                        value: grandTotal,
+                        extra: {
+                            payment_method: paymentMethod,
+                        },
+                    }
+                )
+            );
         });
 
         if (

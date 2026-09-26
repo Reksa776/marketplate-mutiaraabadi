@@ -27,6 +27,7 @@ import {
 } from "./spin-wheel";
 import { formatProductName } from "./payment/ipaymu";
 import { PAYMENT_EXPIRY_GRACE_MS } from "./payment/order-payment";
+import type { OrderAttributionInput } from "@/lib/analytics/attribution";
 
 export type CheckoutMode =
     | "CART"
@@ -104,6 +105,12 @@ export type CreateCheckoutInput = {
      * items are processed (backward compatible).
      */
     selectedCartItemIds?: number[];
+
+    /**
+     * Phase 22: TikTok attribution captured at the CUSTOMER request
+     * boundary. Every value is nullable.
+     */
+    attribution?: OrderAttributionInput;
 };
 
 export type CreatedCheckout = {
@@ -1866,6 +1873,32 @@ export async function createCheckoutOrder(
                             shippingDiscountAmount > 0
                                 ? shippingDiscountAmount
                                 : undefined,
+
+                        // Phase 22: TikTok attribution captured at the
+                        // customer request boundary (nullable).
+                        ttclid:
+                            input.attribution?.ttclid ??
+                            null,
+
+                        ttp:
+                            input.attribution?.ttp ??
+                            null,
+
+                        landingUrl:
+                            input.attribution
+                                ?.landingUrl ?? null,
+
+                        referrer:
+                            input.attribution?.referrer ??
+                            null,
+
+                        clientIp:
+                            input.attribution?.clientIp ??
+                            null,
+
+                        clientUserAgent:
+                            input.attribution
+                                ?.clientUserAgent ?? null,
 
                         // F18: keep the exact spin identity on the order
                         // (survives release-on-cancel, unlike spin.orderId)

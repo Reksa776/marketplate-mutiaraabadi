@@ -104,13 +104,18 @@ export default async function CheckoutSuccessPage({
 
     return (
         <main className="min-h-screen bg-gray-50 px-4 py-10">
+            {/*
+             * Authoritative order lines straight from the database:
+             * each item contributes its own catalog content_id.
+             */}
             <PurchaseTracker
                 orderId={order.orderNumber}
                 total={Number(order.total)}
-                contents={order.items.map((item) => ({
-                    content_id: String(item.productId ?? item.id),
-                    content_type: "product",
-                    content_name: item.productName,
+                items={order.items.map((item) => ({
+                    productId: item.productId,
+                    variantId: item.variantId,
+                    productName: item.productName,
+                    variantName: item.variantName,
                     quantity: item.quantity,
                     price: Number(item.price),
                 }))}

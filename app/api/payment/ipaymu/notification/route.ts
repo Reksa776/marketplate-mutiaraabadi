@@ -280,6 +280,19 @@ export async function POST(
 
                 include: {
                     items: true,
+
+                    /*
+                     * Advanced Matching source: the account
+                     * email / phone. Selected (never the whole
+                     * user row) and hashed server-side before it
+                     * is sent to TikTok.
+                     */
+                    user: {
+                        select: {
+                            email: true,
+                            phone: true,
+                        },
+                    },
                 },
             });
 
@@ -510,6 +523,41 @@ export async function POST(
                         existingOrder.orderNumber,
                     total: existingOrder.total,
                     items: existingOrder.items,
+
+                    /*
+                     * RAW identifiers — the service hashes them
+                     * immediately (SHA-256) and never logs them.
+                     * Account data first, then the contact phone
+                     * captured on the order itself.
+                     */
+                    email:
+                        existingOrder.user?.email ??
+                        null,
+                    phone:
+                        existingOrder.user?.phone ??
+                        existingOrder.phone ??
+                        null,
+                    userId: existingOrder.userId,
+
+                    /*
+                     * Attribution persisted when the customer
+                     * created the order. NEVER the webhook's own
+                     * IP / User-Agent.
+                     */
+                    ttclid:
+                        existingOrder.ttclid ??
+                        null,
+                    ttp:
+                        existingOrder.ttp ?? null,
+                    pageUrl:
+                        existingOrder.landingUrl ??
+                        null,
+                    ip:
+                        existingOrder.clientIp ??
+                        null,
+                    userAgent:
+                        existingOrder.clientUserAgent ??
+                        null,
                 });
             }
 

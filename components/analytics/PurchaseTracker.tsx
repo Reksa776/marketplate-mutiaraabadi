@@ -5,55 +5,60 @@ import {
     buildTikTokEventId,
     trackTikTokEvent,
 } from "@/lib/analytics/tiktok";
-
-type PurchaseItem = {
-    content_id: string;
-    content_type: string;
-    content_name: string;
-    quantity: number;
-    price: number;
-};
+import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
+import {
+    buildTikTokOrderProperties,
+    type TikTokCatalogItemInput,
+} from "@/lib/analytics/tiktok-catalog";
 
 type PurchaseTrackerProps = {
     orderId: string;
     total: number;
-    currency?: string;
-    contents?: PurchaseItem[];
+    /**
+     * Authoritative order lines. Each one becomes its own
+     * `contents[]` entry so TikTok can match the conversion against
+     * the catalog — an order number is never used as a product id.
+     */
+    items?: TikTokCatalogItemInput[];
 };
 
 /**
- * Fires TikTok Purchase event on mount.
+ * Fires the TikTok CompletePayment event on mount.
  *
- * Use this inside a page to track completed
- * purchases without duplicating events.
+ * Use this inside the order confirmation page. The payload carries
+ * the SAME deterministic event_id as the server-side Events API
+ * copy fired by the payment webhook, so TikTok deduplicates the two
+ * into one conversion.
+ *
+ * `currency` is not a prop on purpose: the store has exactly one
+ * currency (lib/analytics/tiktok-catalog).
  */
 export default function PurchaseTracker({
     orderId,
     total,
-    currency = "IDR",
-    contents,
+    items,
 }: PurchaseTrackerProps) {
     useEffect(() => {
-        trackTikTokEvent(
-            "CompletePayment",
-            {
-                content_id: orderId,
-                value: total,
-                currency,
-                contents: contents ?? [],
-            },
-            {
-                /*
-                 * Shared dedup id — identical to the server-side
-                 * Events API CompletePayment event_id.
-                 */
-                eventId: buildTikTokEventId(
-                    "CompletePayment",
-                    orderId
-                ),
-            }
-        );
-    }, [orderId, total, currency, contents]);
+        return whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "CompletePayment",
+                buildTikTokOrderProperties(items, {
+                    value: total,
+                    orderId,
+                }),
+                {
+                    /*
+                     * Shared dedup id — identical to the server-side
+                     * Events API CompletePayment event_id.
+                     */
+                    eventId: buildTikTokEventId(
+                        "CompletePayment",
+                        orderId
+                    ),
+                }
+            );
+        });
+    }, [orderId, total, items]);
 
     return null;
 }

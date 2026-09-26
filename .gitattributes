@@ -1,0 +1,5 @@
+# `lib/checkout.ts` is maintained with CRLF line endings (legacy file).
+# Tell git that a CR at end-of-line is intentional here so
+# `git diff --check` reports real whitespace problems, not the CRLF
+# convention of this one file.
+lib/checkout.ts whitespace=cr-at-eol

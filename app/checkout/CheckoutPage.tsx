@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { trackTikTokEvent } from "@/lib/analytics/tiktok";
+import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
+import { buildTikTokCartProperties } from "@/lib/analytics/tiktok-catalog";
 import VoucherPickerModal from "@/components/VoucherPickerModal";
 import type { VoucherPickerSelection } from "@/components/VoucherPickerModal";
 import {
@@ -405,17 +407,25 @@ export default function CheckoutPage() {
             return;
         }
 
-        trackTikTokEvent("InitiateCheckout", {
-            value: data.subtotal,
-            currency: "IDR",
-            contents: data.items.map((item) => ({
-                content_id: String(item.productId),
-                content_type: "product",
-                content_name: item.productName,
-                quantity: item.quantity,
-                price: item.price,
-            })),
-            num_items: data.items.length,
+        /*
+         * Standard TikTok parameters: every cart line is its own
+         * catalog entry (multi-product contents[]), and `value`
+         * is the server-computed subtotal.
+         */
+        return whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "InitiateCheckout",
+                buildTikTokCartProperties(
+                    data.items.map((item) => ({
+                        productId: item.productId,
+                        variantId: item.variantId,
+                        productName: item.productName,
+                        quantity: item.quantity,
+                        price: item.price,
+                    })),
+                    { value: data.subtotal }
+                )
+            );
         });
     }, [data]);
 
@@ -1686,17 +1696,25 @@ export default function CheckoutPage() {
          *
          * Fire when user submits order.
          */
-        trackTikTokEvent("AddPaymentInfo", {
-            value: grandTotal,
-            currency: "IDR",
-            payment_method: paymentMethod,
-            contents: data?.items.map((item) => ({
-                content_id: String(item.productId),
-                content_type: "product",
-                content_name: item.productName,
-                quantity: item.quantity,
-                price: item.price,
-            })) ?? [],
+        whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "AddPaymentInfo",
+                buildTikTokCartProperties(
+                    data?.items.map((item) => ({
+                        productId: item.productId,
+                        variantId: item.variantId,
+                        productName: item.productName,
+                        quantity: item.quantity,
+                        price: item.price,
+                    })) ?? [],
+                    {
+                        value: grandTotal,
+                        extra: {
+                            payment_method: paymentMethod,
+                        },
+                    }
+                )
+            );
         });
 
         try {

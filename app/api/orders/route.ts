@@ -14,6 +14,7 @@ import {
 import { getReferralCode } from "@/lib/affiliate/referral";
 
 import { rateLimiters } from "@/lib/rate-limit";
+import { readOrderAttribution } from "@/lib/analytics/attribution-server";
 
 /*
  * ==========================================
@@ -231,6 +232,8 @@ export async function POST(
                     affiliateCode,
 
                     spinWheelSpinId: typeof spinWheelSpinId === "number" ? spinWheelSpinId : null,
+
+                    attribution: readOrderAttribution(request),
 
                     selectedCartItemIds: Array.isArray(selectedCartItemIds)
                         ? selectedCartItemIds.map(Number).filter((n: number) => Number.isInteger(n) && n > 0)

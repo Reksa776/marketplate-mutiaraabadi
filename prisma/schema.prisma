@@ -252,6 +252,31 @@ model Order {
   paymentChannel   String?
   paymentExpiresAt DateTime?
 
+  // ==========================================
+  // TikTok attribution (Phase 22)
+  // ==========================================
+  //
+  // Captured at the CUSTOMER request boundary (order creation),
+  // never from the payment webhook. Every field is nullable:
+  // traffic that did not originate from TikTok legitimately has
+  // no ttclid / _ttp.
+  //
+  // ttclid           → `?ttclid=...` from the first landing URL
+  // ttp              → TikTok's own `_ttp` cookie value, when present
+  // landingUrl       → first landing URL of the visit
+  // referrer         → first referrer of the visit
+  // clientIp         → customer request IP (trusted-proxy aware)
+  // clientUserAgent  → customer request User-Agent
+  //
+  // These are forwarded to the server-side Events API
+  // CompletePayment call. They are NEVER hashed.
+  ttclid           String?
+  ttp              String?
+  landingUrl       String?             @db.Text
+  referrer         String?             @db.Text
+  clientIp         String?
+  clientUserAgent  String?             @db.Text
+
   voucherId        Int?
   voucherCode      String?
   discount         Decimal             @default(0) @db.Decimal(12, 2)

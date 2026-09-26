@@ -10,6 +10,7 @@ import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import { rateLimiters } from "@/lib/rate-limit";
+import { readOrderAttribution } from "@/lib/analytics/attribution-server";
 
 export const dynamic = "force-dynamic";
 
@@ -595,6 +596,7 @@ export async function POST(
                 quantity,
                 affiliateCode,
                 spinWheelSpinId: typeof body.spinWheelSpinId === "number" ? body.spinWheelSpinId : null,
+                attribution: readOrderAttribution(request),
             });
 
         return jsonSuccess(

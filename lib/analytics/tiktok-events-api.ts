@@ -1,7 +1,18 @@
 import "server-only";
 
 import { buildTikTokEventId } from "@/lib/analytics/tiktok";
+import {
+    TIKTOK_CURRENCY,
+    buildTikTokContents,
+    toTikTokAmount,
+    type TikTokCatalogContent,
+} from "@/lib/analytics/tiktok-catalog";
 import { getTikTokEventsApiConfig } from "@/lib/analytics/tiktok-events-config";
+import {
+    buildTikTokUserMatch,
+    hasTikTokUserMatch,
+    type TikTokUserMatch,
+} from "@/lib/analytics/tiktok-user-match";
 
 /**
  * ==========================================
@@ -36,19 +47,20 @@ import { getTikTokEventsApiConfig } from "@/lib/analytics/tiktok-events-config";
  *   - safe logging: event name + event_id + status/code only —
  *     never the token, the Access-Token header, the request body,
  *     the raw response body, or customer PII
+ *
+ * Advanced Matching (privacy-safe):
+ *   When the caller passes RAW customer identifiers, they are
+ *   normalized + SHA-256 hashed by lib/analytics/tiktok-user-match
+ *   and sent as `data[].user`. Raw email / phone never reach the
+ *   request body, the logs, or TikTok. Missing or invalid values
+ *   are omitted entirely — no empty strings, no fabricated keys.
  */
 export const TIKTOK_EVENTS_API_URL =
     "https://business-api.tiktok.com/open_api/v1.3/event/track/";
 
 export const TIKTOK_EVENTS_API_TIMEOUT_MS = 3000;
 
-export type TikTokEventContent = {
-    content_id: string;
-    content_type?: string;
-    content_name?: string;
-    quantity?: number;
-    price?: number;
-};
+export type TikTokEventContent = TikTokCatalogContent;
 
 export type TikTokServerEventInput = {
     /** Standard TikTok event name, e.g. "CompletePayment". */
@@ -64,7 +76,25 @@ export type TikTokServerEventInput = {
     currency?: string;
     orderId?: string;
     contents?: TikTokEventContent[];
-    pageUrl?: string;
+    pageUrl?: string | null;
+
+    /**
+     * Customer attribution captured at the APPLICATION request
+     * boundary (never the payment webhook's own IP / UA). All are
+     * sent unhashed inside `data[].user`.
+     */
+    ttclid?: string | null;
+    ttp?: string | null;
+    ip?: string | null;
+    userAgent?: string | null;
+
+    /**
+     * ALREADY-HASHED Advanced Matching keys (`email`, `phone`,
+     * `external_id`). Built by lib/analytics/tiktok-user-match —
+     * this module never receives, hashes, or logs raw PII.
+     * Omitted entirely when empty.
+     */
+    user?: TikTokUserMatch;
 };
 
 export type TikTokSendResult = {
@@ -126,6 +156,39 @@ function buildPayload(
 
     if (input.pageUrl) {
         event.page = { url: input.pageUrl };
+    }
+
+    /*
+     * `data[].user` carries the Advanced Matching keys (hashed)
+     * plus the attribution identifiers (unhashed). Attached only
+     * when at least one usable value exists, so an event for an
+     * anonymous visitor carries no user object at all instead of
+     * an empty one.
+     */
+    const user: Record<string, unknown> = {
+        ...(hasTikTokUserMatch(input.user)
+            ? input.user
+            : {}),
+    };
+
+    if (input.ttclid) {
+        user.ttclid = input.ttclid;
+    }
+
+    if (input.ttp) {
+        user.ttp = input.ttp;
+    }
+
+    if (input.ip) {
+        user.ip = input.ip;
+    }
+
+    if (input.userAgent) {
+        user.user_agent = input.userAgent;
+    }
+
+    if (Object.keys(user).length > 0) {
+        event.user = user;
     }
 
     return {
@@ -300,12 +363,32 @@ type TikTokOrderLike = {
     orderNumber: string;
     total: unknown;
     items?: Array<{
-        productId?: number | null;
         id?: number;
+        productId?: number | null;
+        variantId?: number | null;
+        /** Future-proof: used as content_id the moment a SKU exists. */
+        sku?: string | null;
         productName?: string | null;
+        variantName?: string | null;
         quantity?: number | null;
         price?: unknown;
     }> | null;
+    /** RAW — hashed inside this call, never logged nor forwarded. */
+    email?: string | null;
+    /** RAW — hashed inside this call, never logged nor forwarded. */
+    phone?: string | null;
+    /** Stable internal customer id, used as hashed external_id. */
+    userId?: string | null;
+
+    /*
+     * Attribution persisted on the Order at the customer request
+     * boundary. `pageUrl` is the stored landing URL. Sent unhashed.
+     */
+    ttclid?: string | null;
+    ttp?: string | null;
+    pageUrl?: string | null;
+    ip?: string | null;
+    userAgent?: string | null;
 };
 
 /**
@@ -315,38 +398,31 @@ type TikTokOrderLike = {
  * order has actually transitioned to PAID. Uses a deterministic
  * event_id (`ttq:completepayment:<orderNumber>`) identical to the
  * one the browser Pixel sends, so TikTok deduplicates the two.
+ *
+ * Every figure comes from the AUTHORITATIVE database row (order
+ * total, order item unit price + quantity) — nothing is recomputed
+ * from floating point arithmetic here.
+ *
+ * Matching keys: the raw email / phone handed in by the webhook are
+ * hashed immediately; when the order has neither, the user object
+ * is omitted and the event is still sent.
  */
 export async function trackTikTokServerCompletePayment(
     order: TikTokOrderLike
 ): Promise<TikTokSendResult> {
-    const contents: TikTokEventContent[] = [];
+    const contents = buildTikTokContents(
+        (order.items ?? []).map((item) => ({
+            productId: item.productId,
+            variantId: item.variantId,
+            sku: item.sku,
+            productName: item.productName,
+            variantName: item.variantName,
+            quantity: item.quantity,
+            price: item.price,
+        }))
+    );
 
-    for (const item of order.items ?? []) {
-        const contentId = String(
-            item.productId ?? item.id ?? ""
-        ).trim();
-
-        if (!contentId) {
-            continue;
-        }
-
-        contents.push({
-            content_id: contentId,
-            content_type: "product",
-            content_name: item.productName ?? undefined,
-            quantity:
-                typeof item.quantity === "number"
-                    ? item.quantity
-                    : undefined,
-            price:
-                item.price !== undefined &&
-                item.price !== null
-                    ? Number(item.price)
-                    : undefined,
-        });
-    }
-
-    const value = Number(order.total);
+    const value = toTikTokAmount(order.total);
 
     return sendTikTokEvent({
         event: "CompletePayment",
@@ -354,9 +430,28 @@ export async function trackTikTokServerCompletePayment(
             "CompletePayment",
             order.orderNumber
         ),
-        value: Number.isFinite(value) ? value : undefined,
-        currency: "IDR",
+        value,
+        currency: TIKTOK_CURRENCY,
         orderId: order.orderNumber,
         contents,
+        /*
+         * Trusted customer attribution persisted at the application
+         * request boundary. Never the settlement webhook's own
+         * IP / User-Agent.
+         */
+        ttclid: order.ttclid ?? null,
+        ttp: order.ttp ?? null,
+        pageUrl: order.pageUrl ?? null,
+        ip: order.ip ?? null,
+        userAgent: order.userAgent ?? null,
+        /*
+         * Raw identifiers go straight into the hashing helper and
+         * are never stored, returned, or logged.
+         */
+        user: buildTikTokUserMatch({
+            email: order.email,
+            phone: order.phone,
+            externalId: order.userId,
+        }),
     });
 }

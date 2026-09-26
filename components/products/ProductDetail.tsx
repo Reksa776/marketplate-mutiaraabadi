@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { trackTikTokEvent } from "@/lib/analytics/tiktok";
+import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
+import { buildTikTokProductProperties } from "@/lib/analytics/tiktok-catalog";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
@@ -134,41 +136,35 @@ export default function ProductDetail({
 
             viewContentFiredRef.current = true;
 
-            trackTikTokEvent("ViewContent", {
-                content_id: String(product.id),
-                content_type: "product",
-                content_name: product.name,
-                value: selectedVariant?.price ?? 0,
-                currency: "IDR",
-            });
-        };
-
-        /*
-         * Kalau Pixel sudah tersedia,
-         * langsung kirim.
-         */
-        if (window.ttq) {
-            trackViewContent();
-            return;
-        }
-
-        /*
-         * Kalau belum tersedia,
-         * tunggu TikTokPixel selesai
-         * membuat window.ttq.
-         */
-        window.addEventListener(
-            "tiktok-pixel-ready",
-            trackViewContent,
-            { once: true }
-        );
-
-        return () => {
-            window.removeEventListener(
-                "tiktok-pixel-ready",
-                trackViewContent
+            /*
+             * Standard TikTok product parameters: catalog id
+             * (content_id + contents[]), content_type, name and
+             * the price actually charged for the selected variant.
+             * No fake 0 price when no variant exists — the key is
+             * simply omitted.
+             */
+            trackTikTokEvent(
+                "ViewContent",
+                buildTikTokProductProperties({
+                    productId: product.id,
+                    productName: product.name,
+                    price:
+                        selectedVariant?.effectivePrice ??
+                        selectedVariant?.price,
+                })
             );
         };
+
+        /*
+         * Pastikan event TIDAK hilang: base code Pixel dimuat
+         * secara asinkron, jadi tunggu sampai window.ttq benar-benar
+         * tersedia (event ready saja bisa terlewat karena layout
+         * ter-mount lebih dulu). Guard di atas tetap memastikan
+         * event hanya dikirim sekali per product.
+         */
+        return whenTikTokReadyForEvents(
+            trackViewContent
+        );
 
         // ViewContent hanya sekali
         // ketika product berubah.
@@ -387,13 +383,23 @@ export default function ProductDetail({
 |--------------------------------------------------------------------------
 */
 
-            trackTikTokEvent("AddToCart", {
-                content_id: String(product.id),
-                content_type: "product",
-                content_name: product.name,
-                quantity,
-                value: selectedVariant.price * quantity,
-                currency: "IDR",
+            whenTikTokReadyForEvents(() => {
+                trackTikTokEvent(
+                    "AddToCart",
+                    buildTikTokProductProperties(
+                        {
+                            productId: product.id,
+                            productName: product.name,
+                            /* Effective (charged) unit price. */
+                            price:
+                                selectedVariant.effectivePrice ??
+                                selectedVariant.price,
+                            quantity,
+                        },
+                        /* Adds quantity + the matching line value. */
+                        { withQuantity: true }
+                    )
+                );
             });
 
             /*

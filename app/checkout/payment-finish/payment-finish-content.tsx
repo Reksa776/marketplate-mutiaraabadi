@@ -7,6 +7,8 @@ import {
     buildTikTokEventId,
     trackTikTokEvent,
 } from "@/lib/analytics/tiktok";
+import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
+import { buildTikTokOrderProperties } from "@/lib/analytics/tiktok-catalog";
 
 type OrderStatus = {
     id: number;
@@ -174,25 +176,31 @@ export default function PaymentFinishContent() {
             return;
         }
 
-        trackTikTokEvent(
-            "CompletePayment",
-            {
-                content_id: order.orderNumber,
-                value: order.total,
-                currency: "IDR",
-                contents: [],
-            },
-            {
+        whenTikTokReadyForEvents(() => {
+            trackTikTokEvent(
+                "CompletePayment",
                 /*
-                 * Shared dedup id — identical to the server-side
-                 * Events API CompletePayment event_id.
+                 * The status endpoint returns the order total only, so
+                 * this deduplicated copy sends value + currency +
+                 * order_id; the authoritative contents[] travel on the
+                 * server-side copy of the same event_id.
                  */
-                eventId: buildTikTokEventId(
-                    "CompletePayment",
-                    order.orderNumber
-                ),
-            }
-        );
+                buildTikTokOrderProperties([], {
+                    value: order.total,
+                    orderId: order.orderNumber,
+                }),
+                {
+                    /*
+                     * Shared dedup id — identical to the server-side
+                     * Events API CompletePayment event_id.
+                     */
+                    eventId: buildTikTokEventId(
+                        "CompletePayment",
+                        order.orderNumber
+                    ),
+                }
+            );
+        });
     }, [isPaid, order]);
 
     return (
