@@ -15,9 +15,11 @@ import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
  *
  * Token akses (server-only) TIDAK pernah ikut ke sini.
  *
- * Advanced Matching hanya menerima DIGEST (SHA-256) dari
- * endpoint server; data mentah pelanggan tidak pernah
- * dirender ke HTML maupun ke bundle client.
+ * Advanced Matching: identifier pelanggan diambil oleh
+ * endpoint server khusus (authenticated-only) — bukan dari
+ * HTML maupun bundle client. Browser Pixel menerima nilai
+ * TER-NORMALISASI (di-hash SHA-256 oleh TikTok SDK di sisi
+ * client); Events API server menerima DIGEST SHA-256.
  */
 export default async function AnalyticsProvider() {
     const tiktokPixel =

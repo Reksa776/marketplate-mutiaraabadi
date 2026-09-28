@@ -1070,7 +1070,7 @@ describe("whenTikTokPixelReady", () => {
 
         expect(
             readFile(
-                "components/analytics/TikTokAdvancedMatching.tsx"
+                "lib/analytics/tiktok-browser-identity.ts"
             )
         ).toContain("whenTikTokPixelReady(");
     });
@@ -1090,9 +1090,18 @@ describe("TikTok Advanced Matching — security invariants", () => {
     });
 
     test("the client component consumes the endpoint payload and never hashes locally", () => {
-        const code = readFile(
-            "components/analytics/TikTokAdvancedMatching.tsx"
-        );
+        /*
+         * The browser matching lifecycle was split out of the
+         * component into lib/analytics/tiktok-browser-identity so
+         * the ordering is testable; the invariants apply to both.
+         */
+        const code =
+            readFile(
+                "components/analytics/TikTokAdvancedMatching.tsx"
+            ) +
+            readFile(
+                "lib/analytics/tiktok-browser-identity.ts"
+            );
 
         expect(code).toContain(
             "/api/analytics/tiktok-match"
