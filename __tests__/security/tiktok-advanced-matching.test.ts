@@ -415,7 +415,7 @@ describe("TikTok money helpers", () => {
 });
 
 describe("ViewContent properties", () => {
-    test("carries content_id, contents, content_type, name, price, currency", () => {
+    test("carries content_id, contents, content_type, name, price, currency and value", () => {
         const properties =
             buildTikTokProductProperties({
                 productId: 42,
@@ -443,11 +443,24 @@ describe("ViewContent properties", () => {
             },
         ]);
 
-        /* A page view never claims a quantity it does not have. */
+        /*
+         * TikTok's Pixel Helper rejects a shared event that has no
+         * `value`. For a single-product view the event total is the
+         * unit price, so `value` MUST be present and MUST be the
+         * same number as the real product price.
+         */
+        expect(properties.value).toBe(25000);
+
+        /* A number, never a string and never Rupiah-formatted. */
+        expect(typeof properties.value).toBe("number");
+        expect(properties.value).not.toBe("25000");
+        expect(properties.value).not.toBe("25.000");
+        expect(properties.value).not.toBe("Rp25.000");
+
+        /* A page view still never claims a quantity it never had. */
         expect(properties).not.toHaveProperty(
             "quantity"
         );
-        expect(properties).not.toHaveProperty("value");
     });
 });
 

@@ -292,14 +292,31 @@ export function toTikTokLineValue(
  * (ViewContent / AddToCart).
  *
  * Always carries the catalog identity (`content_id` + `contents[]`
- * + `content_type`) and the store currency. `quantity` + `value`
- * are added only when asked for, so ViewContent does not claim a
- * quantity it never had.
+ * + `content_type`) and the store currency.
+ *
+ * `value` is ALWAYS present when a real price exists, because TikTok
+ * defines it as the total value of the EVENT while `price` is the
+ * price of a SINGLE item:
+ *
+ *   price = price of one unit
+ *   value = price x quantity of the event
+ *
+ * For a single-product page view the event is about one unit, so
+ * `value` is that unit price — derived, never hardcoded. When the
+ * caller supplies no quantity the factor is 1. This is what makes
+ * `ttq.track("ViewContent", …)` satisfy the Pixel Helper's
+ * "missing a 'value' parameter" check without inventing an amount:
+ * if the application has no real price, `value` is omitted together
+ * with `price` rather than defaulted to 0.
+ *
+ * `quantity` is still only emitted when the caller asks for it
+ * (`withQuantity`), so a page view never claims a quantity it never
+ * had.
  */
 export function buildTikTokProductProperties(
     item: TikTokCatalogItemInput,
     options: {
-        /** Include `quantity` and the matching line `value`. */
+        /** Include the `quantity` this event actually had. */
         withQuantity?: boolean;
     } = {}
 ): TikTokCatalogProperties {
@@ -330,15 +347,21 @@ export function buildTikTokProductProperties(
         content?.quantity !== undefined
     ) {
         properties.quantity = content.quantity;
+    }
 
-        const value = toTikTokLineValue(
-            item.price,
-            content.quantity
-        );
+    /*
+     * Event total, from the SAME authoritative unit price that
+     * produced `properties.price` — never a separate constant. A
+     * single-product event with no declared quantity is a view of
+     * one unit, hence the factor of 1.
+     */
+    const value = toTikTokLineValue(
+        item.price,
+        content?.quantity ?? 1
+    );
 
-        if (value !== undefined) {
-            properties.value = value;
-        }
+    if (value !== undefined) {
+        properties.value = value;
     }
 
     properties.currency = TIKTOK_CURRENCY;
