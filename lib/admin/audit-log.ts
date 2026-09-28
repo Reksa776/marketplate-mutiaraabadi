@@ -50,6 +50,8 @@ export type AuditAction =
     | "REPAYMENT_INITIATED"
     // Settings
     | "TIKTOK_PIXEL_UPDATED"
+    | "STORE_FAVICON_UPDATED"
+    | "STORE_FAVICON_REMOVED"
     // System
     | "AFFILIATE_COMMISSION_AUTO_CANCELLED";
 

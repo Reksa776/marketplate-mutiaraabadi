@@ -1,3 +1,6 @@
+import type { Metadata } from "next";
+
+import { adminPageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
@@ -11,6 +14,8 @@ import {
 
 import DeleteProductButton from "./DeleteProductButton";
 import RealtimeProductFilter from "./RealtimeProductFilter";
+
+export const metadata: Metadata = adminPageMetadata("Produk");
 
 type SearchParams = {
     q?: string;

@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+
+import { SITE_NAME } from "@/lib/site-metadata";
 import Link from "next/link";
 import { getPublicStoreSetting } from "@/lib/store-settings";
 
@@ -7,6 +9,8 @@ export const metadata: Metadata = {
     description:
         "Kebijakan pengembalian dana (refund) untuk pembelian produk di toko kami. Baca syarat dan prosedur pengajuan refund.",
     openGraph: {
+        siteName: SITE_NAME,
+        locale: "id_ID",
         title: "Kebijakan Refund",
         description:
             "Kebijakan pengembalian dana (refund) untuk pembelian produk di toko kami.",

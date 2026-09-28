@@ -1,7 +1,26 @@
+import type { Metadata } from "next";
+
 import Image from "next/image";
 import Link from "next/link";
 import { FiLogIn, FiShoppingBag } from "react-icons/fi";
 import ReferralTracker from "./ReferralTracker";
+import {
+    SITE_DEFAULT_TITLE,
+    SITE_DESCRIPTION,
+    pageMetadata,
+} from "@/lib/site-metadata";
+
+/**
+ * `absolute` (not a string) so the storefront template is
+ * bypassed: the homepage keeps the brand-led title instead
+ * of rendering "Mutiara Abadi — Belanja Produk Pilihan |
+ * Mutiara Abadi".
+ */
+export const metadata: Metadata = pageMetadata({
+    title: SITE_DEFAULT_TITLE,
+    description: SITE_DESCRIPTION,
+    absolute: true,
+});
 
 export default function HomePage() {
   return (

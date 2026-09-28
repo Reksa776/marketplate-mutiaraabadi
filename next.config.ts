@@ -1,6 +1,24 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+    /**
+     * Keep `/favicon.ico` working for browsers and tools that
+     * request it implicitly.
+     *
+     * The branded ICO was renamed from `app/favicon.ico` to
+     * `app/icon.ico`: Next.js always injects a root
+     * `app/favicon.ico` FIRST into `<link rel="icon">`, which
+     * would compete with the admin-uploaded favicon emitted by
+     * `app/layout.tsx#generateMetadata`. `app/icon.ico` is not
+     * special-cased, so the dynamic metadata can fully replace
+     * the static icon set. This rewrite preserves the old URL.
+     */
+    rewrites: async () => [
+        {
+            source: "/favicon.ico",
+            destination: "/icon.ico",
+        },
+    ],
     headers: async () => {
         // ==========================================
         // ENVIRONMENT-AWARE CSP

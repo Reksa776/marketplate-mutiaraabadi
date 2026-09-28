@@ -1,6 +1,15 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import BuyNowPage from "./BuyNowPage";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Beli Sekarang",
+    description: "Pesan produk Mutiara Abadi langsung tanpa masuk ke keranjang.",
+    noindex: true,
+});
 
 type Props = {
     searchParams: Promise<{

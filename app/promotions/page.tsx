@@ -1,8 +1,16 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { auth } from "@/auth";
 import BottomNavbar from "@/components/products/BottomNavbar";
 import { ProductProvider } from "@/components/products/ProductContext";
 import PromotionsList from "@/components/products/PromotionsList";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Promosi",
+    description: "Promosi dan penawaran menarik yang sedang berlangsung di Mutiara Abadi.",
+});
 
 export default async function PromotionsPage() {
     const session = await auth();

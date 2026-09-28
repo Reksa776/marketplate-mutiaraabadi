@@ -32,6 +32,7 @@ const SETTINGS_SELECT = {
     phone: true,
     email: true,
     logo: true,
+    faviconUrl: true,
     address: true,
 
     tiktokPixelEnabled: true,
@@ -64,6 +65,7 @@ type SettingsProjectionSource = {
     phone: string | null;
     email: string | null;
     logo: string | null;
+    faviconUrl: string | null;
     address: string;
     tiktokPixelEnabled: boolean;
     tiktokPixelId: string | null;
@@ -92,6 +94,13 @@ function toSettingsResponse(
         phone: setting.phone,
         email: setting.email,
         logo: setting.logo,
+        /**
+         * Read-only here: the favicon is uploaded/removed via
+         * /api/admin/settings/favicon so a normal settings save
+         * can never wipe it. Included so the settings UI can
+         * preview the active icon.
+         */
+        faviconUrl: setting.faviconUrl,
         address: setting.address,
 
         tiktokPixelEnabled:

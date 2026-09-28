@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+
+import { SITE_NAME } from "@/lib/site-metadata";
 import Link from "next/link";
 import { getPublicStoreSetting } from "@/lib/store-settings";
 
@@ -7,6 +9,8 @@ export const metadata: Metadata = {
     description:
         "Syarat dan ketentuan penggunaan layanan dan pembelian produk di toko kami. Baca dengan seksama sebelum melakukan transaksi.",
     openGraph: {
+        siteName: SITE_NAME,
+        locale: "id_ID",
         title: "Syarat & Ketentuan",
         description:
             "Syarat dan ketentuan penggunaan layanan dan pembelian produk di toko kami.",

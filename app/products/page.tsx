@@ -1,8 +1,17 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import SearchBar from "@/components/products/SearchBar";
 import ProductGrid from "@/components/products/ProductGrid";
 import BottomNavbar from "@/components/products/BottomNavbar";
 import { ProductProvider } from "@/components/products/ProductContext";
 import { auth } from "@/auth";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Produk",
+    description:
+        "Katalog produk Mutiara Abadi: keripik, kerupuk, dan kue pilihan. Cari dan temukan camilan favorit Anda.",
+});
 
 export default async function ProductsPage({
   searchParams,

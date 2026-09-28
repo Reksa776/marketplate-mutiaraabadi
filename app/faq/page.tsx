@@ -1,16 +1,14 @@
 import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import FaqContent from "./FaqContent";
 
-export const metadata: Metadata = {
-    title: "FAQ | Pertanyaan Umum",
+export const metadata: Metadata = pageMetadata({
+    // Root template renders: "Pertanyaan Umum (FAQ) | Mutiara Abadi"
+    title: "Pertanyaan Umum (FAQ)",
     description:
         "Temukan jawaban atas pertanyaan umum seputar cara berbelanja, pembayaran, pengiriman, pengembalian, dan layanan pelanggan di toko kami.",
-    openGraph: {
-        title: "FAQ | Pertanyaan Umum",
-        description:
-            "Temukan jawaban atas pertanyaan umum seputar cara berbelanja, pembayaran, pengiriman, pengembalian, dan layanan pelanggan.",
-    },
-};
+});
 
 export default function FaqPage() {
     return (

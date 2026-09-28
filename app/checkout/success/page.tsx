@@ -1,7 +1,17 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import PurchaseTracker from "@/components/analytics/PurchaseTracker";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Pembayaran Berhasil",
+    description:
+        "Pembayaran pesanan Anda di Mutiara Abadi berhasil diproses. Pesanan Anda sedang kami siapkan untuk dikirim.",
+    noindex: true,
+});
 
 export default async function CheckoutSuccessPage({
     searchParams,

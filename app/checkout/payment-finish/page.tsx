@@ -1,5 +1,15 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import { Suspense } from "react";
 import PaymentFinishContent from "./payment-finish-content";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Selesaikan Pembayaran",
+    description:
+        "Memproses pembayaran pesanan Anda di Mutiara Abadi. Status pembayaran diperbarui otomatis setelah pembayaran dikonfirmasi.",
+    noindex: true,
+});
 
 /*
  * ==========================================

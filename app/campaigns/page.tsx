@@ -1,8 +1,16 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { auth } from "@/auth";
 import BottomNavbar from "@/components/products/BottomNavbar";
 import { ProductProvider } from "@/components/products/ProductContext";
 import CampaignsList from "@/components/products/CampaignsList";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Kampanye",
+    description: "Kampanye dan penawaran spesial Mutiara Abadi yang sedang berlangsung.",
+});
 
 export default async function CampaignsPage() {
     const session = await auth();

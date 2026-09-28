@@ -1,9 +1,18 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
 import BottomNavbar from "@/components/products/BottomNavbar";
 import { ProductProvider } from "@/components/products/ProductContext";
 import FlashSalesList from "@/components/products/FlashSalesList";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Flash Sale",
+    description:
+        "Penawaran terbatas dengan harga spesial di Mutiara Abadi. Stok terbatas, berlaku selama periode flash sale.",
+});
 
 export default async function FlashSalesPage() {
     const session = await auth();

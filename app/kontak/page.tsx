@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+
+import { SITE_NAME } from "@/lib/site-metadata";
 import {
     getPublicStoreSetting,
     formatFullAddress,
@@ -9,6 +11,8 @@ export const metadata: Metadata = {
     description:
         "Hubungi kami melalui email atau telepon. Kami siap membantu Anda mengenai pesanan, produk, dan layanan lainnya.",
     openGraph: {
+        siteName: SITE_NAME,
+        locale: "id_ID",
         title: "Kontak Kami",
         description:
             "Hubungi kami melalui email atau telepon. Kami siap membantu Anda.",

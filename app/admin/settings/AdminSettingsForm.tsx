@@ -1,6 +1,11 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import {
+    useEffect,
+    useRef,
+    useState,
+    type FormEvent,
+} from "react";
 import Link from "next/link";
 import { FiArrowLeft, FiSave } from "react-icons/fi";
 import toast from "react-hot-toast";
@@ -29,6 +34,14 @@ type StoreForm = {
     phone: string;
     email: string;
     logo: string;
+    /**
+     * Active website favicon URL (public path).
+     *
+     * Read-only for the settings PUT: it is uploaded/removed
+     * through /api/admin/settings/favicon so a normal save can
+     * never wipe it. Kept in the form only for preview.
+     */
+    faviconUrl: string;
     address: string;
 
     tiktokPixelEnabled: boolean;
@@ -74,6 +87,7 @@ const initialForm: StoreForm = {
     phone: "",
     email: "",
     logo: "",
+    faviconUrl: "",
     address: "",
 
     tiktokPixelEnabled: false,
@@ -106,11 +120,37 @@ const initialForm: StoreForm = {
     longitude: "",
 };
 
+/**
+ * ============================
+ * FAVICON UPLOAD (CLIENT GATE)
+ * ============================
+ *
+ * Mirrors the server rules so an obviously bad file is
+ * rejected before the network round trip. The SERVER remains
+ * the authoritative validator (magic bytes, size, MIME) —
+ * nothing here is trusted.
+ */
+const FAVICON_MAX_BYTES = 1024 * 1024;
+const FAVICON_ACCEPT =
+    "image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft.icon,.ico";
+const FAVICON_ALLOWED_TYPES = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/x-icon",
+    "image/vnd.microsoft.icon",
+];
+
 export default function AdminSettingsForm() {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [faviconUploading, setFaviconUploading] =
+        useState(false);
     const [showAccessToken, setShowAccessToken] =
         useState(false);
+
+    const faviconInputRef =
+        useRef<HTMLInputElement>(null);
 
     const [provinces, setProvinces] = useState<Region[]>([]);
     const [cities, setCities] = useState<Region[]>([]);
@@ -409,6 +449,9 @@ export default function AdminSettingsForm() {
 
                 logo:
                     data.data.logo ?? "",
+
+                faviconUrl:
+                    data.data.faviconUrl ?? "",
 
                 address:
                     data.data.address ?? "",
@@ -816,6 +859,137 @@ export default function AdminSettingsForm() {
 
     /**
      * ============================
+     * FAVICON
+     * ============================
+     */
+
+    async function handleFaviconUpload(
+        event: React.ChangeEvent<HTMLInputElement>
+    ) {
+        const input = event.target;
+        const file = input.files?.[0];
+
+        if (!file) {
+            return;
+        }
+
+        if (file.size === 0) {
+            toast.error("File favicon kosong.");
+            input.value = "";
+            return;
+        }
+
+        if (file.size > FAVICON_MAX_BYTES) {
+            toast.error(
+                "Ukuran favicon maksimal 1MB."
+            );
+            input.value = "";
+            return;
+        }
+
+        if (
+            file.type &&
+            !FAVICON_ALLOWED_TYPES.includes(file.type)
+        ) {
+            toast.error(
+                "Format favicon harus PNG, JPG, WEBP, atau ICO."
+            );
+            input.value = "";
+            return;
+        }
+
+        try {
+            setFaviconUploading(true);
+
+            const formData = new FormData();
+
+            formData.append("file", file);
+
+            const response = await fetch(
+                "/api/admin/settings/favicon",
+                {
+                    method: "POST",
+                    body: formData,
+                }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.message ||
+                        "Gagal mengupload favicon."
+                );
+            }
+
+            updateField(
+                "faviconUrl",
+                data.url ?? ""
+            );
+
+            toast.success(
+                data.message ??
+                    "Favicon berhasil diperbarui."
+            );
+        } catch (error) {
+            console.error(
+                "FAVICON UPLOAD ERROR:",
+                error
+            );
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal mengupload favicon."
+            );
+        } finally {
+            setFaviconUploading(false);
+            input.value = "";
+        }
+    }
+
+    async function handleFaviconRemove() {
+        try {
+            setFaviconUploading(true);
+
+            const response = await fetch(
+                "/api/admin/settings/favicon",
+                { method: "DELETE" }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.message ||
+                        "Gagal menghapus favicon."
+                );
+            }
+
+            updateField("faviconUrl", "");
+
+            toast.success(
+                data.message ??
+                    "Favicon dihapus, kembali ke ikon default."
+            );
+        } catch (error) {
+            console.error(
+                "FAVICON REMOVE ERROR:",
+                error
+            );
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal menghapus favicon."
+            );
+        } finally {
+            setFaviconUploading(false);
+        }
+    }
+
+    /**
+     * ============================
      * SUBMIT
      * ============================
      */
@@ -1131,6 +1305,98 @@ export default function AdminSettingsForm() {
                                     className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
                                     placeholder="email@toko.com"
                                 />
+                            </div>
+                        </div>
+                    </section>
+
+                    {/* =====================
+                        FAVICON WEBSITE
+                    ====================== */}
+
+                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <h2 className="text-lg font-bold text-gray-900">
+                            Favicon Website
+                        </h2>
+
+                        <p className="mt-1 text-sm text-gray-500">
+                            Ikon kecil yang tampil di tab
+                            browser. Format PNG, JPG, WEBP,
+                            atau ICO, maksimal 1MB. Hapus untuk
+                            kembali ke ikon default.
+                        </p>
+
+                        <div className="mt-5 flex flex-wrap items-center gap-5">
+                            <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl border border-gray-200 bg-gray-50">
+                                {form.faviconUrl ? (
+                                    <img
+                                        src={form.faviconUrl}
+                                        alt="Favicon saat ini"
+                                        className="h-8 w-8 object-contain"
+                                    />
+                                ) : (
+                                    <span className="text-xs text-gray-400">
+                                        Default
+                                    </span>
+                                )}
+                            </div>
+
+                            <div className="space-y-2">
+                                <p className="text-sm font-medium text-gray-700">
+                                    {form.faviconUrl
+                                        ? "Favicon kustom aktif"
+                                        : "Belum ada favicon kustom"}
+                                </p>
+
+                                <p className="break-all text-xs text-gray-400">
+                                    {form.faviconUrl ||
+                                        "Ikon default aplikasi"}
+                                </p>
+
+                                <div className="flex gap-2">
+                                    <input
+                                        ref={faviconInputRef}
+                                        type="file"
+                                        accept={FAVICON_ACCEPT}
+                                        onChange={
+                                            handleFaviconUpload
+                                        }
+                                        className="hidden"
+                                        id="store-favicon"
+                                        disabled={
+                                            faviconUploading
+                                        }
+                                    />
+
+                                    <label
+                                        htmlFor="store-favicon"
+                                        className={`cursor-pointer rounded-xl bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800 ${
+                                            faviconUploading
+                                                ? "pointer-events-none opacity-60"
+                                                : ""
+                                        }`}
+                                    >
+                                        {faviconUploading
+                                            ? "Memproses..."
+                                            : form.faviconUrl
+                                              ? "Ganti Favicon"
+                                              : "Upload Favicon"}
+                                    </label>
+
+                                    {form.faviconUrl && (
+                                        <button
+                                            type="button"
+                                            onClick={
+                                                handleFaviconRemove
+                                            }
+                                            disabled={
+                                                faviconUploading
+                                            }
+                                            className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-60"
+                                        >
+                                            Hapus
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     </section>

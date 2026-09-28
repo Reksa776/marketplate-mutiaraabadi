@@ -1,8 +1,10 @@
 import { notFound, redirect } from "next/navigation";
+import type { Metadata } from "next";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
+import { pageMetadata, toMetaText } from "@/lib/site-metadata";
 
 import ProductDetail from "@/components/products/ProductDetail";
 import BottomNavbar from "@/components/products/BottomNavbar";
@@ -12,6 +14,51 @@ type Props = {
         slug: string;
     }>;
 };
+
+/**
+ * ==========================================
+ * DYNAMIC PRODUCT METADATA
+ * ==========================================
+ *
+ * Derives the tab title from the real product name so each
+ * product page is identifiable in the browser history and
+ * in search results. Only public catalog fields are read —
+ * no pricing, stock or margin data reaches the head.
+ *
+ * An unknown/archived slug falls back to the generic
+ * "Produk" title instead of echoing the slug back.
+ */
+export async function generateMetadata({
+    params,
+}: Props): Promise<Metadata> {
+    const { slug } = await params;
+
+    const product = await prisma.product.findFirst({
+        where: {
+            slug,
+            isArchived: false,
+        },
+
+        select: {
+            name: true,
+            description: true,
+            category: true,
+        },
+    });
+
+    if (!product) {
+        return pageMetadata({ title: "Produk" });
+    }
+
+    const name = toMetaText(product.name, 70);
+    const description = toMetaText(product.description, 160);
+
+    return pageMetadata({
+        title: name,
+        ...(description ? { description } : null),
+        url: `/products/${slug}`,
+    });
+}
 
 export default async function ProductDetailPage({
     params,

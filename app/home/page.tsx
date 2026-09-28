@@ -1,3 +1,6 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
@@ -12,6 +15,12 @@ import { auth } from "@/auth";
 import BottomNavbar from "@/components/products/BottomNavbar";
 import { getActivePromotions } from "@/lib/marketing/promotion";
 import SpinWheelContainer from "@/components/SpinWheelContainer";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Beranda",
+    description:
+        "Beranda Mutiara Abadi — jelajahi produk pilihan, promo terbaru, dan penawaran menarik yang sedang berlangsung.",
+});
 
 type ProductWithVariant = {
     bestseller: boolean;

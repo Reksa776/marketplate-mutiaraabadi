@@ -1,5 +1,14 @@
+import type { Metadata } from "next";
+
+import { pageMetadata } from "@/lib/site-metadata";
 import { Suspense } from "react";
 import RegisterForm from "@/components/auth/RegisterForm";
+
+export const metadata: Metadata = pageMetadata({
+    title: "Daftar",
+    description:
+        "Daftar akun Mutiara Abadi untuk mulai berbelanja camilan pilihan, menyimpan alamat, dan melacak pesanan Anda.",
+});
 
 export default function RegisterPage() {
   return (

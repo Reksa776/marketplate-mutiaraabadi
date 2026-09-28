@@ -342,6 +342,12 @@ model StoreSetting {
   id        Int     @id @default(1)
   storeName String
   logo      String? @db.Text
+
+  // Website favicon managed from /admin/settings. Stores the PUBLIC
+  // url/path of the uploaded file (never binary, never an fs path).
+  // NULL = no custom favicon, fall back to the bundled app icons.
+  faviconUrl String? @db.Text
+
   email     String?
   phone     String?
   address   String  @db.Text
