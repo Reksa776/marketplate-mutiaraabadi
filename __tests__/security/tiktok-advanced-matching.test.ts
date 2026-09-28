@@ -85,6 +85,19 @@ function readFile(relativePath: string): string {
     );
 }
 
+/**
+ * Source with every block/line comment removed.
+ *
+ * Source-scan assertions must inspect CODE, not prose: a doc
+ * comment that mentions `ttq.identify(` or `password` describes
+ * the contract, it does not implement it.
+ */
+function readCode(relativePath: string): string {
+    return readFile(relativePath)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
 /* ==========================================
  * FIXTURES — digests only, no raw identity
  * ========================================== */
@@ -818,17 +831,31 @@ describe("GET /api/analytics/tiktok-match", () => {
         const body = await response.json();
 
         /*
-         * Documented contract: the BROWSER Pixel auto-hashes with
-         * SHA-256, so `ttq.identify()` must receive the normalized
-         * RAW value — NOT a pre-computed digest (which the Pixel
-         * would hash again). Server-side Events API hashing is
-         * unchanged and covered separately.
+         * The endpoint returns SHA-256 DIGESTS only. TikTok's pixel
+         * passes a digest through unchanged (`isHash(v) ? v :
+         * sha256(v)`), so this is both PII-safe and byte-identical
+         * to what the server Events API channel sends.
          */
         expect(body.data).toEqual({
-            email: "buyer@example.com",
-            phone_number: "+628123456789",
-            external_id: "user_abc123",
+            email: hashTikTokMatchEmail("buyer@example.com"),
+            phone_number: hashTikTokMatchPhone("+628123456789"),
+            external_id: hashTikTokMatchExternalId(
+                "user_abc123"
+            ),
         });
+
+        /* Digest-only: every value is 64-char hex. */
+        for (const value of Object.values(
+            body.data as Record<string, string>
+        )) {
+            expect(value).toMatch(/^[a-f0-9]{64}$/);
+        }
+
+        /* No raw PII anywhere in the response. */
+        expect(JSON.stringify(body)).not.toContain(
+            "buyer@example.com"
+        );
+        expect(JSON.stringify(body)).not.toContain("0812");
 
         /* Explicit select: never the whole row, never the password. */
         expect(
@@ -1096,10 +1123,10 @@ describe("TikTok Advanced Matching — security invariants", () => {
          * the ordering is testable; the invariants apply to both.
          */
         const code =
-            readFile(
+            readCode(
                 "components/analytics/TikTokAdvancedMatching.tsx"
             ) +
-            readFile(
+            readCode(
                 "lib/analytics/tiktok-browser-identity.ts"
             );
 
@@ -1186,7 +1213,7 @@ describe("TikTok Advanced Matching — security invariants", () => {
     });
 
     test("the matching route never exposes pixel/secret columns", () => {
-        const code = readFile(
+        const code = readCode(
             "app/api/analytics/tiktok-match/route.ts"
         );
 

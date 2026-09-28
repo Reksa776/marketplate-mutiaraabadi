@@ -18,13 +18,13 @@ import { bootstrapTikTokBrowserIdentity } from "@/lib/analytics/tiktok-browser-i
  * BEFORE the events, and let the Pixel attach them to every event
  * that follows.
  *
- * CONTRACT (verified — see PHASE_22 report):
- *   The browser Pixel hashes identifiers with SHA-256 CLIENT-SIDE.
- *   So the Pixel identify API receives the NORMALIZED RAW values
- *   (email / phone_number / external_id) returned by
- *   `/api/analytics/tiktok-match`; it never receives a pre-computed
- *   digest (which the Pixel would hash again). The server-side
- *   Events API keeps its SHA-256 behavior.
+ * CONTRACT (verified against TikTok's shipped pixel source):
+ *   The browser Pixel accepts either a raw value or a SHA-256
+ *   digest for `email` / `phone_number` (its Identify plugin does
+ *   `isHash(v) ? v : sha256(...)`). We always send the DIGEST, so
+ *   raw PII never reaches the client and `external_id` matches the
+ *   server Events API channel — which the Pixel does NOT hash, so a
+ *   raw id from the browser would never line up with it.
  *
  * ORDERING (owned by lib/analytics/tiktok-browser-identity):
  *     Pixel ready → matching data ready → ttq.identify →

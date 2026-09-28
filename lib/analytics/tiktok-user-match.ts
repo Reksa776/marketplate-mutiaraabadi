@@ -2,6 +2,8 @@ import "server-only";
 
 import { createHash } from "crypto";
 
+import { isTikTokMatchDigest } from "@/lib/analytics/tiktok";
+
 /**
  * ==========================================
  * TIKTOK ADVANCED MATCHING — USER MATCH KEYS
@@ -17,15 +19,28 @@ import { createHash } from "crypto";
  *     - trim, then lowercase
  *     - NO other preprocessing before hashing
  *     - SHA-256 only
+ *     (Events API reference: "Trim any leading and trailing
+ *     spaces of each email before hashing. Lowercase all
+ *     characters before hashing. Hash the normalized email
+ *     values using SHA-256.")
  *
  *   phone
  *     - E.164: "+<country code><number without trunk prefix>"
  *     - the leading "+" IS part of the hashed string
  *     - SHA-256 only
+ *     (Events API reference: "Country code must be included and
+ *     prefixed with the `+` sign, without any parentheses or
+ *     leading `0`s ... SHA-256 hash the phone number after
+ *     normalizing.")
  *
  *   external_id
  *     - trim before hashing
  *     - SHA-256 only
+ *
+ *   Same normalization + SHA-256 is used for BOTH channels: the
+ *   server Events API and the browser Pixel. See
+ *   `buildTikTokBrowserMatch()` for why the browser is given the
+ *   digest rather than the raw value.
  *
  * SECURITY / PRIVACY CONTRACT (enforced by this module):
  *   - `server-only`: never reachable from the browser bundle
@@ -228,40 +243,67 @@ export function normalizeTikTokMatchPhone(
 }
 
 /**
- * Build the RAW, normalized Advanced Matching payload for the
- * BROWSER Pixel (`ttq.identify()`).
+ * A well-formed TikTok matching-key digest: 64 lowercase hex
+ * characters (SHA-256).
  *
- * WHY RAW IS CORRECT HERE (verified, see PHASE_22 report):
- *   TikTok's browser Pixel hashes customer identifiers with
- *   SHA-256 CLIENT-SIDE before they reach TikTok servers. Passing
- *   an already-hashed digest would therefore be hashed a second
- *   time and match nobody. The documented contract for
- *   `ttq.identify()` is to hand over the normalized RAW value.
+ * Re-exported from the shared, client-safe module so the server
+ * builder and the browser validator can never drift apart.
  *
- *   The SERVER-SIDE Events API is the opposite: it requires the
- *   SHA-256 digest, which is why `buildTikTokUserMatch()` below
- *   hashes and this function deliberately does not.
+ * Anything else is rejected rather than forwarded, so a bug or a
+ * tampered response can never smuggle a RAW email / phone number
+ * into `ttq.identify()`.
+ */
+export {
+    TIKTOK_MATCH_SHA256_PATTERN,
+    isTikTokMatchDigest,
+} from "@/lib/analytics/tiktok";
+
+/**
+ * Build the Advanced Matching payload handed to the BROWSER
+ * Pixel (`ttq.identify()`).
  *
- * Values are normalized with the EXACT same functions as the
- * server path so both channels describe the same person, and empty
- * / invalid keys are omitted rather than filled with a placeholder.
+ * ── WHY DIGESTS, NOT RAW VALUES ─────────────────────────────────
+ * The browser Pixel accepts EITHER a raw value or an already
+ * hashed digest. This was verified directly against TikTok's own
+ * shipped `events.js` + `main.*.js` (the `Identify` plugin,
+ * `baseHandleUserProperties`), which reads:
+ *
+ *     case "email":        t.email        = isHash(l) && !checkEmailFormat(l) ? l : sha256(handleEmail(l));
+ *     case "phone_number": t.phone_number = isHash(l) ? l : sha256(handlePhoneNumber(l));
+ *     ...
+ *     default: return            // <-- external_id is NOT hashed
+ *
+ * So the Pixel hashes raw `email` / `phone_number` itself and
+ * passes a 64-hex digest through UNCHANGED. We send the digest,
+ * which produces exactly the same value TikTok receives from the
+ * server Events API — and is the only option that:
+ *
+ *   1. keeps raw email / phone OFF the client entirely (no PII in
+ *      an API response, in the client bundle, or in the DOM), and
+ *   2. makes `external_id` consistent. The Pixel does NOT hash
+ *      `external_id` (it hits `default: return`), so a raw id sent
+ *      from the browser would NOT match the SHA-256 external_id
+ *      the Events API sends for the same customer.
+ *
+ * Re-hashing is therefore never a risk: the Pixel recognises the
+ * digest and does not touch it.
+ *
+ * Values are normalized + hashed with the EXACT same helpers as
+ * the server path, so both channels describe the same person, and
+ * unusable keys are omitted rather than filled with a placeholder.
  */
 export function buildTikTokBrowserMatch(
     input: TikTokUserMatchInput
 ): TikTokBrowserMatch {
     const match: TikTokBrowserMatch = {};
 
-    const email = normalizeTikTokMatchEmail(
-        input.email
-    );
+    const email = hashTikTokMatchEmail(input.email);
 
     if (email) {
         match.email = email;
     }
 
-    const phone = normalizeTikTokMatchPhone(
-        input.phone
-    );
+    const phone = hashTikTokMatchPhone(input.phone);
 
     if (phone) {
         /*
@@ -271,30 +313,39 @@ export function buildTikTokBrowserMatch(
         match.phone_number = phone;
     }
 
-    if (typeof input.externalId === "string") {
-        const externalId = input.externalId.trim();
+    const externalId = hashTikTokMatchExternalId(
+        input.externalId
+    );
 
-        if (externalId) {
-            match.external_id = externalId;
-        }
+    if (externalId) {
+        match.external_id = externalId;
     }
 
     return match;
 }
 
 /**
- * Raw Advanced Matching keys for the browser Pixel.
+ * HASHED Advanced Matching keys for the browser Pixel, named
+ * exactly as `ttq.identify()` expects them.
  *
- * The values are normalized but NOT hashed: the Pixel hashes them
- * client-side before they leave the browser.
+ * Every value is a 64-character SHA-256 hex digest. A raw email
+ * or phone number must never appear here.
  */
 export type TikTokBrowserMatch = {
+    /** SHA-256(normalized email). */
     email?: string;
+    /** SHA-256(E.164 phone). */
     phone_number?: string;
+    /** SHA-256(stable internal customer id). */
     external_id?: string;
 };
 
-/** True when at least one browser match key was resolved. */
+/**
+ * True when at least one browser match key was resolved.
+ *
+ * Also rejects a payload that is not digest-only, so a malformed
+ * response can never be forwarded to the Pixel.
+ */
 export function hasTikTokBrowserMatch(
     match: TikTokBrowserMatch | null | undefined
 ): boolean {
@@ -303,9 +354,9 @@ export function hasTikTokBrowserMatch(
     }
 
     return Boolean(
-        match.email ||
-            match.phone_number ||
-            match.external_id
+        isTikTokMatchDigest(match.email) ||
+            isTikTokMatchDigest(match.phone_number) ||
+            isTikTokMatchDigest(match.external_id)
     );
 }
 

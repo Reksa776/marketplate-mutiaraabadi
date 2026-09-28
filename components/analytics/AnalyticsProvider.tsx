@@ -17,9 +17,11 @@ import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
  *
  * Advanced Matching: identifier pelanggan diambil oleh
  * endpoint server khusus (authenticated-only) — bukan dari
- * HTML maupun bundle client. Browser Pixel menerima nilai
- * TER-NORMALISASI (di-hash SHA-256 oleh TikTok SDK di sisi
- * client); Events API server menerima DIGEST SHA-256.
+ * HTML maupun bundle client. Endpoint itu mengembalikan
+ * DIGEST SHA-256 saja (tidak pernah email/nomor mentah),
+ * lalu Browser Pixel meneruskannya apa adanya ke
+ * `ttq.identify()`. Events API server memakai digest yang
+ * sama persis, jadi kedua channel menunjuk orang yang sama.
  */
 export default async function AnalyticsProvider() {
     const tiktokPixel =

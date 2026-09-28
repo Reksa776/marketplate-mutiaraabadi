@@ -37,6 +37,18 @@ let identifiers: TikTokUserMatchIdentifiers | null =
 
 const listeners = new Set<Listener>();
 
+/** True when two identifier sets carry exactly the same digests. */
+function sameIdentifiers(
+    a: TikTokUserMatchIdentifiers,
+    b: TikTokUserMatchIdentifiers
+): boolean {
+    return (
+        a.email === b.email &&
+        a.phone_number === b.phone_number &&
+        a.external_id === b.external_id
+    );
+}
+
 /**
  * Upper bound on how long an event waits for identity. Mirrors the
  * Pixel readiness budget: if identity cannot be established, events
@@ -80,6 +92,42 @@ export function settleTikTokIdentity(
             /* A listener must never break settlement. */
         }
     }
+}
+
+/**
+ * Raise a previously-anonymous identity to a real one.
+ *
+ * WHY THIS EXISTS:
+ *   The store is a one-shot settlement, which is correct for the
+ *   common case. But a visitor can become authenticated mid-session
+ *   (login / register without a full page load). The first
+ *   settlement then recorded "anonymous" and the real identifiers
+ *   that arrive afterwards had nowhere to go, so any event
+ *   registered in that window fired without matching keys.
+ *
+ *   Upgrading is deliberately narrow:
+ *     - anonymous  -> identified : allowed (the fix)
+ *     - identified -> identified : allowed (identifier refresh)
+ *     - anything   -> anonymous  : IGNORED, so identity can never
+ *                                   be downgraded or lost
+ *
+ *   Waiters are NOT re-notified: they have already fired (that is
+ *   what "settled" means). This only makes the identifiers visible
+ *   to events registered AFTER the upgrade.
+ */
+export function upgradeTikTokIdentity(
+    next: TikTokUserMatchIdentifiers | null
+): void {
+    /* Never downgrade, and never upgrade to nothing. */
+    if (!next) {
+        return;
+    }
+
+    if (identifiers && sameIdentifiers(identifiers, next)) {
+        return;
+    }
+
+    identifiers = next;
 }
 
 /**

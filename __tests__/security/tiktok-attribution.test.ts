@@ -61,6 +61,8 @@ import {
     buildTikTokBrowserMatch,
     buildTikTokUserMatch,
     hashTikTokMatchEmail,
+    hashTikTokMatchExternalId,
+    hashTikTokMatchPhone,
     normalizeTikTokMatchEmail,
     normalizeTikTokMatchPhone,
     sha256TikTokMatch,
@@ -161,7 +163,7 @@ describe("TikTok identity readiness", () => {
         stubWindowWithPixel();
         const fired: string[] = [];
 
-        whenTikTokReadyForEvents(() =>
+        const cancel = whenTikTokReadyForEvents(() =>
             fired.push("event")
         );
 
@@ -174,13 +176,15 @@ describe("TikTok identity readiness", () => {
 
         /* Identity settled → Pixel ready → event fires. */
         expect(fired).toEqual(["event"]);
+
+        cancel();
     });
 
     test("anonymous visitor is settled and never blocked", () => {
         stubWindowWithPixel();
         const fired: string[] = [];
 
-        whenTikTokReadyForEvents(() =>
+        const cancel = whenTikTokReadyForEvents(() =>
             fired.push("event")
         );
 
@@ -188,6 +192,8 @@ describe("TikTok identity readiness", () => {
 
         expect(fired).toEqual(["event"]);
         expect(getTikTokIdentity()).toBeNull();
+
+        cancel();
     });
 
     test("a never-settling identity cannot block an event forever", () => {
@@ -224,7 +230,15 @@ describe("TikTok identity readiness", () => {
  * ========================================== */
 
 describe("Browser Advanced Matching hash semantics", () => {
-    test("browser match returns NORMALIZED RAW values (Pixel auto-hashes)", () => {
+    test("browser match returns SHA-256 digests, never raw values", () => {
+        /*
+         * TikTok's shipped pixel does `isHash(v) ? v : sha256(v)`
+         * for `email` / `phone_number`, so a digest is passed
+         * through untouched. Sending the digest keeps raw PII off
+         * the client and — critically — makes `external_id` agree
+         * with the server channel, because the Pixel never hashes
+         * `external_id` (it hits `default: return`).
+         */
         expect(
             buildTikTokBrowserMatch({
                 email: "  Buyer@Example.COM ",
@@ -232,9 +246,26 @@ describe("Browser Advanced Matching hash semantics", () => {
                 externalId: "  user_abc123  ",
             })
         ).toEqual({
-            email: "buyer@example.com",
-            phone_number: "+628123456789",
-            external_id: "user_abc123",
+            email: hashTikTokMatchEmail("buyer@example.com"),
+            phone_number: hashTikTokMatchPhone("+628123456789"),
+            external_id: hashTikTokMatchExternalId(
+                "user_abc123"
+            ),
+        });
+    });
+
+    test("browser and server channels produce IDENTICAL digests", () => {
+        const input = {
+            email: "  Buyer@Example.COM ",
+            phone: "08123456789",
+            externalId: "user_abc123",
+        };
+
+        expect(buildTikTokBrowserMatch(input)).toEqual({
+            email: buildTikTokUserMatch(input).email,
+            phone_number: buildTikTokUserMatch(input).phone,
+            external_id:
+                buildTikTokUserMatch(input).external_id,
         });
     });
 
@@ -263,6 +294,28 @@ describe("Browser Advanced Matching hash semantics", () => {
                 externalId: "   ",
             })
         ).toEqual({});
+    });
+
+    test("the SHA-256 of an empty string is never emitted", () => {
+        /*
+         * TikTok explicitly filters e3b0c442…b855 (SHA-256 of the
+         * empty string) as an invalid match key. Nothing this module
+         * produces may ever equal it.
+         */
+        const emptyDigest =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+        for (const value of [
+            buildTikTokBrowserMatch({ email: "" }),
+            buildTikTokBrowserMatch({ phone: "" }),
+            buildTikTokBrowserMatch({ externalId: "  " }),
+            buildTikTokUserMatch({ email: "", phone: "" }),
+        ]) {
+            expect(JSON.stringify(value)).not.toContain(
+                emptyDigest
+            );
+            expect(value).toEqual({});
+        }
     });
 });
 

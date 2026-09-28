@@ -1,9 +1,13 @@
 import {
+    isTikTokMatchDigest,
     trackTikTokUserMatch,
     whenTikTokPixelReady,
     type TikTokUserMatchIdentifiers,
 } from "@/lib/analytics/tiktok";
-import { settleTikTokIdentity } from "@/lib/analytics/tiktok-identity";
+import {
+    settleTikTokIdentity,
+    upgradeTikTokIdentity,
+} from "@/lib/analytics/tiktok-identity";
 
 /**
  * ==========================================
@@ -42,8 +46,9 @@ import { settleTikTokIdentity } from "@/lib/analytics/tiktok-identity";
  *   - bounded by a timeout: a hanging endpoint resolves to "no
  *     matching data" instead of stalling events (the event helper
  *     has its own hard cap as a second line of defence)
- *   - never logs, never stores, never sends raw PII anywhere but
- *     the Pixel identify call (which TikTok hashes client-side)
+ *   - the endpoint returns SHA-256 DIGESTS only; raw PII never
+ *     reaches the browser, this module, or `ttq.identify()`
+ *   - never logs, never stores raw PII anywhere
  */
 
 export type TikTokBrowserMatchData = {
@@ -66,6 +71,18 @@ export const TIKTOK_BROWSER_MATCH_ENDPOINT =
  */
 export const TIKTOK_BROWSER_MATCH_TIMEOUT_MS = 2500;
 
+/**
+ * Bounded retry budget for the `ttq.identify()` call itself.
+ *
+ * `whenTikTokPixelReady` invokes its callback at most once, so a
+ * Pixel that is not ready to accept `identify` at that instant would
+ * otherwise lose the identifiers for the rest of the page load.
+ * These bounds keep the retry finite so analytics can never stall
+ * the page.
+ */
+export const TIKTOK_BROWSER_IDENTIFY_RETRY_MS = 300;
+export const TIKTOK_BROWSER_IDENTIFY_MAX_ATTEMPTS = 8;
+
 let browserMatchPromise: Promise<TikTokBrowserMatchData> | null =
     null;
 
@@ -74,38 +91,32 @@ let matchResolved = false;
 let matchApplied = false;
 let matchIdentifiers: TikTokUserMatchIdentifiers | null =
     null;
-
-function readString(value: unknown): string | undefined {
-    return typeof value === "string" && value
-        ? value
-        : undefined;
-}
+let attempts = 0;
+let retry: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Map the endpoint payload onto TikTok's `identify()` names,
  * omitting anything unusable. Returns null when there is nothing.
+ *
+ * Only well-formed SHA-256 digests survive: a raw email or phone
+ * number in the response is dropped instead of being handed to the
+ * Pixel.
  */
 export function toTikTokBrowserIdentifiers(
     data: TikTokBrowserMatchData
 ): TikTokUserMatchIdentifiers | null {
     const identifiers: TikTokUserMatchIdentifiers = {};
 
-    const email = readString(data?.email);
-
-    if (email) {
-        identifiers.email = email;
+    if (isTikTokMatchDigest(data?.email)) {
+        identifiers.email = data.email;
     }
 
-    const phone = readString(data?.phone_number);
-
-    if (phone) {
-        identifiers.phone_number = phone;
+    if (isTikTokMatchDigest(data?.phone_number)) {
+        identifiers.phone_number = data.phone_number;
     }
 
-    const externalId = readString(data?.external_id);
-
-    if (externalId) {
-        identifiers.external_id = externalId;
+    if (isTikTokMatchDigest(data?.external_id)) {
+        identifiers.external_id = data.external_id;
     }
 
     return Object.keys(identifiers).length > 0
@@ -171,6 +182,12 @@ export function loadTikTokBrowserMatch(): Promise<TikTokBrowserMatchData> {
  * that has genuinely finished without usable keys settles
  * anonymous, so an authenticated event can never fire before its
  * own matching data.
+ *
+ * LIVENESS: `whenTikTokPixelReady` runs its callback at most once.
+ * If the Pixel is not yet able to accept `identify` at that exact
+ * moment the attempt is retried on a bounded schedule rather than
+ * being silently dropped — otherwise a single unlucky tick would
+ * leave the whole page unidentified.
  */
 export function applyTikTokBrowserIdentity(): void {
     if (matchApplied) {
@@ -187,16 +204,39 @@ export function applyTikTokBrowserIdentity(): void {
 
     const identifiers = matchIdentifiers;
 
-    whenTikTokPixelReady(() => {
+    const attempt = () => {
         if (matchApplied) {
             return;
         }
 
         if (trackTikTokUserMatch(identifiers)) {
             matchApplied = true;
+
+            /*
+             * The first settlement wins; if the store was already
+             * released as anonymous (visitor logged in mid-session)
+             * raise it instead so later events see the identity.
+             */
+            upgradeTikTokIdentity(identifiers);
             settleTikTokIdentity(identifiers);
+
+            return;
         }
-    });
+
+        if (attempts >= TIKTOK_BROWSER_IDENTIFY_MAX_ATTEMPTS) {
+            /*
+             * Give up: stop blocking and let the bounded identity
+             * timeout release events as anonymous.
+             */
+            return;
+        }
+
+        attempts += 1;
+
+        retry = setTimeout(attempt, TIKTOK_BROWSER_IDENTIFY_RETRY_MS);
+    };
+
+    whenTikTokPixelReady(attempt);
 }
 
 /**
@@ -242,9 +282,15 @@ export function isTikTokBrowserIdentityApplied(): boolean {
  * tests.
  */
 export function resetTikTokBrowserIdentityForTests(): void {
+    if (retry !== null) {
+        clearTimeout(retry);
+        retry = null;
+    }
+
     browserMatchPromise = null;
     matchRequested = false;
     matchResolved = false;
     matchApplied = false;
     matchIdentifiers = null;
+    attempts = 0;
 }

@@ -55,12 +55,17 @@ import {
 import {
     buildTikTokBrowserMatch,
     buildTikTokUserMatch,
+    hashTikTokMatchEmail,
+    hashTikTokMatchExternalId,
+    hashTikTokMatchPhone,
 } from "@/lib/analytics/tiktok-user-match";
 
 import {
+    getTikTokIdentity,
     isTikTokIdentitySettled,
     resetTikTokIdentityForTests,
     settleTikTokIdentity,
+    upgradeTikTokIdentity,
     whenTikTokReadyForEvents,
 } from "@/lib/analytics/tiktok-identity";
 
@@ -193,11 +198,11 @@ const AUTHENTICATED_EVENT_CASES: EventCase[] = [
     },
 ];
 
-const MATCHING_DATA = {
+const MATCHING_DATA = buildTikTokBrowserMatch({
     email: RAW_EMAIL,
-    phone_number: "+628123456789",
-    external_id: "user_abc123",
-};
+    phone: RAW_PHONE,
+    externalId: "user_abc123",
+});
 
 /**
  * Run the real browser matching bootstrap against a Pixel that is
@@ -222,7 +227,7 @@ async function simulateEligibleEvent(eventName: string): Promise<{
     bootstrapTikTokBrowserIdentity();
 
     /* An eligible event registers while the lookup is in flight. */
-    whenTikTokReadyForEvents(() => {
+    const cancelEvent = whenTikTokReadyForEvents(() => {
         const ttq = (
             globalThis as {
                 window?: {
@@ -249,6 +254,9 @@ async function simulateEligibleEvent(eventName: string): Promise<{
 
     await flush();
     await flush();
+
+    /* Release the bounded identity timer so jest can exit. */
+    cancelEvent();
 
     return {
         order,
@@ -387,7 +395,7 @@ describe("Anonymous visitors still track", () => {
 
         bootstrapTikTokBrowserIdentity();
 
-        whenTikTokReadyForEvents(() => {
+        const cancelEvent = whenTikTokReadyForEvents(() => {
             (
                 globalThis as {
                     window?: {
@@ -399,6 +407,8 @@ describe("Anonymous visitors still track", () => {
 
         await flush();
         await flush();
+
+        cancelEvent();
 
         expect(order).toEqual(["track:ViewContent"]);
         expect(isTikTokIdentitySettled()).toBe(true);
@@ -412,16 +422,22 @@ describe("Anonymous visitors still track", () => {
 describe("Partial and invalid identifiers", () => {
     test("TEST 9 — email only: phone is omitted", () => {
         expect(
-            toTikTokBrowserIdentifiers({ email: RAW_EMAIL })
-        ).toEqual({ email: RAW_EMAIL });
+            toTikTokBrowserIdentifiers({
+                email: hashTikTokMatchEmail(RAW_EMAIL),
+            })
+        ).toEqual({
+            email: hashTikTokMatchEmail(RAW_EMAIL),
+        });
     });
 
     test("TEST 10 — phone only: email is omitted", () => {
         expect(
             toTikTokBrowserIdentifiers({
-                phone_number: "+628123456789",
+                phone_number: hashTikTokMatchPhone(RAW_PHONE),
             })
-        ).toEqual({ phone_number: "+628123456789" });
+        ).toEqual({
+            phone_number: hashTikTokMatchPhone(RAW_PHONE),
+        });
     });
 
     test("TEST 11 — invalid email is omitted by the endpoint, never hashed", () => {
@@ -434,13 +450,22 @@ describe("Partial and invalid identifiers", () => {
                 email: "not-an-email",
                 phone: RAW_PHONE,
             })
-        ).toEqual({ phone_number: "+628123456789" });
+        ).toEqual({
+            phone_number: hashTikTokMatchPhone(RAW_PHONE),
+        });
 
         expect(
             buildTikTokUserMatch({ email: "not-an-email" })
         ).toEqual({});
 
-        /* Empty / missing strings never become identifiers. */
+        /*
+         * A RAW value smuggled into the endpoint response is
+         * rejected by the browser mapper instead of being handed
+         * to the Pixel.
+         */
+        expect(
+            toTikTokBrowserIdentifiers({ email: RAW_EMAIL })
+        ).toBeNull();
         expect(
             toTikTokBrowserIdentifiers({ email: "" })
         ).toBeNull();
@@ -455,7 +480,9 @@ describe("Partial and invalid identifiers", () => {
                 phone: "123",
                 email: RAW_EMAIL,
             })
-        ).toEqual({ email: RAW_EMAIL });
+        ).toEqual({
+            email: hashTikTokMatchEmail(RAW_EMAIL),
+        });
 
         expect(
             buildTikTokUserMatch({
@@ -463,6 +490,12 @@ describe("Partial and invalid identifiers", () => {
                 email: RAW_EMAIL,
             })
         ).not.toHaveProperty("phone");
+
+        expect(
+            toTikTokBrowserIdentifiers({
+                phone_number: "0812",
+            })
+        ).toBeNull();
     });
 });
 
@@ -474,7 +507,10 @@ describe("Privacy invariants", () => {
     test("TEST 13 — the browser lookup endpoint never returns raw secrets", () => {
         const code = readFile(
             "app/api/analytics/tiktok-match/route.ts"
-        );
+        )
+            /* Scan CODE, not the contract described in comments. */
+            .replace(/\/\*[\s\S]*?\*\//g, "")
+            .replace(/^[ \t]*\/\/.*$/gm, "");
 
         expect(code).not.toContain("password");
         expect(code).not.toContain("accessToken");
@@ -482,6 +518,60 @@ describe("Privacy invariants", () => {
         expect(code).toContain(
             "buildTikTokBrowserMatch"
         );
+
+        /*
+         * The response is filtered through a digest-only guard, so
+         * a raw value can never be serialized even if the builder
+         * were ever changed.
+         */
+        expect(code).toContain("digestOnly");
+        expect(code).toContain("isTikTokMatchDigest");
+    });
+
+    test("TEST 13 — identify is only ever given SHA-256 digests", () => {
+        const order: string[] = [];
+        const seen: Record<string, unknown>[] = [];
+
+        (globalThis as BrowserWindow).window = {
+            ttq: {
+                track: () => {},
+                identify: (ids: Record<string, unknown>) => {
+                    order.push("identify");
+                    seen.push(ids);
+                },
+            },
+            addEventListener: jest.fn(),
+            removeEventListener: jest.fn(),
+        };
+
+        fetchMock.mockResolvedValue(
+            jsonResponse({ success: true, data: MATCHING_DATA })
+        );
+
+        bootstrapTikTokBrowserIdentity();
+
+        return flush()
+            .then(flush)
+            .then(() => {
+                expect(seen).toHaveLength(1);
+
+                for (const payload of seen) {
+                    for (const value of Object.values(
+                        payload
+                    )) {
+                        expect(String(value)).toMatch(
+                            /^[a-f0-9]{64}$/
+                        );
+                    }
+                }
+
+                /* No raw PII reached the Pixel. */
+                const serialized = JSON.stringify(seen);
+
+                expect(serialized).not.toContain(RAW_EMAIL);
+                expect(serialized).not.toContain(RAW_PHONE);
+                expect(serialized).not.toContain("user_abc123");
+            });
     });
 
     test("TEST 13 — the server events module never logs PII", () => {
@@ -515,6 +605,143 @@ describe("Privacy invariants", () => {
                 "business-api.tiktok.com"
             );
         }
+    });
+});
+
+/* ==========================================
+ * LIVENESS + IDENTITY UPGRADE
+ * ========================================== */
+
+describe("Identify liveness and identity upgrade", () => {
+    test("the browser digests equal the server Events API digests", () => {
+        /*
+         * THE decisive cross-channel check.
+         *
+         * TikTok matches a browser event to a server event by the
+         * user_data digests it received. If the two channels ever
+         * disagreed on a single byte, every event would land in
+         * "unmatched" and no amount of correct ordering would help.
+         *
+         * Only the field NAME differs, because each channel's API
+         * documents a different one:
+         *   server  Business API   -> `phone`
+         *   browser Pixel identify -> `phone_number`
+         */
+        const serverPayload = buildTikTokUserMatch({
+            email: RAW_EMAIL,
+            phone: RAW_PHONE,
+            externalId: "user_abc123",
+        });
+
+        const identifiers = toTikTokBrowserIdentifiers(
+            MATCHING_DATA
+        );
+
+        expect(identifiers).not.toBeNull();
+        expect(identifiers).toEqual({
+            email: serverPayload.email,
+            phone_number: serverPayload.phone,
+            external_id: serverPayload.external_id,
+        });
+
+        /* Each channel keeps its own documented key name. */
+        expect(serverPayload).toHaveProperty("phone");
+        expect(serverPayload).not.toHaveProperty(
+            "phone_number"
+        );
+    });
+
+    test("a Pixel whose identify is not attached yet is retried", async () => {
+        const order: string[] = [];
+
+        /*
+         * The REAL failure mode. `isTikTokPixelReady()` is
+         * `Boolean(window.ttq)`, so it reports ready as soon as the
+         * base code creates the `ttq` array — which is true a tick
+         * before the Pixel's deferred `identify` method exists.
+         * A one-shot readiness callback would lose the identifiers
+         * right here.
+         */
+        const ttq: Record<string, unknown> = {};
+
+        (globalThis as BrowserWindow).window = {
+            ttq,
+            addEventListener: jest.fn(),
+            removeEventListener: jest.fn(),
+        };
+
+        fetchMock.mockResolvedValue(
+            jsonResponse({ success: true, data: MATCHING_DATA })
+        );
+
+        bootstrapTikTokBrowserIdentity();
+
+        await flush();
+        await flush();
+
+        /* Pixel "ready" but cannot accept identify yet. */
+        expect(order).toEqual([]);
+        expect(isTikTokIdentitySettled()).toBe(false);
+
+        /* The Pixel finishes attaching its methods. */
+        ttq.identify = () => {
+            order.push("identify");
+        };
+
+        for (let i = 0; i < 20; i += 1) {
+            await new Promise((r) => setTimeout(r, 50));
+        }
+
+        expect(order).toEqual(["identify"]);
+        expect(isTikTokIdentitySettled()).toBe(true);
+        expect(getTikTokIdentity()).toEqual(MATCHING_DATA);
+    });
+
+    test("a visitor who logs in mid-session is upgraded from anonymous", async () => {
+        const order: string[] = [];
+
+        (globalThis as BrowserWindow).window = {
+            ttq: {
+                track: (n: string) => order.push(`track:${n}`),
+                identify: () => order.push("identify"),
+            },
+            addEventListener: jest.fn(),
+            removeEventListener: jest.fn(),
+        };
+
+        /* Session resolved as anonymous first. */
+        settleTikTokIdentity(null);
+        expect(getTikTokIdentity()).toBeNull();
+
+        fetchMock.mockResolvedValue(
+            jsonResponse({ success: true, data: MATCHING_DATA })
+        );
+
+        bootstrapTikTokBrowserIdentity();
+
+        await flush();
+        await flush();
+
+        /*
+         * identify still runs, and the store is raised from
+         * anonymous so events registered from now on are matched.
+         */
+        expect(order).toContain("identify");
+        expect(getTikTokIdentity()).toEqual(MATCHING_DATA);
+    });
+
+    test("identity can never be downgraded back to anonymous", () => {
+        const email = hashTikTokMatchEmail(RAW_EMAIL);
+
+        expect(email).not.toBeNull();
+
+        settleTikTokIdentity({ email: email as string });
+
+        upgradeTikTokIdentity(null);
+
+        expect(getTikTokIdentity()).toEqual({
+            email: email as string,
+        });
     });
 });
 

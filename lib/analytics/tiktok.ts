@@ -82,6 +82,40 @@ export type TikTokEventOptions = {
 export const TIKTOK_EVENT_ID_PREFIX = "ttq";
 
 /**
+ * A well-formed TikTok matching-key digest: 64 lowercase hex
+ * characters (SHA-256).
+ *
+ * Lives here (rather than in lib/analytics/tiktok-user-match, which
+ * is `server-only`) so the browser Pixel bridge and the server
+ * hashing helper validate against the exact same rule.
+ */
+export const TIKTOK_MATCH_SHA256_PATTERN =
+    /^[a-f0-9]{64}$/;
+
+/** True when `value` is a SHA-256 hex digest TikTok would accept. */
+export function isTikTokMatchDigest(
+    value: unknown
+): value is string {
+    return (
+        typeof value === "string" &&
+        TIKTOK_MATCH_SHA256_PATTERN.test(value)
+    );
+}
+
+/**
+ * Advanced Matching identifiers, exactly as TikTok's
+ * `ttq.identify()` names them.
+ *
+ * Every value MUST already be a SHA-256 digest. This module never
+ * sees, computes from, or forwards a raw email / phone number.
+ */
+export type TikTokUserMatchIdentifiers = {
+    email?: string;
+    phone_number?: string;
+    external_id?: string;
+};
+
+/**
  * Event name TikTokPixel dispatches once the base code is mounted.
  */
 export const TIKTOK_PIXEL_READY_EVENT =
@@ -290,25 +324,6 @@ export function isAdminPath(
 }
 
 /**
- * Kirim event TikTok dari komponen client.
- *
- * TIDAK ada Advanced Matching / PII di sini:
- * hanya event + parameter yang sudah dipilih
- * pemanggil (harga, nama produk, dsb).
- *//**
- * Advanced Matching identifiers, exactly as TikTok's
- * `ttq.identify()` names them.
- *
- * Every value MUST already be a SHA-256 digest. This module never
- * sees, computes from, or forwards a raw email / phone number.
- */
-export type TikTokUserMatchIdentifiers = {
-    email?: string;
-    phone_number?: string;
-    external_id?: string;
-};
-
-/**
  * Register Advanced Matching keys for the current visitor.
  *
  * TikTok applies them to the events that follow, which is why this
@@ -332,16 +347,23 @@ export function trackTikTokUserMatch(
     const payload: TikTokUserMatchIdentifiers =
         {};
 
-    if (identifiers.email) {
+    /*
+     * Defence in depth: only 64-char SHA-256 digests are forwarded.
+     * A raw email or phone number must never reach the Pixel, even
+     * if a payload were somehow built incorrectly upstream.
+     */
+    if (isTikTokMatchDigest(identifiers.email)) {
         payload.email = identifiers.email;
     }
 
-    if (identifiers.phone_number) {
+    if (
+        isTikTokMatchDigest(identifiers.phone_number)
+    ) {
         payload.phone_number =
             identifiers.phone_number;
     }
 
-    if (identifiers.external_id) {
+    if (isTikTokMatchDigest(identifiers.external_id)) {
         payload.external_id =
             identifiers.external_id;
     }
