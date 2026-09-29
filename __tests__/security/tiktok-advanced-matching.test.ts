@@ -98,6 +98,47 @@ function readCode(relativePath: string): string {
         .replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
+/**
+ * Full text of every `console.*(...)` call in a (comment-free)
+ * source file, including its argument list.
+ *
+ * The server events module logs its delivery outcomes on purpose,
+ * so "no console call exists" is no longer the invariant — "no
+ * console call carries identity, a secret or a body" is.
+ */
+function tikTokLogCalls(source: string): string[] {
+    const calls: string[] = [];
+    const marker = "console.";
+
+    let cursor = source.indexOf(marker);
+
+    while (cursor !== -1) {
+        const open = source.indexOf("(", cursor);
+
+        let depth = 0;
+        let close = open;
+
+        for (let i = open; i < source.length; i += 1) {
+            if (source[i] === "(") {
+                depth += 1;
+            } else if (source[i] === ")") {
+                depth -= 1;
+
+                if (depth === 0) {
+                    close = i;
+                    break;
+                }
+            }
+        }
+
+        calls.push(source.slice(cursor, close + 1));
+
+        cursor = source.indexOf(marker, close + 1);
+    }
+
+    return calls;
+}
+
 /* ==========================================
  * FIXTURES — digests only, no raw identity
  * ========================================== */
@@ -1170,18 +1211,36 @@ describe("TikTok Advanced Matching — security invariants", () => {
     });
 
     test("no raw PII is ever logged by the events API module", () => {
-        const code = readFile(
+        const code = readCode(
             "lib/analytics/tiktok-events-api.ts"
         );
 
-        expect(code).not.toContain("console.log(");
-        expect(code).toContain(
-            "Access-Token"
-        );
-        /* The token only ever appears as the header name. */
-        expect(code).not.toContain(
-            "console.error(\n                TOKEN"
-        );
+        expect(code).toContain("Access-Token");
+
+        const calls = tikTokLogCalls(code);
+
+        /*
+         * The service reports every delivery outcome (skipped /
+         * sending / accepted / not accepted / request failed) so a
+         * production investigation can tell a skip from a
+         * delivery. What must never change is that none of those
+         * lines carries a raw identifier, a hashed digest value, a
+         * secret, or a request body.
+         */
+        expect(calls).toHaveLength(5);
+
+        for (const call of calls) {
+            expect(call).not.toMatch(/access.?token/i);
+            expect(call).not.toMatch(/email/i);
+            expect(call).not.toMatch(/phone/i);
+            expect(call).not.toMatch(/user.?agent/i);
+            expect(call).not.toMatch(
+                /(\bttclid\b|\bttp\b|\bip\b)/i
+            );
+            expect(call).not.toContain("JSON.stringify");
+            expect(call).not.toContain("input.user");
+            expect(call).not.toContain("config.accessToken");
+        }
     });
 
     test("webhooks select only email/phone and pass them hashed", () => {

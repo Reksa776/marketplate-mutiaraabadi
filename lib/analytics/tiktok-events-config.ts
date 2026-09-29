@@ -37,6 +37,16 @@ export type TikTokEventsApiConfig = {
      * behaviour is unchanged while the variable is absent.
      */
     testEventCode: string | null;
+    /**
+     * Set ONLY when the configuration could not be read at all
+     * (missing column, database down). It carries a short, opaque
+     * error code — never a message, never the token.
+     *
+     * Without it a failed read is indistinguishable from a store
+     * that deliberately left the pixel off, which makes a silent
+     * "no request was sent" impossible to explain in production.
+     */
+    unavailableReason: string | null;
 };
 
 export const DISABLED_TIKTOK_EVENTS_API: TikTokEventsApiConfig = {
@@ -44,7 +54,35 @@ export const DISABLED_TIKTOK_EVENTS_API: TikTokEventsApiConfig = {
     pixelId: null,
     accessToken: null,
     testEventCode: null,
+    unavailableReason: null,
 };
+
+/**
+ * Short, non-sensitive code describing why a config read failed.
+ *
+ * Prisma exposes a stable string `code` (e.g. P2021/P2022 for a
+ * missing table/column); anything else falls back to the error
+ * class name. The message is deliberately NOT forwarded — it can
+ * embed the connection string.
+ */
+function tiktokConfigErrorCode(
+    error: unknown
+): string {
+    if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        typeof (error as { code?: unknown }).code ===
+            "string" &&
+        (error as { code: string }).code
+    ) {
+        return (error as { code: string }).code;
+    }
+
+    return error instanceof Error
+        ? error.name
+        : "unknown";
+}
 
 /**
  * ==========================================
@@ -152,17 +190,32 @@ export async function getTikTokEventsApiConfig(): Promise<TikTokEventsApiConfig>
              * StoreSetting, only the test tag comes from env.
              */
             testEventCode: getTikTokTestEventCode(),
+            unavailableReason: null,
         };
     } catch (error) {
         /*
          * Fail closed: no config, no request. Never log the
          * token (it is not part of the error).
          */
+        const unavailableReason =
+            tiktokConfigErrorCode(error);
+
         console.error(
             "GET TIKTOK EVENTS API CONFIG ERROR:",
-            error
+            unavailableReason
         );
 
-        return { ...DISABLED_TIKTOK_EVENTS_API };
+        return {
+            ...DISABLED_TIKTOK_EVENTS_API,
+            unavailableReason,
+            /*
+             * The test code lives in the environment, not the
+             * database, so it is still resolvable here. Keeping
+             * it lets the skip log prove whether the process
+             * actually sees TIKTOK_TEST_EVENT_CODE even when the
+             * settings row could not be read.
+             */
+            testEventCode: getTikTokTestEventCode(),
+        };
     }
 }

@@ -8,6 +8,7 @@
     "start": "next start -p 3002",
     "lint": "eslint",
     "audit:ipaymu": "npx tsx scripts/audit-ipaymu.ts",
+    "audit:tiktok": "npx tsx scripts/tiktok-events-api-check.ts",
     "admin:create": "npx tsx scripts/admin-create.ts"
   },
   "dependencies": {

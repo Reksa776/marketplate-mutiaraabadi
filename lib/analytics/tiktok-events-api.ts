@@ -44,9 +44,31 @@ import {
  *   - skips the request entirely when disabled / unconfigured
  *   - bounded by a timeout
  *   - NEVER throws (TikTok must never break checkout / payment)
- *   - safe logging: event name + event_id + status/code only —
- *     never the token, the Access-Token header, the request body,
- *     the raw response body, or customer PII
+ *   - safe logging: event name + event_id + status/code/request_id
+ *     only — never the token, the Access-Token header, the request
+ *     body, the raw response body, or customer PII
+ *
+ * Observability contract (why every outcome is logged):
+ *   `[TIKTOK EVENTS API] sending`   one line, before the request —
+ *                                   proves the sender was reached
+ *   `[TIKTOK EVENTS API] event accepted`      HTTP ok + code 0
+ *   `[TIKTOK EVENTS API] event not accepted`  HTTP or TikTok error
+ *   `[TIKTOK EVENTS API] event skipped`       nothing was sent
+ *   `[TIKTOK EVENTS API] request failed`      timeout / network
+ *
+ *   Logging ONLY failures (the previous behaviour) made a skipped
+ *   request indistinguishable from a delivered one: both produce
+ *   no log at all. Skips are now reported with the reason that
+ *   caused them (`config_unavailable`, `pixel_disabled`,
+ *   `missing_pixel_id`, `missing_access_token`) so an unreadable
+ *   StoreSetting row, an invalid stored Pixel ID, or a missing
+ *   Access Token can no longer hide behind silence.
+ *
+ *   Fields logged: event, event_id, HTTP status, TikTok `code`,
+ *   TikTok `message`, TikTok `request_id`, whether the response
+ *   body was readable JSON, whether a `test_event_code` was
+ *   attached, and the NAMES of the `user` keys that were sent
+ *   (never their values).
  *
  * Advanced Matching (privacy-safe):
  *   When the caller passes RAW customer identifiers, they are
@@ -104,7 +126,131 @@ export type TikTokSendResult = {
     status?: number;
     code?: number;
     message?: string;
+    /**
+     * TikTok's own trace id for the request. Opaque and safe to
+     * log / quote to TikTok support. Present only when TikTok
+     * returned a readable JSON body containing one.
+     */
+    requestId?: string;
+    /**
+     * Whether a `test_event_code` was attached to THIS request,
+     * i.e. whether the event was routed to the Events Manager
+     * "Test Events" view instead of reporting.
+     */
+    testEventCodeConfigured: boolean;
 };
+
+type TikTokParsedResponse = {
+    /** HTTP body parsed as JSON at all. */
+    readable: boolean;
+    code?: number;
+    message?: string;
+    requestId?: string;
+};
+
+/**
+ * Read TikTok's response body defensively.
+ *
+ * A non-JSON body (HTML error page, proxy response, empty body)
+ * is reported as `readable: false` instead of being collapsed
+ * into "code: undefined", which is what made an unparsable
+ * response indistinguishable from a genuine rejection.
+ *
+ * Nothing from the body is logged beyond `code`, `message` and
+ * `request_id` — TikTok echoes part of the request there.
+ */
+async function readTikTokResponse(
+    response: Response
+): Promise<TikTokParsedResponse> {
+    let body: unknown;
+
+    try {
+        body = await response.json();
+    } catch {
+        return { readable: false };
+    }
+
+    if (!body || typeof body !== "object") {
+        return { readable: false };
+    }
+
+    const record = body as {
+        code?: unknown;
+        message?: unknown;
+        request_id?: unknown;
+    };
+
+    return {
+        readable: true,
+        code:
+            typeof record.code === "number"
+                ? record.code
+                : undefined,
+        message:
+            typeof record.message === "string"
+                ? record.message
+                : undefined,
+        requestId:
+            typeof record.request_id === "string"
+                ? record.request_id
+                : undefined,
+    };
+}
+
+/**
+ * NAMES of the `user` keys that made it into the request body.
+ *
+ * Advanced Matching / attribution health is diagnosable from the
+ * names alone, so the values (hashed or not) never reach a log.
+ */
+function describeTikTokUserKeys(
+    payload: TikTokEventPayload
+): string[] {
+    const first = payload.data[0] as
+        | Record<string, unknown>
+        | undefined;
+
+    const user = first?.user;
+
+    if (!user || typeof user !== "object") {
+        return [];
+    }
+
+    return Object.keys(
+        user as Record<string, unknown>
+    ).sort();
+}
+
+/**
+ * Report + return one "nothing was sent" outcome.
+ *
+ * Deliberately logged (warn): a silent skip is the one state that
+ * cannot be told apart from a successful delivery afterwards.
+ */
+function skippedTikTokEvent(
+    input: TikTokServerEventInput,
+    reason: string,
+    testEventCodeConfigured: boolean,
+    extra?: Record<string, unknown>
+): TikTokSendResult {
+    console.warn(
+        "[TIKTOK EVENTS API] event skipped",
+        {
+            event: input.event,
+            eventId: input.eventId,
+            reason,
+            testEventCodeConfigured,
+            ...(extra ?? {}),
+        }
+    );
+
+    return {
+        ok: false,
+        skipped: true,
+        reason,
+        testEventCodeConfigured,
+    };
+}
 
 type TikTokEventPayload = {
     event_source: "web";
@@ -216,42 +362,91 @@ function buildPayload(
 export async function sendTikTokEvent(
     input: TikTokServerEventInput
 ): Promise<TikTokSendResult> {
+    /*
+     * Hoisted so the catch path can still report whether test mode
+     * was on when the request blew up.
+     */
+    let testEventCodeConfigured = false;
+
     try {
         const config =
             await getTikTokEventsApiConfig();
+
+        testEventCodeConfigured =
+            config.testEventCode !== null;
+
+        /*
+         * The configuration could not be READ at all (missing
+         * column, database down). Reported under its own reason so
+         * it is never mistaken for "the store turned the pixel
+         * off", which is the difference between "fix the
+         * deployment" and "nothing to do".
+         */
+        if (config.unavailableReason) {
+            return skippedTikTokEvent(
+                input,
+                "config_unavailable",
+                testEventCodeConfigured,
+                { configError: config.unavailableReason }
+            );
+        }
 
         /*
          * Fail closed: nothing to send without an enabled
          * pixel, a Pixel ID, and an Access Token.
          */
         if (!config.enabled) {
-            return {
-                ok: false,
-                skipped: true,
-                reason: "pixel_disabled",
-            };
+            return skippedTikTokEvent(
+                input,
+                "pixel_disabled",
+                testEventCodeConfigured
+            );
         }
 
         if (!config.pixelId) {
-            return {
-                ok: false,
-                skipped: true,
-                reason: "missing_pixel_id",
-            };
+            /*
+             * StoreSetting.tiktokPixelId is set but does not
+             * satisfy the Pixel ID format, so it was rejected by
+             * the normalizer.
+             */
+            return skippedTikTokEvent(
+                input,
+                "missing_pixel_id",
+                testEventCodeConfigured
+            );
         }
 
         if (!config.accessToken) {
-            return {
-                ok: false,
-                skipped: true,
-                reason: "missing_access_token",
-            };
+            return skippedTikTokEvent(
+                input,
+                "missing_access_token",
+                testEventCodeConfigured
+            );
         }
 
         const payload = buildPayload(
             config.pixelId,
             input,
             config.testEventCode
+        );
+
+        /*
+         * Attempt log. This is the line that answers "was a
+         * request even attempted for this order?" — it is written
+         * BEFORE the network call, so a missing "accepted"/"not
+         * accepted" line after it always means timeout, network
+         * failure or process death, never "silently skipped".
+         */
+        console.log(
+            "[TIKTOK EVENTS API] sending",
+            {
+                event: input.event,
+                eventId: input.eventId,
+                testEventCodeConfigured,
+                userKeys: describeTikTokUserKeys(
+                    payload
+                ),
+            }
         );
 
         const controller = new AbortController();
@@ -283,47 +478,43 @@ export async function sendTikTokEvent(
             clearTimeout(timeout);
         }
 
-        let parsed: {
-            code?: unknown;
-            message?: unknown;
-        } | null = null;
+        const parsed =
+            await readTikTokResponse(response);
 
-        try {
-            parsed = (await response.json()) as {
-                code?: unknown;
-                message?: unknown;
-            };
-        } catch {
-            parsed = null;
-        }
-
-        const code =
-            typeof parsed?.code === "number"
-                ? parsed.code
-                : undefined;
-
-        const message =
-            typeof parsed?.message === "string"
-                ? parsed.message
-                : undefined;
-
+        /*
+         * TikTok's contract: HTTP 2xx AND a top-level `code` of 0
+         * (“OK”) means the event was accepted. Anything else —
+         * including an HTTP 2xx carrying a non-zero code, which is
+         * how TikTok reports parameter/permission problems — is a
+         * failure.
+         */
         const ok =
-            response.ok && code === 0;
+            response.ok && parsed.code === 0;
 
-        if (!ok) {
-            /*
-             * Safe diagnostics only: no token, no header, no
-             * request/response body.
-             */
+        /*
+         * Safe diagnostics only: no token, no header, no request
+         * body, no raw response body, no PII.
+         */
+        const diagnostics = {
+            event: input.event,
+            eventId: input.eventId,
+            status: response.status,
+            code: parsed.code,
+            message: parsed.message,
+            requestId: parsed.requestId,
+            bodyReadable: parsed.readable,
+            testEventCodeConfigured,
+        };
+
+        if (ok) {
+            console.log(
+                "[TIKTOK EVENTS API] event accepted",
+                diagnostics
+            );
+        } else {
             console.error(
                 "[TIKTOK EVENTS API] event not accepted",
-                {
-                    event: input.event,
-                    eventId: input.eventId,
-                    status: response.status,
-                    code,
-                    message,
-                }
+                diagnostics
             );
         }
 
@@ -331,8 +522,10 @@ export async function sendTikTokEvent(
             ok,
             skipped: false,
             status: response.status,
-            code,
-            message,
+            code: parsed.code,
+            message: parsed.message,
+            requestId: parsed.requestId,
+            testEventCodeConfigured,
         };
     } catch (error) {
         /*
@@ -348,6 +541,7 @@ export async function sendTikTokEvent(
                     error instanceof Error
                         ? error.name
                         : "unknown",
+                testEventCodeConfigured,
             }
         );
 
@@ -355,6 +549,7 @@ export async function sendTikTokEvent(
             ok: false,
             skipped: false,
             reason: "request_failed",
+            testEventCodeConfigured,
         };
     }
 }

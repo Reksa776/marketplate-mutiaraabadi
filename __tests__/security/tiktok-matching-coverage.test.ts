@@ -86,6 +86,49 @@ function readFile(relativePath: string): string {
     );
 }
 
+/**
+ * The full text of every `console.*(...)` call in a source file,
+ * with its balanced argument list.
+ *
+ * Needed because the server events module logs its delivery
+ * outcomes on purpose (the payload that reaches TikTok has to be
+ * diagnosable), so the privacy guard can no longer be "the module
+ * contains no console call". Instead every call is inspected and
+ * must not carry an identifier, a secret or a body.
+ */
+function tikTokLogCalls(source: string): string[] {
+    const calls: string[] = [];
+    const marker = "console.";
+
+    let cursor = source.indexOf(marker);
+
+    while (cursor !== -1) {
+        const open = source.indexOf("(", cursor);
+
+        let depth = 0;
+        let close = open;
+
+        for (let i = open; i < source.length; i += 1) {
+            if (source[i] === "(") {
+                depth += 1;
+            } else if (source[i] === ")") {
+                depth -= 1;
+
+                if (depth === 0) {
+                    close = i;
+                    break;
+                }
+            }
+        }
+
+        calls.push(source.slice(cursor, close + 1));
+
+        cursor = source.indexOf(marker, close + 1);
+    }
+
+    return calls;
+}
+
 const PIXEL_ID = "C1A2B3C4D5E6F7G8H9J0";
 const TOKEN = "act.example-access-token-0000wxyz";
 
@@ -579,13 +622,41 @@ describe("Privacy invariants", () => {
             "lib/analytics/tiktok-events-api.ts"
         );
 
-        expect(code).not.toContain("console.log(");
-        expect(code).not.toMatch(
-            /console\.[a-z]+\([^)]*email/i
-        );
-        expect(code).not.toMatch(
-            /console\.[a-z]+\([^)]*phone/i
-        );
+        const calls = tikTokLogCalls(code);
+
+        /*
+         * 1. Every log statement in the module is one of the five
+         *    known-safe delivery outcomes — a new log line cannot
+         *    be added without updating this list on purpose.
+         */
+        expect(
+            calls.map(
+                (call) => /"([^"]+)"/.exec(call)?.[1]
+            )
+        ).toEqual([
+            "[TIKTOK EVENTS API] event skipped",
+            "[TIKTOK EVENTS API] sending",
+            "[TIKTOK EVENTS API] event accepted",
+            "[TIKTOK EVENTS API] event not accepted",
+            "[TIKTOK EVENTS API] request failed",
+        ]);
+
+        /*
+         * 2. None of them may pass a raw identifier, a secret or a
+         *    serialized body. Only field NAMES are allowed (e.g.
+         *    `userKeys: describeTikTokUserKeys(payload)`).
+         */
+        for (const call of calls) {
+            expect(call).not.toMatch(/access.?token/i);
+            expect(call).not.toMatch(/email/i);
+            expect(call).not.toMatch(/phone/i);
+            expect(call).not.toMatch(/user.?agent/i);
+            expect(call).not.toMatch(/(\bttclid\b|\bttp\b|\bip\b)/i);
+            expect(call).not.toContain("JSON.stringify");
+            expect(call).not.toContain("input.user");
+            expect(call).not.toContain("order.email");
+            expect(call).not.toContain("order.phone");
+        }
     });
 
     test("TEST 14 — no Access Token reaches any client module", () => {
