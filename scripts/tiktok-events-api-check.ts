@@ -1,108 +1,289 @@
 /**
  * ==========================================
- * TIKTOK EVENTS API — DELIVERY DIAGNOSTIC
+ * TIKTOK EVENTS API — DELIVERY DIAGNOSTIC (STANDALONE)
  * ==========================================
  *
- * Run (read-only audit):
+ * Run from the project root:
  *   npx tsx scripts/tiktok-events-api-check.ts
- *
- * Run (audit + ONE live Test Event):
  *   npx tsx scripts/tiktok-events-api-check.ts --send
  *
- * WHY THIS EXISTS
- *   "No [TIKTOK EVENTS API] line in the logs" used to be
- *   impossible to interpret: a skipped request and a delivered
- *   request both produced no output. This script answers, from
- *   the SAME machine, .env and database the app uses:
+ * STANDALONE BY CONSTRUCTION
+ *   This script must run under plain Node/tsx, i.e. WITHOUT the
+ *   Next.js bundler. It therefore imports NO module marked
+ *   `server-only` (`lib/analytics/tiktok-events-api.ts`,
+ *   `tiktok-events-config.ts` and `tiktok-user-match.ts` all
+ *   `import "server-only"`, which tsx cannot resolve — hence the
+ *   old "Cannot find module 'server-only'" failure).
  *
- *     1. is the stored Pixel configuration usable at all?
- *     2. does this process actually see TIKTOK_TEST_EVENT_CODE?
- *     3. what does TikTok answer, byte for byte, for a
- *        CompletePayment event — HTTP status, `code`, `message`
- *        and `request_id`?
+ *   What it imports instead:
+ *     - lib/analytics/tiktok-events-api-probe.ts
+ *           zero-import probe contract (payload + response parsing)
+ *     - lib/analytics/tiktok.ts
+ *     - lib/analytics/tiktok-access-token.ts
+ *     - lib/analytics/tiktok-test-event-code.ts
+ *           the SAME pure normalizers the application uses, so the
+ *           script can never disagree with the app about whether a
+ *           stored Pixel ID / Access Token / test event code is
+ *           usable
+ *     - @prisma/client (a private, read-only client; no app
+ *           singleton, no ORM query logging, no writes)
+ *
+ *   The application implementation, the webhook settlement path and
+ *   the `server-only` protection are all untouched.
+ *
+ * IT ANSWERS, FROM THE SAME MACHINE, .env AND DATABASE AS THE APP
+ *   1. is the stored Pixel configuration usable at all?
+ *   2. does this process actually see TIKTOK_TEST_EVENT_CODE?
+ *   3. what does TikTok answer, byte for byte, for a CompletePayment
+ *      probe — HTTP status, `code`, `message` and `request_id`?
  *
  * SAFETY
- *   - never prints the Access Token, the Test Event Code value,
- *     or any customer data
  *   - read-only unless `--send` is passed
- *   - the `--send` probe carries no PII and no order data; with
- *     TIKTOK_TEST_EVENT_CODE set it is routed to the Events
- *     Manager "Test Events" view and stays out of reporting
+ *   - never prints the Access Token, the test event code value, any
+ *     customer identifier, or a request/response body
+ *   - the probe carries no PII and no order data; with
+ *     TIKTOK_TEST_EVENT_CODE set it is routed to the Events Manager
+ *     "Test Events" view and stays out of reporting
  */
 
-import { prisma } from "@/lib/prisma";
+import { loadEnvConfig } from "@next/env";
+
+import { PrismaClient } from "@prisma/client";
 
 import {
-    TIKTOK_EVENTS_API_TIMEOUT_MS,
-    TIKTOK_EVENTS_API_URL,
-    sendTikTokEvent,
-} from "@/lib/analytics/tiktok-events-api";
+    normalizeTikTokPixelId,
+} from "../lib/analytics/tiktok";
 
-import { getTikTokEventsApiConfig } from "@/lib/analytics/tiktok-events-config";
+import {
+    normalizeTikTokPixelAccessToken,
+} from "../lib/analytics/tiktok-access-token";
 
-import { buildTikTokEventId } from "@/lib/analytics/tiktok";
+import {
+    getTikTokTestEventCode,
+} from "../lib/analytics/tiktok-test-event-code";
 
-import { TIKTOK_CURRENCY } from "@/lib/analytics/tiktok-catalog";
+import {
+    TIKTOK_EVENTS_API_ENDPOINT,
+    TIKTOK_EVENTS_API_TOKEN_HEADER,
+    TIKTOK_PROBE_TIMEOUT_MS,
+    buildTikTokProbeEventId,
+    buildTikTokProbePayload,
+    buildTikTokProbeReference,
+    buildTikTokProbeReport,
+    isTikTokProbeAccepted,
+    readTikTokProbeResponse,
+} from "../lib/analytics/tiktok-events-api-probe";
 
 const shouldSend = process.argv.includes("--send");
+
+/**
+ * Load the project's env files the way Next.js does (`.env.local`
+ * overrides `.env`, existing shell variables always win).
+ *
+ * Must run BEFORE Prisma is imported: PrismaClient reads
+ * DATABASE_URL when it is constructed, and tsx does not load .env
+ * on its own.
+ *
+ * Production-style files are tried first because this script exists
+ * to diagnose the production app; if that leaves DATABASE_URL
+ * unset (e.g. it only lives in `.env.development`), the
+ * development-style files are loaded as a fallback.
+ *
+ * Returns the loaded FILE NAMES only — never their contents.
+ */
+function loadProjectEnv(): string[] {
+    const log = {
+        info: () => {},
+        error: () => {},
+    };
+
+    const production = loadEnvConfig(
+        process.cwd(),
+        false,
+        log
+    );
+
+    if (process.env.DATABASE_URL) {
+        return production.loadedEnvFiles.map(
+            (file) => file.path
+        );
+    }
+
+    const development = loadEnvConfig(
+        process.cwd(),
+        true,
+        log,
+        true
+    );
+
+    return development.loadedEnvFiles.map(
+        (file) => file.path
+    );
+}
 
 function line(label: string, value: string) {
     console.log(`  ${label.padEnd(28)} ${value}`);
 }
 
-function boolean(value: boolean): string {
+function yesNo(value: boolean): string {
     return value ? "yes" : "NO";
 }
 
 async function main() {
     console.log(
-        "\n━━━ TIKTOK EVENTS API CONFIGURATION ━━━"
+        "\n━━━ ENVIRONMENT ━━━"
     );
 
-    const config = await getTikTokEventsApiConfig();
+    const envFiles = loadProjectEnv();
 
-    line("endpoint", TIKTOK_EVENTS_API_URL);
     line(
-        "timeout",
-        `${TIKTOK_EVENTS_API_TIMEOUT_MS} ms`
+        "env files loaded",
+        envFiles.length > 0
+            ? envFiles.join(", ")
+            : "none found"
     );
     line(
-        "StoreSetting read",
-        config.unavailableReason
-            ? `FAILED (${config.unavailableReason})`
-            : "ok"
-    );
-    line(
-        "pixel enabled",
-        boolean(config.enabled)
-    );
-    /*
-     * The Pixel ID is public (it ships in the storefront base
-     * code), so it is printed. The Access Token never is.
-     */
-    line(
-        "pixel id (StoreSetting)",
-        config.pixelId ??
-            "INVALID / MISSING (format rejected)"
-    );
-    line(
-        "access token",
-        config.accessToken
-            ? `present (${config.accessToken.length} chars)`
+        "DATABASE_URL",
+        process.env.DATABASE_URL
+            ? "present (not printed)"
             : "MISSING"
     );
     line(
+        "TIKTOK_TEST_EVENT_CODE",
+        getTikTokTestEventCode()
+            ? "visible to this process"
+            : "not set / unusable"
+    );
+
+    console.log(
+        "\n━━━ TIKTOK EVENTS API CONFIGURATION ━━━"
+    );
+
+    /*
+     * A private, read-only client instead of lib/prisma: the app's
+     * singleton switches on a development query log and caches
+     * itself globally, neither of which belongs in a one-shot
+     * diagnostic. The env files above are already loaded, so
+     * DATABASE_URL is resolved exactly as the app resolves it.
+     */
+    const prisma = new PrismaClient({
+        log: [],
+    });
+
+    let setting: {
+        tiktokPixelEnabled: boolean;
+        tiktokPixelId: string | null;
+        tiktokPixelAccessToken: string | null;
+    } | null = null;
+
+    let readError: string | null = null;
+
+    try {
+        /*
+         * Same row and same columns the application reads. Read
+         * only — this script never writes.
+         */
+        setting =
+            await prisma.storeSetting.findUnique({
+                where: { id: 1 },
+                select: {
+                    tiktokPixelEnabled: true,
+                    tiktokPixelId: true,
+                    tiktokPixelAccessToken: true,
+                },
+            });
+    } catch (error) {
+        /*
+         * Error CODE / name only: a driver message can embed the
+         * database URL.
+         */
+        readError =
+            error &&
+            typeof error === "object" &&
+            "code" in error &&
+            typeof (error as { code?: unknown })
+                .code === "string"
+                ? (error as { code: string }).code
+                : error instanceof Error
+                  ? error.name
+                  : "unknown";
+    } finally {
+        await prisma.$disconnect();
+    }
+
+    line(
+        "endpoint",
+        TIKTOK_EVENTS_API_ENDPOINT
+    );
+    line(
+        "probe timeout",
+        `${TIKTOK_PROBE_TIMEOUT_MS} ms`
+    );
+    line(
+        "StoreSetting read",
+        readError
+            ? `FAILED (${readError})`
+            : setting
+              ? "ok"
+              : "no row with id = 1"
+    );
+
+    const pixelId = setting
+        ? normalizeTikTokPixelId(
+              setting.tiktokPixelId
+          )
+        : null;
+
+    const accessToken = setting
+        ? normalizeTikTokPixelAccessToken(
+              setting.tiktokPixelAccessToken
+          )
+        : null;
+
+    const testEventCode = getTikTokTestEventCode();
+
+    line(
+        "tiktokPixelEnabled",
+        setting
+            ? yesNo(
+                  setting.tiktokPixelEnabled ===
+                      true
+              )
+            : "unknown"
+    );
+    /*
+     * The Pixel ID is public (it ships in the storefront base code),
+     * so it is printed. The Access Token never is.
+     */
+    line(
+        "pixel id",
+        pixelId
+            ? pixelId
+            : setting?.tiktokPixelId
+              ? "PRESENT but INVALID (fails the Pixel ID format)"
+              : "MISSING"
+    );
+    line(
+        "access token",
+        accessToken
+            ? `present (${accessToken.length} chars)`
+            : setting?.tiktokPixelAccessToken
+              ? "PRESENT but INVALID (unusable characters)"
+              : "MISSING"
+    );
+    line(
         "test_event_code",
-        config.testEventCode
-            ? `configured (${config.testEventCode.length} chars)`
+        testEventCode
+            ? `configured (${testEventCode.length} chars)`
             : "not configured"
     );
 
     const ready =
-        !config.unavailableReason &&
-        config.enabled &&
-        config.pixelId !== null &&
-        config.accessToken !== null;
+        readError === null &&
+        setting !== null &&
+        setting.tiktokPixelEnabled === true &&
+        pixelId !== null &&
+        accessToken !== null;
 
     console.log(
         `\n  verdict: ${
@@ -112,7 +293,7 @@ async function main() {
         }`
     );
 
-    if (!config.testEventCode) {
+    if (!testEventCode) {
         console.log(
             "  ⚠️  Without TIKTOK_TEST_EVENT_CODE the event is counted as REAL traffic."
         );
@@ -120,83 +301,126 @@ async function main() {
 
     if (!shouldSend) {
         console.log(
-            "\n  (add --send to also post one CompletePayment Test Event to TikTok)\n"
+            "\n  (add --send to also post one CompletePayment probe to TikTok)\n"
         );
+
+        process.exitCode = readError ? 1 : 0;
+
         return;
     }
 
-    const reference = `TIKTOK-DIAGNOSTIC-${Date.now()}`;
+    if (!ready || !pixelId || !accessToken) {
+        console.log(
+            "\n  refusing to send: the configuration above is not usable.\n"
+        );
+
+        process.exitCode = 1;
+
+        return;
+    }
+
+    const reference =
+        buildTikTokProbeReference();
+    const eventId =
+        buildTikTokProbeEventId(reference);
 
     console.log(
-        "\n━━━ LIVE TEST EVENT ━━━"
+        "\n━━━ LIVE PROBE (unique event id, no PII) ━━━"
     );
-    console.log(
-        `  sending CompletePayment ${reference} (no PII, no order)`
-    );
+    line("reference", reference);
 
-    const result = await sendTikTokEvent({
-        event: "CompletePayment",
-        eventId: buildTikTokEventId(
-            "CompletePayment",
-            reference
-        ),
-        value: 1,
-        currency: TIKTOK_CURRENCY,
-        orderId: reference,
-        pageUrl:
-            "https://diagnostic.invalid/tiktok-events-api-check",
+    const payload = buildTikTokProbePayload({
+        pixelId,
+        reference,
+        eventId,
+        testEventCode,
     });
 
-    console.log("\n  result:");
-    line("ok", boolean(result.ok));
-    line("skipped", boolean(result.skipped));
-    line(
-        "reason",
-        result.reason ?? "—"
-    );
-    line(
-        "http status",
-        String(result.status ?? "—")
-    );
-    line(
-        "tiktok code",
-        String(result.code ?? "—")
-    );
-    line(
-        "tiktok message",
-        result.message ?? "—"
-    );
-    line(
-        "request_id",
-        result.requestId ?? "—"
-    );
-    line(
-        "test_event_code used",
-        boolean(result.testEventCodeConfigured)
+    const controller = new AbortController();
+    const timeout = setTimeout(
+        () => controller.abort(),
+        TIKTOK_PROBE_TIMEOUT_MS
     );
 
-    if (!result.ok) {
-        console.log(
-            "\n  → Quote the http status, tiktok code and request_id above when escalating to TikTok.\n"
+    try {
+        const response = await fetch(
+            TIKTOK_EVENTS_API_ENDPOINT,
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type":
+                        "application/json",
+                    /* SECRET — used here, never printed. */
+                    [TIKTOK_EVENTS_API_TOKEN_HEADER]:
+                        accessToken,
+                },
+                body: JSON.stringify(payload),
+                signal: controller.signal,
+                cache: "no-store",
+            }
         );
-    }
-}
 
-main()
-    .catch((error) => {
-        /*
-         * Name only: a driver error message can embed the
-         * database URL (credentials included).
-         */
+        let body: unknown = null;
+
+        try {
+            body = await response.json();
+        } catch {
+            body = null;
+        }
+
+        const parsed =
+            readTikTokProbeResponse(body);
+
+        const accepted = isTikTokProbeAccepted(
+            response.status,
+            parsed
+        );
+
+        const report = buildTikTokProbeReport({
+            reference,
+            eventId,
+            accepted,
+            status: response.status,
+            response: parsed,
+            testEventCodeConfigured:
+                testEventCode !== null,
+        });
+
+        console.log("\n  result:");
+        for (const [key, value] of Object.entries(
+            report
+        )) {
+            line(key, String(value ?? "—"));
+        }
+
+        if (!accepted) {
+            console.log(
+                "\n  → Quote status, code, message and request_id above when escalating to TikTok.\n"
+            );
+        }
+
+        process.exitCode = accepted ? 0 : 1;
+    } catch (error) {
         console.error(
-            "TIKTOK EVENTS API CHECK FAILED:",
+            "\n  probe request failed:",
             error instanceof Error
                 ? error.name
                 : "unknown"
         );
 
         process.exitCode = 1;
-    })
-    .finally(async () => {
-        await prisma.$disconnect();
-    });
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+main().catch((error) => {
+    console.error(
+        "TIKTOK EVENTS API CHECK FAILED:",
+        error instanceof Error
+            ? error.name
+            : "unknown"
+    );
+
+    process.exitCode = 1;
+});
