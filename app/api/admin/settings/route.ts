@@ -50,6 +50,13 @@ const SETTINGS_SELECT = {
     subdistrict: true,
     postalCode: true,
     rajaOngkirDestinationId: true,
+
+    // Mengantar pickup configuration (server-side only; never sent to
+    // the browser client bundle — only this admin projection reads it).
+    mengantarOriginAreaId: true,
+    mengantarPickupAddressId: true,
+    mengantarPickupTimeId: true,
+
     latitude: true,
     longitude: true,
 } as const;
@@ -81,6 +88,9 @@ type SettingsProjectionSource = {
     subdistrict: string | null;
     postalCode: string | null;
     rajaOngkirDestinationId: number | null;
+    mengantarOriginAreaId: string | null;
+    mengantarPickupAddressId: string | null;
+    mengantarPickupTimeId: string | null;
     latitude: unknown;
     longitude: unknown;
 };
@@ -127,6 +137,12 @@ function toSettingsResponse(
         postalCode: setting.postalCode,
         rajaOngkirDestinationId:
             setting.rajaOngkirDestinationId,
+        mengantarOriginAreaId:
+            setting.mengantarOriginAreaId,
+        mengantarPickupAddressId:
+            setting.mengantarPickupAddressId,
+        mengantarPickupTimeId:
+            setting.mengantarPickupTimeId,
         latitude: setting.latitude,
         longitude: setting.longitude,
     };
@@ -630,6 +646,27 @@ export async function PUT(
                             body.rajaOngkirDestinationId
                         ),
 
+                    mengantarOriginAreaId:
+                        typeof body.mengantarOriginAreaId ===
+                            "string" &&
+                        body.mengantarOriginAreaId.trim()
+                            ? body.mengantarOriginAreaId.trim()
+                            : null,
+
+                    mengantarPickupAddressId:
+                        typeof body.mengantarPickupAddressId ===
+                            "string" &&
+                        body.mengantarPickupAddressId.trim()
+                            ? body.mengantarPickupAddressId.trim()
+                            : null,
+
+                    mengantarPickupTimeId:
+                        typeof body.mengantarPickupTimeId ===
+                            "string" &&
+                        body.mengantarPickupTimeId.trim()
+                            ? body.mengantarPickupTimeId.trim()
+                            : null,
+
                     latitude:
                         body.latitude !== null &&
                             body.latitude !==
@@ -714,6 +751,27 @@ export async function PUT(
                         nullableNumber(
                             body.rajaOngkirDestinationId
                         ),
+
+                    mengantarOriginAreaId:
+                        typeof body.mengantarOriginAreaId ===
+                            "string" &&
+                        body.mengantarOriginAreaId.trim()
+                            ? body.mengantarOriginAreaId.trim()
+                            : null,
+
+                    mengantarPickupAddressId:
+                        typeof body.mengantarPickupAddressId ===
+                            "string" &&
+                        body.mengantarPickupAddressId.trim()
+                            ? body.mengantarPickupAddressId.trim()
+                            : null,
+
+                    mengantarPickupTimeId:
+                        typeof body.mengantarPickupTimeId ===
+                            "string" &&
+                        body.mengantarPickupTimeId.trim()
+                            ? body.mengantarPickupTimeId.trim()
+                            : null,
 
                     latitude:
                         body.latitude !== null &&

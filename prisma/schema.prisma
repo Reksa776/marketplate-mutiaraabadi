@@ -175,6 +175,14 @@ model UserAddress {
   subdistrict             String?
   postalCode              String?
   rajaOngkirDestinationId Int?
+
+  // Mengantar area reference for this destination address.
+  // Resolved server-side from /address/search using the
+  // province/city/district/subdistrict/postalCode above.
+  // NEVER derived from rajaOngkirDestinationId: the two providers
+  // use different ID spaces.
+  mengantarDestinationAreaId String?
+
   latitude                Decimal?  @db.Decimal(10, 7)
   longitude               Decimal?  @db.Decimal(10, 7)
   isDefault               Boolean   @default(false)
@@ -289,6 +297,38 @@ model Order {
   shippingDiscountAmount Decimal? @db.Decimal(12, 2)
 
   trackingUrl      String?
+
+  // ==========================================
+  // Shipping fulfilment provider (Mengantar) — ADDITIVE
+  // ==========================================
+  //
+  // All nullable. NULL shippingProvider = legacy RajaOngkir flow,
+  // so existing orders stay readable and unaffected.
+  //
+  // IMPORTANT: shippingPaymentStatus is the SELLER's payment of the
+  // shipping fee to Mengantar. It is deliberately separate from
+  // paymentStatus (the CUSTOMER's payment to the marketplace).
+  // paymentStatus = PAID must NEVER be taken to mean the shipment
+  // is paid, and vice versa.
+  //
+  // shippingProvider       → "MENGANTAR" (null = legacy)
+  // providerShipmentId     → Mengantar ORDER_ID
+  // providerBatchId        → Mengantar batch_id
+  // providerCourier        → Mengantar courier name (JNE, JT, SiCepat, ...)
+  // shippingPaymentStatus  → UNPAID | PAID | NOT_APPLICABLE
+  // shipmentStatus         → NOT_CREATED | WAITING_SHIPPING_PAYMENT |
+  //                          SHIPPING_PAID | CREATED | PICKED_UP |
+  //                          IN_TRANSIT | DELIVERED | UNDELIVERED |
+  //                          RETURNED | CANCELLED
+  // codAmount              → COD value sent to Mengantar (goods+shipping+fee)
+  shippingProvider      String?
+  providerShipmentId    String?
+  providerBatchId       String?
+  providerCourier       String?
+  shippingPaymentStatus String?
+  shipmentStatus        String?
+  codAmount             Decimal?            @db.Decimal(12, 2)
+
   user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   items            OrderItem[]
   notifications    Notification[]
@@ -315,6 +355,7 @@ model Order {
   @@index([paymentExpiresAt])
   @@index([createdAt])
   @@index([trackingNumber])
+  @@index([providerShipmentId])
   @@map("order")
 }
 
@@ -376,6 +417,20 @@ model StoreSetting {
   districtId              Int?
   provinceId              Int?
   subdistrictId           Int?
+
+  // ==========================================
+  // Mengantar pickup configuration — ADDITIVE
+  // ==========================================
+  // The store ORIGIN must exist as a pickup address in the
+  // Mengantar account. These IDs are resolved/registered from
+  // /admin/settings (server-side) and used only by server code.
+  // mengantarOriginAreaId   → area _id used as estimate origin_id
+  // mengantarPickupAddressId→ pickup-address _id for POST /order
+  // mengantarPickupTimeId   → /time slot _id for scheduledPickup
+  mengantarOriginAreaId    String?
+  mengantarPickupAddressId String?
+  mengantarPickupTimeId    String?
+
   @@map("storesetting")
 }
 

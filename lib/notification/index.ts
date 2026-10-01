@@ -21,6 +21,7 @@ export { NotificationQueue } from "./queue";
 export { getNotificationQueue } from "./queue";
 export {
     onOrderStatusChanged,
+    onShipmentStatusChanged,
 } from "./order-status-handler";
 export type {
     NotificationChannel,

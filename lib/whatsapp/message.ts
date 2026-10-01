@@ -25,6 +25,19 @@ const STATUS_LABELS: Record<string, string> = {
     SHIPPED: "Dikirim",
     COMPLETED: "Selesai",
     CANCELLED: "Dibatalkan",
+
+    // Mengantar shipment (fulfilment) events. Kept in the same
+    // template map so the existing notification pipeline renders
+    // consistent Bahasa Indonesia wording.
+    SHIPPING_PAYMENT_REQUIRED:
+        "Menunggu Pembayaran Ongkir",
+    SHIPMENT_CREATED: "Paket Sedang Disiapkan",
+    SHIPMENT_PICKED_UP: "Paket Sudah Diambil Kurir",
+    SHIPMENT_IN_TRANSIT: "Paket Dalam Perjalanan",
+    SHIPMENT_DELIVERED: "Paket Sudah Diterima",
+    SHIPMENT_UNDELIVERED: "Paket Gagal Diantar",
+    SHIPMENT_RETURNED: "Paket Dikembalikan (RTS)",
+    SHIPMENT_CANCELLED: "Pengiriman Dibatalkan",
 };
 
 /**

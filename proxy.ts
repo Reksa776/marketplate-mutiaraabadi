@@ -22,6 +22,11 @@ const PUBLIC_API_PREFIXES = [
     "/api/campaigns/",
     "/api/promotions/",
     "/api/shipping/",
+    // Mengantar shipment-status webhook: called by Mengantar, not by a
+    // logged-in user. Authenticated by HMAC-SHA256 signature inside the
+    // handler (fail-closed), so it must bypass session auth. This is
+    // checked BEFORE the protected `/api/mengantar/` prefix below.
+    "/api/mengantar/webhook",
 ];
 
 /**
@@ -52,6 +57,9 @@ const PROTECTED_API_PREFIXES = [
     "/api/buy-now/shipping",
     "/api/voucher",
     "/api/rajaongkir",
+    // Mengantar estimate never touches the browser key: it is a
+    // server-only proxy, so it is authenticated like any private API.
+    "/api/mengantar/",
 ];
 
 /**

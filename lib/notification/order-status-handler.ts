@@ -19,6 +19,7 @@
  */
 
 import { prisma } from "@/lib/prisma";
+import { shipmentStatusToEventKey } from "@/lib/mengantar/status";
 import { NotificationService } from "./service";
 import { MockNotificationProvider } from "./mock-provider";
 import { getNotificationQueue } from "./queue";
@@ -239,6 +240,103 @@ export async function onOrderStatusChanged(
          */
         console.error(
             `[ORDER STATUS HANDLER] Error for order ${orderId}:`,
+            error
+        );
+    }
+}
+
+/**
+ * ==========================================
+ * ON SHIPMENT STATUS CHANGED
+ * ==========================================
+ *
+ * Shipment fulfilment events (Mengantar webhook / admin shipment
+ * actions) reuse the EXISTING notification pipeline. We do NOT
+ * build a second notification system: the same
+ * NotificationService, queue, provider, and idempotency key are
+ * used — only the status namespace differs (`SHIPMENT_*`), so a
+ * shipment event can never collide with an order-status event.
+ *
+ * Called from:
+ * 1. Mengantar webhook (provider status change)
+ * 2. Admin shipment create / pay-unpaid actions
+ *
+ * ERROR HANDLING: notification failure never breaks fulfilment.
+ */
+export async function onShipmentStatusChanged(
+    orderId: number,
+    previousShipmentStatus: string | null,
+    newShipmentStatus: string
+): Promise<void> {
+    try {
+        const newEventKey =
+            shipmentStatusToEventKey(newShipmentStatus);
+
+        // Non-notifiable shipment states (e.g. CREATING/PAYING
+        // transient locks) are intentionally silent.
+        if (!newEventKey) {
+            return;
+        }
+
+        const previousEventKey =
+            shipmentStatusToEventKey(previousShipmentStatus) ??
+            "NONE";
+
+        await ensureWorkerInitialized();
+
+        const order =
+            await prisma.order.findUnique({
+                where: { id: orderId },
+                include: {
+                    items: {
+                        select: {
+                            productName: true,
+                            variantName: true,
+                            quantity: true,
+                            price: true,
+                        },
+                    },
+                },
+            });
+
+        if (!order) {
+            console.error(
+                `[SHIPMENT STATUS HANDLER] Order not found: ${orderId}`
+            );
+            return;
+        }
+
+        const event: OrderStatusChangedEvent = {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            userId: order.userId,
+            recipientPhone: order.phone,
+            previousStatus: previousEventKey,
+            newStatus: newEventKey,
+            total: Number(order.total),
+            items: order.items.map((item) => ({
+                productName: item.productName,
+                variantName: item.variantName,
+                quantity: item.quantity,
+                price: Number(item.price),
+            })),
+            trackingNumber: order.trackingNumber,
+            trackingUrl: order.trackingUrl,
+            shippingCourier: order.shippingCourier,
+            timestamp: new Date(),
+        };
+
+        console.log(
+            `[SHIPMENT STATUS HANDLER] Order ${order.orderNumber} | ` +
+                `${previousShipmentStatus} → ${newShipmentStatus}`
+        );
+
+        const service = await getNotificationService();
+
+        await service.handleOrderStatusChanged(event);
+    } catch (error) {
+        console.error(
+            `[SHIPMENT STATUS HANDLER] Error for order ${orderId}:`,
             error
         );
     }

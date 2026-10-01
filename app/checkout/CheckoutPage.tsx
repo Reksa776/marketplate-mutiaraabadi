@@ -1357,36 +1357,20 @@ export default function CheckoutPage() {
             return;
         }
 
-        const origin =
-            Number(
-                data.store
-                    ?.rajaOngkirDestinationId
-            );
+        /*
+         * Mengantar is the PRIMARY shipping provider. Origin and
+         * destination are resolved SERVER-SIDE from the selected
+         * address (the client never chooses them). The RajaOngkir
+         * destination ids below are kept ONLY for the legacy fallback
+         * used when Mengantar is not configured in this deployment.
+         */
+        const origin = Number(
+            data.store?.rajaOngkirDestinationId
+        );
 
-        if (
-            !Number.isInteger(origin) ||
-            origin <= 0
-        ) {
-            toast.error(
-                "Destination toko belum dikonfigurasi."
-            );
-            return;
-        }
-
-        const destination =
-            Number(
-                address.rajaOngkirDestinationId
-            );
-
-        if (
-            !Number.isInteger(destination) ||
-            destination <= 0
-        ) {
-            toast.error(
-                "Destination alamat belum tersedia."
-            );
-            return;
-        }
+        const destination = Number(
+            address.rajaOngkirDestinationId
+        );
 
         /*
          * Berat dalam gram.
@@ -1410,8 +1394,8 @@ export default function CheckoutPage() {
 
             setSelectedShipping(null);
 
-            const response = await fetch(
-                "/api/shipping/cost",
+            const mengantarResponse = await fetch(
+                "/api/mengantar/estimate",
                 {
                     method: "POST",
 
@@ -1421,42 +1405,105 @@ export default function CheckoutPage() {
                     },
 
                     body: JSON.stringify({
-                        origin,
-
-                        destination,
+                        addressId: address.id,
 
                         weight,
-
-                        courier:
-                            "jne:jnt:sicepat",
-
-                        price:
-                            "lowest",
                     }),
 
                     cache: "no-store",
                 }
             );
 
-            const result =
-                await response.json();
+            let options: ShippingOption[] = [];
 
-            if (
-                !response.ok ||
-                !result.success
-            ) {
-                throw new Error(
-                    result.message ||
-                    "Gagal mengambil ongkir."
+            if (mengantarResponse.status === 503) {
+                /*
+                 * Mengantar is not configured for this deployment.
+                 * Fall back to the legacy RajaOngkir cost endpoint so
+                 * checkout keeps working (RajaOngkir remains the
+                 * address provider either way).
+                 */
+                if (
+                    !Number.isInteger(origin) ||
+                    origin <= 0
+                ) {
+                    throw new Error(
+                        "Destination toko belum dikonfigurasi."
+                    );
+                }
+
+                if (
+                    !Number.isInteger(destination) ||
+                    destination <= 0
+                ) {
+                    throw new Error(
+                        "Destination alamat belum tersedia."
+                    );
+                }
+
+                const legacyResponse = await fetch(
+                    "/api/shipping/cost",
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+
+                        body: JSON.stringify({
+                            origin,
+
+                            destination,
+
+                            weight,
+
+                            courier:
+                                "jne:jnt:sicepat",
+
+                            price: "lowest",
+                        }),
+
+                        cache: "no-store",
+                    }
                 );
-            }
 
-            const options =
-                Array.isArray(
-                    result.data
+                const legacyResult =
+                    await legacyResponse.json();
+
+                if (
+                    !legacyResponse.ok ||
+                    !legacyResult.success
+                ) {
+                    throw new Error(
+                        legacyResult.message ||
+                            "Gagal mengambil ongkir."
+                    );
+                }
+
+                options = Array.isArray(
+                    legacyResult.data
                 )
+                    ? legacyResult.data
+                    : [];
+            } else {
+                const result =
+                    await mengantarResponse.json();
+
+                if (
+                    !mengantarResponse.ok ||
+                    !result.success
+                ) {
+                    throw new Error(
+                        result.message ||
+                            "Gagal mengambil ongkir."
+                    );
+                }
+
+                options = Array.isArray(result.data)
                     ? result.data
                     : [];
+            }
 
             setShippingOptions(
                 options

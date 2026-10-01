@@ -40,6 +40,8 @@ export type AuditAction =
     | "ORDER_CANCELLED"
     | "ORDER_REFUNDED"
     | "ORDER_TRACKING_ASSIGNED"
+    | "SHIPMENT_CREATED"
+    | "SHIPMENT_PAID"
     // Refund
     | "REFUND_REQUESTED"
     | "REFUND_APPROVED"

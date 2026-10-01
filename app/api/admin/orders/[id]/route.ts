@@ -193,6 +193,29 @@ export async function GET(
             trackingUrl:
                 order.trackingUrl,
 
+            // ---- Shipment fulfilment provider (Mengantar) ----
+            shippingProvider:
+                order.shippingProvider,
+
+            providerCourier:
+                order.providerCourier,
+
+            providerShipmentId:
+                order.providerShipmentId,
+
+            providerBatchId:
+                order.providerBatchId,
+
+            shipmentStatus:
+                order.shipmentStatus,
+
+            shippingPaymentStatus:
+                order.shippingPaymentStatus,
+
+            codAmount: order.codAmount
+                ? Number(order.codAmount)
+                : null,
+
             createdAt:
                 order.createdAt.toISOString(),
 

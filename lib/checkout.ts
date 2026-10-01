@@ -23,11 +23,112 @@ import {
     calculateDomesticCost,
 } from "./rajaongkir";
 import {
+    verifyMengantarShippingCost,
+} from "./mengantar/shipping";
+import {
     calculateSpinRewardDiscount,
 } from "./spin-wheel";
 import { formatProductName } from "./payment/ipaymu";
 import { PAYMENT_EXPIRY_GRACE_MS } from "./payment/order-payment";
 import type { OrderAttributionInput } from "@/lib/analytics/attribution";
+
+/*
+ * ==========================================
+ * MENGANTAR SHIPPING VERIFICATION (THROWS)
+ * ==========================================
+ *
+ * Thin wrapper that turns a null Mengantar result into a clear error.
+ * The authoritative price always comes from Mengantar itself — the
+ * client-sent shipping.cost is ignored by the caller.
+ */
+/*
+ * ==========================================
+ * RAJAONGKIR SHIPPING VERIFICATION (THROWS)
+ * ==========================================
+ *
+ * Legacy provider kept as the fallback when the selected option is
+ * not a Mengantar option (existing orders, deployments without
+ * Mengantar configured). Uses server-authoritative origin/destination
+ * from StoreSetting / UserAddress.
+ */
+async function verifyRajaOngkirShippingCostOrThrow({
+    storeSetting,
+    address,
+    totalWeight,
+    courier,
+    service,
+}: {
+    storeSetting: {
+        rajaOngkirDestinationId: number | null;
+    } | null;
+    address: {
+        rajaOngkirDestinationId: number | null;
+    };
+    totalWeight: number;
+    courier: string;
+    service: string;
+}): Promise<number> {
+    if (!storeSetting?.rajaOngkirDestinationId) {
+        throw new Error(
+            "Pengaturan toko belum dikonfigurasi."
+        );
+    }
+
+    if (!address.rajaOngkirDestinationId) {
+        throw new Error(
+            "Alamat tidak memiliki data wilayah pengiriman."
+        );
+    }
+
+    return verifyShippingCost({
+        origin: storeSetting.rajaOngkirDestinationId,
+        destination: address.rajaOngkirDestinationId,
+        totalWeight,
+        courier,
+        service,
+    });
+}
+
+async function verifyMengantarShippingCostOrThrow({
+    address,
+    weightGrams,
+    courier,
+}: {
+    address: {
+        id?: string;
+        recipientName?: string | null;
+        phone?: string | null;
+        address?: string | null;
+        province?: string | null;
+        city?: string | null;
+        district?: string | null;
+        subdistrict?: string | null;
+        postalCode?: string | null;
+        mengantarDestinationAreaId?: string | null;
+    };
+    weightGrams: number;
+    courier: string;
+}): Promise<number> {
+    if (!courier) {
+        throw new Error(
+            "Kurir pengiriman wajib dipilih."
+        );
+    }
+
+    const cost = await verifyMengantarShippingCost({
+        address,
+        weightGrams,
+        courier,
+    });
+
+    if (cost === null) {
+        throw new Error(
+            "Layanan pengiriman tidak tersedia. Silakan pilih ulang layanan pengiriman."
+        );
+    }
+
+    return cost;
+}
 
 export type CheckoutMode =
     | "CART"
@@ -40,6 +141,14 @@ export type CheckoutPaymentMethod =
     | "QRIS";
 
 export type ShippingOption = {
+    /**
+     * Shipping provider that produced this option. "MENGANTAR" routes
+     * verification through the Mengantar estimate; anything else uses
+     * the legacy RajaOngkir verification. NEVER trusted for pricing —
+     * only for selecting which provider re-verifies the quote.
+     */
+    provider?: string;
+    supportsCod?: boolean;
     courier?: string;
     code?: string;
     service?: string;
@@ -719,6 +828,15 @@ export async function createCheckoutOrder(
 
     // ==========================================
     // SHIPPING INPUT VALIDATION
+    //
+    // Provider selector only. Price is ALWAYS re-derived server-side
+    // (Mengantar estimate or RajaOngkir) — never from the client.
+    const shippingProvider =
+        String(
+            input.shipping.provider ?? ""
+        ).toUpperCase() === "MENGANTAR"
+            ? "MENGANTAR"
+            : "RAJAONGKIR";
     // ==========================================
     //
     // Basic format check.
@@ -776,6 +894,7 @@ export async function createCheckoutOrder(
     }
 
     if (
+        shippingProvider === "RAJAONGKIR" &&
         !address.rajaOngkirDestinationId
     ) {
         throw new Error(
@@ -868,6 +987,7 @@ export async function createCheckoutOrder(
         });
 
     if (
+        shippingProvider === "RAJAONGKIR" &&
         !storeSetting?.rajaOngkirDestinationId
     ) {
         throw new Error(
@@ -955,15 +1075,22 @@ export async function createCheckoutOrder(
         "";
 
     const verifiedShippingCost =
-        await verifyShippingCost({
-            origin:
-                storeSetting.rajaOngkirDestinationId,
-            destination:
-                address.rajaOngkirDestinationId,
-            totalWeight,
-            courier,
-            service,
-        });
+        shippingProvider === "MENGANTAR"
+            ? await verifyMengantarShippingCostOrThrow({
+                  address,
+                  weightGrams: totalWeight,
+                  courier:
+                      input.shipping.courier ??
+                      input.shipping.code ??
+                      "",
+              })
+            : await verifyRajaOngkirShippingCostOrThrow({
+                  storeSetting,
+                  address,
+                  totalWeight,
+                  courier,
+                  service,
+              });
 
     /*
      * ==========================================
@@ -1934,6 +2061,49 @@ export async function createCheckoutOrder(
                             input.shipping
                                 .service_name ??
                             null,
+
+                        // ==========================================
+                        // SHIPPING FULFILMENT PROVIDER (MENGANTAR)
+                        // ==========================================
+                        //
+                        // Null for the legacy RajaOngkir path so existing
+                        // orders are unaffected. shippingPaymentStatus is
+                        // the SELLER's shipping payment to Mengantar and is
+                        // deliberately separate from paymentStatus (the
+                        // CUSTOMER's payment to the marketplace).
+                        shippingProvider:
+                            shippingProvider === "MENGANTAR"
+                                ? "MENGANTAR"
+                                : null,
+
+                        providerCourier:
+                            shippingProvider === "MENGANTAR"
+                                ? input.shipping.courier ??
+                                  input.shipping.code ??
+                                  null
+                                : null,
+
+                        shippingPaymentStatus:
+                            shippingProvider === "MENGANTAR"
+                                ? input.paymentMethod === "COD"
+                                    ? "NOT_APPLICABLE"
+                                    : "UNPAID"
+                                : null,
+
+                        shipmentStatus:
+                            shippingProvider === "MENGANTAR"
+                                ? "NOT_CREATED"
+                                : null,
+
+                        // COD amount = goods value + shipping fee (the
+                        // estimate's COD_AMOUNT semantics). Mengantar's own
+                        // COD service fee is provider-side and is added when
+                        // the shipment is actually created.
+                        codAmount:
+                            shippingProvider === "MENGANTAR" &&
+                            input.paymentMethod === "COD"
+                                ? grossAmount
+                                : null,
 
                         items: {
                             create:

@@ -1842,6 +1842,12 @@ export default function BuyNowPage({
             return;
         }
 
+        /*
+         * Mengantar is the PRIMARY shipping provider; origin/destination
+         * are resolved SERVER-SIDE from the selected address. The
+         * RajaOngkir ids are kept ONLY for the legacy fallback used when
+         * Mengantar is not configured in this deployment.
+         */
         const origin =
             Number(
                 data.store
@@ -1852,32 +1858,6 @@ export default function BuyNowPage({
             Number(
                 address.rajaOngkirDestinationId
             );
-
-        if (
-            !Number.isInteger(
-                origin
-            ) ||
-            origin <= 0
-        ) {
-            toast.error(
-                "Destination toko belum dikonfigurasi."
-            );
-
-            return;
-        }
-
-        if (
-            !Number.isInteger(
-                destination
-            ) ||
-            destination <= 0
-        ) {
-            toast.error(
-                "Destination alamat belum tersedia."
-            );
-
-            return;
-        }
 
         const weight =
             Math.max(
@@ -1909,9 +1889,9 @@ export default function BuyNowPage({
             const options =
                 await withRetry(
                     async () => {
-                        const response =
+                        const mengantarResponse =
                             await fetch(
-                                "/api/buy-now/shipping",
+                                "/api/mengantar/estimate",
                                 {
                                     method: "POST",
 
@@ -1923,17 +1903,10 @@ export default function BuyNowPage({
                                     body:
                                         JSON.stringify(
                                             {
-                                                origin,
-
-                                                destination,
+                                                addressId:
+                                                    address.id,
 
                                                 weight,
-
-                                                courier:
-                                                    "jne:jnt:sicepat",
-
-                                                price:
-                                                    "lowest",
                                             }
                                         ),
 
@@ -1941,18 +1914,103 @@ export default function BuyNowPage({
                                 }
                             );
 
+                        if (
+                            mengantarResponse.status ===
+                            503
+                        ) {
+                            /*
+                             * Mengantar is not configured for this
+                             * deployment. Fall back to the legacy
+                             * RajaOngkir cost endpoint.
+                             */
+                            if (
+                                !Number.isInteger(
+                                    origin
+                                ) ||
+                                origin <= 0
+                            ) {
+                                throw new Error(
+                                    "Destination toko belum dikonfigurasi."
+                                );
+                            }
+
+                            if (
+                                !Number.isInteger(
+                                    destination
+                                ) ||
+                                destination <= 0
+                            ) {
+                                throw new Error(
+                                    "Destination alamat belum tersedia."
+                                );
+                            }
+
+                            const legacyResponse =
+                                await fetch(
+                                    "/api/buy-now/shipping",
+                                    {
+                                        method: "POST",
+
+                                        headers: {
+                                            "Content-Type":
+                                                "application/json",
+                                        },
+
+                                        body:
+                                            JSON.stringify(
+                                                {
+                                                    origin,
+
+                                                    destination,
+
+                                                    weight,
+
+                                                    courier:
+                                                        "jne:jnt:sicepat",
+
+                                                    price:
+                                                        "lowest",
+                                                }
+                                            ),
+
+                                        cache: "no-store",
+                                    }
+                                );
+
+                            const legacyResult =
+                                await parseApiResponse(
+                                    legacyResponse
+                                );
+
+                            if (
+                                !legacyResponse.ok ||
+                                !legacyResult?.success
+                            ) {
+                                throw new Error(
+                                    legacyResult?.message ||
+                                        "Gagal mengambil ongkir."
+                                );
+                            }
+
+                            return Array.isArray(
+                                legacyResult.data
+                            )
+                                ? legacyResult.data
+                                : [];
+                        }
+
                         const result =
                             await parseApiResponse(
-                                response
+                                mengantarResponse
                             );
 
                         if (
-                            !response.ok ||
+                            !mengantarResponse.ok ||
                             !result?.success
                         ) {
                             throw new Error(
                                 result?.message ||
-                                "Gagal mengambil ongkir."
+                                    "Gagal mengambil ongkir."
                             );
                         }
 

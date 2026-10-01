@@ -123,6 +123,22 @@ export async function PATCH(
             updateData.rajaOngkirDestinationId = Number.isInteger(destId) && destId > 0 ? destId : null;
         }
 
+        /*
+         * Invalidate the cached Mengantar destination area id whenever
+         * any area-defining field changes. The area is re-resolved
+         * server-side from /address/search on the next estimate, so a
+         * stale id can never leak into a shipment quote.
+         */
+        if (
+            body.province !== undefined ||
+            body.city !== undefined ||
+            body.district !== undefined ||
+            body.subdistrict !== undefined ||
+            body.postalCode !== undefined
+        ) {
+            updateData.mengantarDestinationAreaId = null;
+        }
+
         if (body.latitude !== undefined) {
             const lat = Number(body.latitude);
             updateData.latitude = Number.isFinite(lat) ? lat : null;

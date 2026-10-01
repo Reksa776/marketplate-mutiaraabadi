@@ -33,6 +33,15 @@ type Order = {
     paymentStatus: string;
     paidAt: string | null;
 
+    // ---- Shipment fulfilment provider (Mengantar) ----
+    shippingProvider: string | null;
+    providerCourier: string | null;
+    providerShipmentId: string | null;
+    providerBatchId: string | null;
+    shipmentStatus: string | null;
+    shippingPaymentStatus: string | null;
+    codAmount: number | null;
+
     subtotal: number;
     shippingCost: number;
     total: number;
@@ -80,6 +89,49 @@ type TrackingData = {
     details?: unknown;
     deliveryStatus?: TrackingDeliveryStatus;
     manifest: TrackingManifest[];
+};
+
+type ShipmentState = {
+    shippingProvider: string | null;
+    providerShipmentId: string | null;
+    providerBatchId: string | null;
+    providerCourier: string | null;
+    shippingPaymentStatus: string | null;
+    shipmentStatus: string | null;
+    trackingNumber: string | null;
+    codAmount: number | null;
+    paymentMethod: string | null;
+    paymentStatus: string | null;
+    shippingCourier: string | null;
+    shippingService: string | null;
+    shippingCost: number | null;
+    updatedAt: string | null;
+};
+
+/*
+ * Normalized Mengantar shipment statuses. We never claim a parcel
+ * was shipped unless the provider actually reported it.
+ */
+const SHIPMENT_STATUS_LABELS: Record<string, string> = {
+    NOT_CREATED: "Belum dibuat",
+    CREATING: "Sedang dibuat...",
+    FAILED: "Gagal dibuat",
+    WAITING_SHIPPING_PAYMENT: "Menunggu pembayaran ongkir",
+    PAYING: "Sedang membayar ongkir...",
+    SHIPPING_PAID: "Ongkir sudah dibayar",
+    CREATED: "Paket disiapkan di gudang",
+    PICKED_UP: "Sudah diambil kurir",
+    IN_TRANSIT: "Dalam perjalanan",
+    UNDELIVERED: "Gagal diantar",
+    DELIVERED: "Terkirim",
+    RETURNED: "Dikembalikan (RTS)",
+    CANCELLED: "Pengiriman dibatalkan",
+};
+
+const SHIPPING_PAYMENT_LABELS: Record<string, string> = {
+    NOT_APPLICABLE: "COD (tidak berlaku)",
+    UNPAID: "Belum dibayar",
+    PAID: "Sudah dibayar",
 };
 
 const statuses = [
@@ -130,6 +182,15 @@ export default function AdminOrderDetailPage() {
 
     const [trackingLoading, setTrackingLoading] =
         useState(false);
+
+    const [shipment, setShipment] =
+        useState<ShipmentState | null>(null);
+
+    const [shipmentBusy, setShipmentBusy] =
+        useState(false);
+
+    const [shipmentError, setShipmentError] =
+        useState<string | null>(null);
 
     const id = Array.isArray(params.id)
         ? params.id[0]
@@ -284,6 +345,109 @@ export default function AdminOrderDetailPage() {
             loadOrder();
         }
     }, [id]);
+
+    async function loadShipment() {
+        if (!id) return;
+
+        try {
+            const response = await fetch(
+                `/api/admin/orders/${id}/shipment`,
+                { cache: "no-store" }
+            );
+
+            const result = await response.json();
+
+            if (response.ok && result.success) {
+                setShipment(result.data);
+            }
+        } catch {
+            /* shipment state is best-effort; order view still works */
+        }
+    }
+
+    useEffect(() => {
+        if (
+            order?.id &&
+            order.shippingProvider === "MENGANTAR"
+        ) {
+            loadShipment();
+        } else {
+            setShipment(null);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [order?.id, order?.shippingProvider, order?.shipmentStatus]);
+
+    async function createShipment() {
+        try {
+            setShipmentBusy(true);
+            setShipmentError(null);
+
+            const response = await fetch(
+                `/api/admin/orders/${id}/shipment`,
+                { method: "POST" }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.message || "Gagal membuat shipment."
+                );
+            }
+
+            toast.success(
+                result.data?.changed === false
+                    ? "Shipment sudah ada."
+                    : "Shipment dibuat."
+            );
+
+            await loadOrder();
+            await loadShipment();
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Gagal membuat shipment.";
+            setShipmentError(message);
+            toast.error(message);
+        } finally {
+            setShipmentBusy(false);
+        }
+    }
+
+    async function payShipment() {
+        try {
+            setShipmentBusy(true);
+            setShipmentError(null);
+
+            const response = await fetch(
+                `/api/admin/orders/${id}/shipment/pay`,
+                { method: "POST" }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.message || "Gagal membayar ongkir."
+                );
+            }
+
+            toast.success("Ongkir dibayar.");
+
+            await loadOrder();
+            await loadShipment();
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Gagal membayar ongkir.";
+            setShipmentError(message);
+            toast.error(message);
+        } finally {
+            setShipmentBusy(false);
+        }
+    }
 
     async function saveOrder() {
         if (
@@ -1013,6 +1177,245 @@ export default function AdminOrderDetailPage() {
                                 </p>
                             </div>
                         </div>
+
+                        {/* MENGANTAR SHIPMENT */}
+                        {order.shippingProvider === "MENGANTAR" &&
+                            (() => {
+                                const status =
+                                    shipment?.shipmentStatus ??
+                                    order.shipmentStatus;
+                                const payStatus =
+                                    shipment?.shippingPaymentStatus ??
+                                    order.shippingPaymentStatus;
+                                const shipmentId =
+                                    shipment?.providerShipmentId ??
+                                    order.providerShipmentId;
+                                const batchId =
+                                    shipment?.providerBatchId ??
+                                    order.providerBatchId;
+                                const trackingNumber =
+                                    shipment?.trackingNumber ??
+                                    order.trackingNumber;
+                                const isCod =
+                                    order.paymentMethod === "COD";
+                                const busyLock =
+                                    status === "CREATING" ||
+                                    status === "PAYING";
+                                const canCreate =
+                                    !shipmentId &&
+                                    (!status ||
+                                        status === "NOT_CREATED" ||
+                                        status === "FAILED");
+
+                                return (
+                                    <div className="mt-5 rounded-xl border border-gray-200 bg-white">
+                                        <div className="border-b border-gray-100 px-5 py-4">
+                                            <h2 className="text-sm font-semibold text-gray-900">
+                                                Pengiriman Mengantar
+                                            </h2>
+
+                                            <p className="mt-0.5 text-xs text-gray-400">
+                                                Status fulfilment dari provider
+                                            </p>
+                                        </div>
+
+                                        <div className="space-y-3 px-5 py-5 text-sm">
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    Kurir
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {order.providerCourier ??
+                                                        order.shippingCourier ??
+                                                        "-"}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    Layanan
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {order.shippingService ??
+                                                        "-"}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    Status pengiriman
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {status
+                                                        ? SHIPMENT_STATUS_LABELS[
+                                                              status
+                                                          ] ??
+                                                          status
+                                                        : "Belum dibuat"}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    Pembayaran ongkir
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {payStatus
+                                                        ? SHIPPING_PAYMENT_LABELS[
+                                                              payStatus
+                                                          ] ??
+                                                          payStatus
+                                                        : "-"}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    Metode bayar
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {isCod
+                                                        ? `COD (${rupiah(
+                                                              order.codAmount ??
+                                                                  0
+                                                          )})`
+                                                        : order.paymentMethod}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    Ongkir
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {rupiah(
+                                                        order.shippingCost
+                                                    )}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    ID shipment
+                                                </span>
+                                                <span className="break-all text-right font-medium text-gray-900">
+                                                    {shipmentId ?? "-"}
+                                                </span>
+                                            </div>
+
+                                            {batchId && (
+                                                <div className="flex justify-between gap-3">
+                                                    <span className="text-gray-400">
+                                                        Batch ID
+                                                    </span>
+                                                    <span className="break-all text-right font-medium text-gray-900">
+                                                        {batchId}
+                                                    </span>
+                                                </div>
+                                            )}
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
+                                                    No. Resi
+                                                </span>
+                                                <span className="break-all text-right font-medium text-gray-900">
+                                                    {trackingNumber ??
+                                                        "-"}
+                                                </span>
+                                            </div>
+
+                                            {/* ACTION AREA */}
+
+                                            {canCreate &&
+                                                !busyLock && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={
+                                                            createShipment
+                                                        }
+                                                        disabled={
+                                                            shipmentBusy
+                                                        }
+                                                        className="h-10 w-full rounded-lg bg-gray-900 px-4 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    >
+                                                        {shipmentBusy
+                                                            ? "Memproses..."
+                                                            : "Buat Shipment"}
+                                                    </button>
+                                                )}
+
+                                            {busyLock && (
+                                                <div className="border-l-2 border-blue-300 bg-blue-50 px-3 py-2">
+                                                    <p className="text-xs font-medium text-blue-700">
+                                                        Memproses permintaan ke Mengantar. Silakan tunggu.
+                                                    </p>
+                                                </div>
+                                            )}
+
+                                            {status ===
+                                                "WAITING_SHIPPING_PAYMENT" && (
+                                                <>
+                                                    <div className="border-l-2 border-amber-400 bg-amber-50 px-3 py-2">
+                                                        <p className="text-xs leading-5 text-amber-800">
+                                                            Saldo
+                                                            Mengantar
+                                                            belum
+                                                            mencukupi
+                                                            untuk
+                                                            membayar
+                                                            ongkir.
+                                                            Barang
+                                                            belum
+                                                            dikirim.
+                                                        </p>
+                                                    </div>
+
+                                                    <button
+                                                        type="button"
+                                                        onClick={
+                                                            payShipment
+                                                        }
+                                                        disabled={
+                                                            shipmentBusy
+                                                        }
+                                                        className="h-10 w-full rounded-lg bg-amber-600 px-4 text-sm font-medium text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    >
+                                                        {shipmentBusy
+                                                            ? "Memproses..."
+                                                            : "Bayar Ongkir"}
+                                                    </button>
+                                                </>
+                                            )}
+
+                                            {!canCreate &&
+                                                !busyLock &&
+                                                status &&
+                                                status !==
+                                                    "WAITING_SHIPPING_PAYMENT" && (
+                                                    <div className="border-l-2 border-emerald-400 bg-emerald-50 px-3 py-2">
+                                                        <p className="text-xs font-medium text-emerald-800">
+                                                            {SHIPMENT_STATUS_LABELS[
+                                                                status
+                                                            ] ??
+                                                                status}
+                                                            {trackingNumber
+                                                                ? ` • Resi ${trackingNumber}`
+                                                                : ""}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                            {shipmentError && (
+                                                <div className="border-l-2 border-red-400 bg-red-50 px-3 py-2">
+                                                    <p className="break-words text-xs leading-5 text-red-700">
+                                                        {shipmentError}
+                                                    </p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })()}
 
                         {/* REFUND MANAGEMENT */}
                         {order.status === "REFUND_PENDING" && (
