@@ -21,6 +21,20 @@ import {
     hasTikTokPixelChanges,
 } from "@/lib/analytics/tiktok-pixel-audit";
 import { createAuditLog } from "@/lib/admin/audit-log";
+import {
+    isMengantarConfigured,
+    listMengantarPickupAddresses,
+    listMengantarPickupTimes,
+    redactMengantarKey,
+} from "@/lib/mengantar";
+import {
+    buildMengantarSettingsView,
+    resolveMengantarSettingsInput,
+} from "@/lib/mengantar/settings";
+import {
+    UpstreamError,
+    isUpstreamTimeout,
+} from "@/lib/upstream-error";
 
 /**
  * Fields the admin settings UI may read. Deliberately explicit —
@@ -137,12 +151,18 @@ function toSettingsResponse(
         postalCode: setting.postalCode,
         rajaOngkirDestinationId:
             setting.rajaOngkirDestinationId,
-        mengantarOriginAreaId:
-            setting.mengantarOriginAreaId,
-        mengantarPickupAddressId:
-            setting.mengantarPickupAddressId,
-        mengantarPickupTimeId:
-            setting.mengantarPickupTimeId,
+        /*
+         * Safe Mengantar projection: configured booleans + the
+         * (non-secret) pickup identifiers. Never the API key or
+         * webhook secret.
+         */
+        ...buildMengantarSettingsView({
+            apiConfigured: isMengantarConfigured(),
+            originAreaId: setting.mengantarOriginAreaId,
+            pickupAddressId:
+                setting.mengantarPickupAddressId,
+            pickupTimeId: setting.mengantarPickupTimeId,
+        }),
         latitude: setting.latitude,
         longitude: setting.longitude,
     };
@@ -329,6 +349,33 @@ export async function PUT(
 
         const body =
             await request.json();
+
+        /*
+         * ============================
+         * MENGANTAR PICKUP CONFIG
+         * ============================
+         *
+         * Normalize + validate BEFORE anything is written. A
+         * partial config (origin XOR pickup) and malformed ids are
+         * rejected here — the browser value is never trusted.
+         * An all-empty submission is valid (clears the config).
+         */
+        const mengantarResult =
+            resolveMengantarSettingsInput(body);
+
+        if (!mengantarResult.ok) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    field: mengantarResult.field,
+                    message: mengantarResult.message,
+                },
+                { status: 400 }
+            );
+        }
+
+        const mengantarSettings =
+            mengantarResult.value;
 
         const provinceId =
             body.provinceId
@@ -542,6 +589,9 @@ export async function PUT(
                     tiktokPixelName: true,
                     tiktokPixelCode: true,
                     tiktokPixelAccessToken: true,
+                    mengantarOriginAreaId: true,
+                    mengantarPickupAddressId: true,
+                    mengantarPickupTimeId: true,
                 },
             });
 
@@ -555,6 +605,123 @@ export async function PUT(
                   previousSetting
                       ?.tiktokPixelAccessToken ??
                   null;
+
+        /*
+         * ============================
+         * MENGANTAR PICKUP VERIFICATION
+         * ============================
+         *
+         * Format/consistency validation already happened above
+         * (resolveMengantarSettingsInput). When the API key IS
+         * configured we additionally verify the ids against the
+         * LIVE Mengantar account (GET /address, GET /time).
+         * Read-only — this never creates a shipment or charges
+         * the balance.
+         */
+        const previousMengantar = {
+            originAreaId:
+                previousSetting?.mengantarOriginAreaId ??
+                null,
+            pickupAddressId:
+                previousSetting?.mengantarPickupAddressId ??
+                null,
+            pickupTimeId:
+                previousSetting?.mengantarPickupTimeId ??
+                null,
+        };
+
+        const mengantarChanged =
+            previousMengantar.originAreaId !==
+                mengantarSettings.originAreaId ||
+            previousMengantar.pickupAddressId !==
+                mengantarSettings.pickupAddressId ||
+            previousMengantar.pickupTimeId !==
+                mengantarSettings.pickupTimeId;
+
+        if (
+            mengantarChanged &&
+            isMengantarConfigured() &&
+            mengantarSettings.pickupAddressId
+        ) {
+            try {
+                const addresses =
+                    await listMengantarPickupAddresses();
+
+                if (
+                    !addresses.some(
+                        (address) =>
+                            address._id ===
+                            mengantarSettings.pickupAddressId
+                    )
+                ) {
+                    return NextResponse.json(
+                        {
+                            success: false,
+                            field: "mengantarPickupAddressId",
+                            message:
+                                "Pickup address Mengantar tidak ditemukan pada akun. Pilih dari daftar pickup address yang terdaftar.",
+                        },
+                        { status: 400 }
+                    );
+                }
+
+                if (mengantarSettings.pickupTimeId) {
+                    const times =
+                        await listMengantarPickupTimes(
+                            mengantarSettings.pickupAddressId
+                        );
+
+                    if (
+                        !times.some(
+                            (slot) =>
+                                slot._id ===
+                                mengantarSettings.pickupTimeId
+                        )
+                    ) {
+                        return NextResponse.json(
+                            {
+                                success: false,
+                                field: "mengantarPickupTimeId",
+                                message:
+                                    "Slot waktu pickup Mengantar tidak valid. Muat ulang daftar slot.",
+                            },
+                            { status: 400 }
+                        );
+                    }
+                }
+            } catch (error) {
+                console.error(
+                    "MENGANTAR SETTINGS VERIFY ERROR:",
+                    error instanceof Error
+                        ? redactMengantarKey(error.message)
+                        : error
+                );
+
+                if (error instanceof UpstreamError) {
+                    return NextResponse.json(
+                        {
+                            success: false,
+                            message:
+                                "Layanan Mengantar sedang tidak merespons. Silakan coba lagi.",
+                        },
+                        {
+                            status: isUpstreamTimeout(error)
+                                ? 504
+                                : 502,
+                        }
+                    );
+                }
+
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message:
+                            "Tidak dapat memverifikasi konfigurasi pickup ke Mengantar. Coba lagi sebentar lagi.",
+                    },
+                    { status: 502 }
+                );
+            }
+        }
 
         /**
          * Jangan percaya destination ID
@@ -647,25 +814,13 @@ export async function PUT(
                         ),
 
                     mengantarOriginAreaId:
-                        typeof body.mengantarOriginAreaId ===
-                            "string" &&
-                        body.mengantarOriginAreaId.trim()
-                            ? body.mengantarOriginAreaId.trim()
-                            : null,
+                        mengantarSettings.originAreaId,
 
                     mengantarPickupAddressId:
-                        typeof body.mengantarPickupAddressId ===
-                            "string" &&
-                        body.mengantarPickupAddressId.trim()
-                            ? body.mengantarPickupAddressId.trim()
-                            : null,
+                        mengantarSettings.pickupAddressId,
 
                     mengantarPickupTimeId:
-                        typeof body.mengantarPickupTimeId ===
-                            "string" &&
-                        body.mengantarPickupTimeId.trim()
-                            ? body.mengantarPickupTimeId.trim()
-                            : null,
+                        mengantarSettings.pickupTimeId,
 
                     latitude:
                         body.latitude !== null &&
@@ -753,25 +908,13 @@ export async function PUT(
                         ),
 
                     mengantarOriginAreaId:
-                        typeof body.mengantarOriginAreaId ===
-                            "string" &&
-                        body.mengantarOriginAreaId.trim()
-                            ? body.mengantarOriginAreaId.trim()
-                            : null,
+                        mengantarSettings.originAreaId,
 
                     mengantarPickupAddressId:
-                        typeof body.mengantarPickupAddressId ===
-                            "string" &&
-                        body.mengantarPickupAddressId.trim()
-                            ? body.mengantarPickupAddressId.trim()
-                            : null,
+                        mengantarSettings.pickupAddressId,
 
                     mengantarPickupTimeId:
-                        typeof body.mengantarPickupTimeId ===
-                            "string" &&
-                        body.mengantarPickupTimeId.trim()
-                            ? body.mengantarPickupTimeId.trim()
-                            : null,
+                        mengantarSettings.pickupTimeId,
 
                     latitude:
                         body.latitude !== null &&
@@ -850,6 +993,36 @@ export async function PUT(
                         previousSnapshot,
                         nextSnapshot
                     ),
+            });
+        }
+
+        /*
+         * ============================
+         * MENGANTAR AUDIT LOG
+         * ============================
+         *
+         * Non-secret identifiers + mode only. The API key and
+         * webhook secret are never part of the config and are never
+         * written to the audit metadata.
+         */
+        if (mengantarChanged) {
+            await createAuditLog({
+                adminId,
+                action: "MENGANTAR_SETTINGS_UPDATED",
+                entityType: "StoreSetting",
+                entityId: 1,
+                description:
+                    "Konfigurasi pickup Mengantar diperbarui.",
+                metadata: {
+                    mengantarOriginAreaId:
+                        mengantarSettings.originAreaId,
+                    mengantarPickupAddressId:
+                        mengantarSettings.pickupAddressId,
+                    mengantarPickupTimeId:
+                        mengantarSettings.pickupTimeId,
+                    mengantarPickupMode:
+                        mengantarSettings.mode,
+                },
             });
         }
 

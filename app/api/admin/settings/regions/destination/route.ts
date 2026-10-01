@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { rajaOngkirFetch } from "@/lib/rajaongkir";
+import {
+    UpstreamError,
+    isUpstreamTimeout,
+} from "@/lib/upstream-error";
 
 export async function GET(
     request: Request
@@ -82,8 +86,30 @@ export async function GET(
     } catch (error) {
         console.error(
             "DESTINATION ERROR:",
-            error
+            error instanceof Error
+                ? error.message
+                : error
         );
+
+        if (isUpstreamTimeout(error)) {
+            return NextResponse.json(
+                {
+                    message:
+                        "Layanan wilayah sedang lambat. Silakan coba lagi.",
+                },
+                { status: 504 }
+            );
+        }
+
+        if (error instanceof UpstreamError) {
+            return NextResponse.json(
+                {
+                    message:
+                        "Layanan wilayah sedang tidak merespons. Silakan coba lagi.",
+                },
+                { status: 502 }
+            );
+        }
 
         return NextResponse.json(
             {

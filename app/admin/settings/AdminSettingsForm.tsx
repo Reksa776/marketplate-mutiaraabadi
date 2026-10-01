@@ -78,8 +78,43 @@ type StoreForm = {
     // WAJIB ADA
     rajaOngkirDestinationId: number | null;
 
+    /*
+     * Mengantar shipping / pickup configuration. The two
+     * `configured` flags are server-derived, read-only status.
+     */
+    mengantarApiConfigured: boolean;
+    mengantarPickupConfigured: boolean;
+    mengantarOriginAreaId: string;
+    mengantarPickupAddressId: string;
+    mengantarPickupTimeId: string;
+    mengantarPickupMode: "dropoff" | "scheduled";
+
     latitude: string;
     longitude: string;
+};
+
+type MengantarArea = {
+    id: string;
+    province: string | null;
+    city: string | null;
+    district: string | null;
+    subdistrict: string | null;
+    postalCode: string | null;
+};
+
+type MengantarPickupAddress = {
+    _id: string;
+    name: string | null;
+    address: string | null;
+    pic: string | null;
+    picPhone: string | null;
+    areaId: string | null;
+};
+
+type MengantarPickupTime = {
+    _id: string;
+    date: string | null;
+    time: string | null;
 };
 
 const initialForm: StoreForm = {
@@ -115,6 +150,13 @@ const initialForm: StoreForm = {
     postalCode: "",
 
     rajaOngkirDestinationId: null,
+
+    mengantarApiConfigured: false,
+    mengantarPickupConfigured: false,
+    mengantarOriginAreaId: "",
+    mengantarPickupAddressId: "",
+    mengantarPickupTimeId: "",
+    mengantarPickupMode: "dropoff",
 
     latitude: "",
     longitude: "",
@@ -163,6 +205,24 @@ export default function AdminSettingsForm() {
         useState(false);
 
     const [form, setForm] = useState<StoreForm>(initialForm);
+
+    /* Mengantar shipping configuration lookup state. */
+    const [mengantarOriginQuery, setMengantarOriginQuery] =
+        useState("");
+    const [mengantarAreas, setMengantarAreas] = useState<
+        MengantarArea[]
+    >([]);
+    const [mengantarPickupAddresses, setMengantarPickupAddresses] =
+        useState<MengantarPickupAddress[]>([]);
+    const [mengantarTimes, setMengantarTimes] = useState<
+        MengantarPickupTime[]
+    >([]);
+    const [mengantarOriginLabel, setMengantarOriginLabel] =
+        useState("");
+    const [mengantarPickupLabel, setMengantarPickupLabel] =
+        useState("");
+    const [loadingMengantar, setLoadingMengantar] =
+        useState(false);
 
     function updateField<K extends keyof StoreForm>(
         field: K,
@@ -527,6 +587,31 @@ export default function AdminSettingsForm() {
                         .rajaOngkirDestinationId ??
                     null,
 
+                mengantarApiConfigured:
+                    data.data
+                        .mengantarApiConfigured === true,
+
+                mengantarPickupConfigured:
+                    data.data
+                        .mengantarPickupConfigured === true,
+
+                mengantarOriginAreaId:
+                    data.data
+                        .mengantarOriginAreaId ?? "",
+
+                mengantarPickupAddressId:
+                    data.data
+                        .mengantarPickupAddressId ?? "",
+
+                mengantarPickupTimeId:
+                    data.data
+                        .mengantarPickupTimeId ?? "",
+
+                mengantarPickupMode:
+                    data.data.mengantarPickupTimeId
+                        ? "scheduled"
+                        : "dropoff",
+
                 latitude:
                     data.data.latitude != null
                         ? String(
@@ -602,6 +687,23 @@ export default function AdminSettingsForm() {
         init();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    /*
+     * Hydrate the Mengantar pickup lists once settings have loaded
+     * (only when the server actually holds an API key).
+     */
+    useEffect(() => {
+        if (!form.mengantarApiConfigured) return;
+
+        void loadMengantarPickupAddresses();
+
+        if (form.mengantarPickupAddressId) {
+            void loadMengantarTimes(
+                form.mengantarPickupAddressId
+            );
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [form.mengantarApiConfigured]);
 
     /**
      * ============================
@@ -990,6 +1092,248 @@ export default function AdminSettingsForm() {
 
     /**
      * ============================
+     * MENGANTAR SHIPPING HELPERS
+     * ============================
+     *
+     * IDs are resolved through the ADMIN-only, read-only route
+     * /api/admin/settings/mengantar so they never have to be
+     * copy-pasted. When the server has no API key the route returns
+     * `configured:false` and the UI falls back to manual entry.
+     */
+
+    async function fetchMengantarResource(
+        params: Record<string, string>
+    ): Promise<{
+        configured?: boolean;
+        data?: unknown;
+        message?: string;
+    }> {
+        const query = new URLSearchParams(
+            params
+        ).toString();
+
+        const response = await fetch(
+            `/api/admin/settings/mengantar?${query}`,
+            { cache: "no-store" }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(
+                data.message ||
+                    "Gagal mengambil data Mengantar."
+            );
+        }
+
+        return data;
+    }
+
+    async function searchMengantarOrigin() {
+        const keyword = mengantarOriginQuery.trim();
+
+        if (!keyword) {
+            toast.error(
+                "Isi kata kunci area (mis. nama kecamatan)."
+            );
+            return;
+        }
+
+        try {
+            setLoadingMengantar(true);
+
+            const data = await fetchMengantarResource({
+                resource: "areas",
+                keyword,
+            });
+
+            if (data.configured === false) {
+                setMengantarAreas([]);
+
+                toast.error(
+                    data.message ||
+                        "API key Mengantar belum diatur."
+                );
+                return;
+            }
+
+            setMengantarAreas(
+                Array.isArray(data.data)
+                    ? (data.data as MengantarArea[])
+                    : []
+            );
+        } catch (error) {
+            console.error(
+                "SEARCH MENGANTAR AREA ERROR:",
+                error
+            );
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal mencari area Mengantar."
+            );
+        } finally {
+            setLoadingMengantar(false);
+        }
+    }
+
+    function selectMengantarOrigin(area: MengantarArea) {
+        setForm((prev) => ({
+            ...prev,
+            mengantarOriginAreaId: area.id,
+        }));
+
+        setMengantarOriginLabel(
+            [
+                area.subdistrict,
+                area.district,
+                area.city,
+                area.province,
+                area.postalCode,
+            ]
+                .filter(Boolean)
+                .join(" / ")
+        );
+
+        setMengantarAreas([]);
+    }
+
+    async function loadMengantarPickupAddresses() {
+        try {
+            setLoadingMengantar(true);
+
+            const data = await fetchMengantarResource({
+                resource: "pickup-addresses",
+            });
+
+            if (data.configured === false) {
+                toast.error(
+                    data.message ||
+                        "API key Mengantar belum diatur."
+                );
+                return;
+            }
+
+            const list = Array.isArray(data.data)
+                ? (data.data as MengantarPickupAddress[])
+                : [];
+
+            setMengantarPickupAddresses(list);
+
+            const selected = list.find(
+                (addr) =>
+                    addr._id ===
+                    form.mengantarPickupAddressId
+            );
+
+            if (selected) {
+                setMengantarPickupLabel(
+                    selected.name ??
+                        selected.address ??
+                        ""
+                );
+            }
+        } catch (error) {
+            console.error(
+                "LOAD MENGANTAR PICKUP ADDRESSES ERROR:",
+                error
+            );
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal mengambil pickup address Mengantar."
+            );
+        } finally {
+            setLoadingMengantar(false);
+        }
+    }
+
+    async function loadMengantarTimes(addressId: string) {
+        if (!addressId) {
+            setMengantarTimes([]);
+            return;
+        }
+
+        try {
+            setLoadingMengantar(true);
+
+            const data = await fetchMengantarResource({
+                resource: "pickup-times",
+                addressId,
+            });
+
+            if (data.configured === false) return;
+
+            setMengantarTimes(
+                Array.isArray(data.data)
+                    ? (data.data as MengantarPickupTime[])
+                    : []
+            );
+        } catch (error) {
+            console.error(
+                "LOAD MENGANTAR TIMES ERROR:",
+                error
+            );
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal mengambil slot pickup Mengantar."
+            );
+        } finally {
+            setLoadingMengantar(false);
+        }
+    }
+
+    function handleMengantarPickupChange(value: string) {
+        const selected = mengantarPickupAddresses.find(
+            (addr) => addr._id === value
+        );
+
+        setForm((prev) => ({
+            ...prev,
+            mengantarPickupAddressId: value,
+            mengantarPickupTimeId: "",
+        }));
+
+        setMengantarPickupLabel(
+            selected
+                ? selected.name ?? selected.address ?? ""
+                : ""
+        );
+
+        setMengantarTimes([]);
+
+        if (value) {
+            void loadMengantarTimes(value);
+        }
+    }
+
+    function handleMengantarModeChange(
+        mode: "dropoff" | "scheduled"
+    ) {
+        setForm((prev) => ({
+            ...prev,
+            mengantarPickupMode: mode,
+            ...(mode === "dropoff"
+                ? { mengantarPickupTimeId: "" }
+                : {}),
+        }));
+
+        if (
+            mode === "scheduled" &&
+            form.mengantarPickupAddressId
+        ) {
+            void loadMengantarTimes(
+                form.mengantarPickupAddressId
+            );
+        }
+    }
+
+    /**
+     * ============================
      * SUBMIT
      * ============================
      */
@@ -1104,6 +1448,46 @@ export default function AdminSettingsForm() {
         ) {
             toast.error(
                 "TikTok Pixel Access Token tidak valid."
+            );
+            return;
+        }
+
+        /*
+         * Mengantar: a partial config is never valid. Empty is fine
+         * (Mengantar disabled) — server validates the same rules.
+         */
+        const mengantarOriginId =
+            form.mengantarOriginAreaId.trim();
+        const mengantarPickupId =
+            form.mengantarPickupAddressId.trim();
+
+        if (
+            mengantarOriginId ||
+            mengantarPickupId ||
+            form.mengantarPickupTimeId.trim()
+        ) {
+            if (!mengantarOriginId) {
+                toast.error(
+                    "Origin area Mengantar wajib diisi."
+                );
+                return;
+            }
+
+            if (!mengantarPickupId) {
+                toast.error(
+                    "Pickup address Mengantar wajib diisi."
+                );
+                return;
+            }
+        }
+
+        if (
+            form.mengantarPickupMode === "scheduled" &&
+            mengantarOriginId &&
+            !form.mengantarPickupTimeId.trim()
+        ) {
+            toast.error(
+                "Pilih slot waktu pickup untuk Scheduled Pickup."
             );
             return;
         }
@@ -2003,6 +2387,347 @@ export default function AdminSettingsForm() {
                                     kelurahan yang dipilih.
                                 </p>
                             </div>
+                        </div>
+                    </section>
+
+                    {/* =====================
+                        MENGANTAR SHIPPING
+                    ====================== */}
+
+                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <h2 className="text-lg font-bold text-gray-900">
+                                    Mengantar Shipping
+                                </h2>
+
+                                <p className="mt-1 text-sm text-gray-500">
+                                    Konfigurasi pickup untuk
+                                    ongkir & pengiriman
+                                    Mengantar. RajaOngkir tetap
+                                    dipakai untuk dropdown
+                                    alamat customer.
+                                </p>
+                            </div>
+
+                            <span
+                                className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                    form.mengantarPickupConfigured
+                                        ? "bg-emerald-50 text-emerald-700"
+                                        : "bg-gray-100 text-gray-600"
+                                }`}
+                            >
+                                {form.mengantarPickupConfigured
+                                    ? "Terkonfigurasi"
+                                    : "Belum dikonfigurasi"}
+                            </span>
+                        </div>
+
+                        {!form.mengantarApiConfigured && (
+                            <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+                                API key Mengantar belum diatur di
+                                server, jadi pencarian area &
+                                pickup address otomatis tidak
+                                tersedia. Isi ID secara manual
+                                dari dashboard Mengantar.
+                            </p>
+                        )}
+
+                        {/* ORIGIN AREA */}
+
+                        <div className="mt-5">
+                            <label className="text-sm font-medium text-gray-700">
+                                Origin Area (Mengantar)
+                            </label>
+
+                            <p className="mt-1 text-xs text-gray-500">
+                                Area asal pengiriman. Ini
+                                BUKAN RajaOngkir destination
+                                ID.
+                            </p>
+
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                <input
+                                    type="text"
+                                    value={
+                                        mengantarOriginQuery
+                                    }
+                                    onChange={(e) =>
+                                        setMengantarOriginQuery(
+                                            e.target.value
+                                        )
+                                    }
+                                    className="min-w-[220px] flex-1 rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
+                                    placeholder="Cari area, mis. Nagarakembang"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                />
+
+                                <button
+                                    type="button"
+                                    onClick={
+                                        searchMengantarOrigin
+                                    }
+                                    disabled={loadingMengantar}
+                                    className="rounded-xl border border-gray-300 px-4 py-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-60"
+                                >
+                                    Cari
+                                </button>
+                            </div>
+
+                            {mengantarAreas.length > 0 && (
+                                <ul className="mt-2 max-h-60 overflow-auto rounded-xl border border-gray-200">
+                                    {mengantarAreas.map(
+                                        (area) => (
+                                            <li
+                                                key={
+                                                    area.id
+                                                }
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        selectMengantarOrigin(
+                                                            area
+                                                        )
+                                                    }
+                                                    className="w-full px-4 py-2 text-left text-sm transition hover:bg-rose-50"
+                                                >
+                                                    <span className="block font-medium text-gray-800">
+                                                        {[
+                                                            area.subdistrict,
+                                                            area.district,
+                                                            area.city,
+                                                            area.province,
+                                                        ]
+                                                            .filter(
+                                                                Boolean
+                                                            )
+                                                            .join(
+                                                                " / "
+                                                            )}
+                                                    </span>
+
+                                                    <span className="block text-xs text-gray-500">
+                                                        {area.postalCode ||
+                                                            "-"}{" "}
+                                                        •{" "}
+                                                        {
+                                                            area.id
+                                                        }
+                                                    </span>
+                                                </button>
+                                            </li>
+                                        )
+                                    )}
+                                </ul>
+                            )}
+
+                            <input
+                                type="text"
+                                value={
+                                    form.mengantarOriginAreaId
+                                }
+                                onChange={(e) =>
+                                    updateField(
+                                        "mengantarOriginAreaId",
+                                        e.target.value.trim()
+                                    )
+                                }
+                                className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
+                                placeholder="Origin area _id"
+                                autoComplete="off"
+                                spellCheck={false}
+                            />
+
+                            {mengantarOriginLabel && (
+                                <p className="mt-1 text-xs text-gray-500">
+                                    Terpilih:{" "}
+                                    {mengantarOriginLabel}
+                                </p>
+                            )}
+                        </div>
+
+                        {/* PICKUP ADDRESS */}
+
+                        <div className="mt-5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <label className="text-sm font-medium text-gray-700">
+                                    Pickup Address
+                                    (Mengantar)
+                                </label>
+
+                                <button
+                                    type="button"
+                                    onClick={
+                                        loadMengantarPickupAddresses
+                                    }
+                                    disabled={loadingMengantar}
+                                    className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-60"
+                                >
+                                    {loadingMengantar
+                                        ? "Memuat..."
+                                        : "Muat daftar pickup address"}
+                                </button>
+                            </div>
+
+                            <p className="mt-1 text-xs text-gray-500">
+                                Bukan origin area ID. Ambil dari
+                                daftar pickup address akun
+                                Mengantar.
+                            </p>
+
+                            {mengantarPickupAddresses.length >
+                            0 ? (
+                                <select
+                                    value={
+                                        form.mengantarPickupAddressId
+                                    }
+                                    onChange={(e) =>
+                                        handleMengantarPickupChange(
+                                            e.target.value
+                                        )
+                                    }
+                                    className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-rose-500"
+                                >
+                                    <option value="">
+                                        Pilih pickup address
+                                    </option>
+
+                                    {mengantarPickupAddresses.map(
+                                        (addr) => (
+                                            <option
+                                                key={
+                                                    addr._id
+                                                }
+                                                value={
+                                                    addr._id
+                                                }
+                                            >
+                                                {addr.name ||
+                                                    "Pickup address"}{" "}
+                                                —{" "}
+                                                {addr.address ||
+                                                    addr._id}
+                                            </option>
+                                        )
+                                    )}
+                                </select>
+                            ) : (
+                                <input
+                                    type="text"
+                                    value={
+                                        form.mengantarPickupAddressId
+                                    }
+                                    onChange={(e) =>
+                                        handleMengantarPickupChange(
+                                            e.target.value.trim()
+                                        )
+                                    }
+                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
+                                    placeholder="Pickup address _id"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                />
+                            )}
+
+                            {mengantarPickupLabel && (
+                                <p className="mt-1 text-xs text-gray-500">
+                                    Terpilih:{" "}
+                                    {mengantarPickupLabel}
+                                </p>
+                            )}
+                        </div>
+
+                        {/* PICKUP MODE */}
+
+                        <div className="mt-5">
+                            <label className="text-sm font-medium text-gray-700">
+                                Metode Pickup
+                            </label>
+
+                            <div className="mt-2 flex flex-wrap gap-2">
+                                {(
+                                    [
+                                        "dropoff",
+                                        "scheduled",
+                                    ] as const
+                                ).map((mode) => (
+                                    <button
+                                        key={mode}
+                                        type="button"
+                                        onClick={() =>
+                                            handleMengantarModeChange(
+                                                mode
+                                            )
+                                        }
+                                        className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                                            form.mengantarPickupMode ===
+                                            mode
+                                                ? "border-rose-500 bg-rose-50 text-rose-700"
+                                                : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                                        }`}
+                                    >
+                                        {mode ===
+                                        "dropoff"
+                                            ? "Drop-off"
+                                            : "Scheduled Pickup"}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {form.mengantarPickupMode ===
+                            "scheduled" ? (
+                                <select
+                                    value={
+                                        form.mengantarPickupTimeId
+                                    }
+                                    onChange={(e) =>
+                                        updateField(
+                                            "mengantarPickupTimeId",
+                                            e.target.value
+                                        )
+                                    }
+                                    disabled={
+                                        !form.mengantarPickupAddressId ||
+                                        loadingMengantar
+                                    }
+                                    className="mt-3 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-rose-500 disabled:bg-gray-100"
+                                >
+                                    <option value="">
+                                        Pilih slot waktu pickup
+                                    </option>
+
+                                    {mengantarTimes.map(
+                                        (slot) => (
+                                            <option
+                                                key={
+                                                    slot._id
+                                                }
+                                                value={
+                                                    slot._id
+                                                }
+                                            >
+                                                {[
+                                                    slot.date,
+                                                    slot.time,
+                                                ]
+                                                    .filter(
+                                                        Boolean
+                                                    )
+                                                    .join(" ") ||
+                                                    slot._id}
+                                            </option>
+                                        )
+                                    )}
+                                </select>
+                            ) : (
+                                <p className="mt-2 text-xs text-gray-500">
+                                    Drop-off: paket diantar
+                                    sendiri ke counter. Pickup
+                                    time dikosongkan (NULL).
+                                </p>
+                            )}
                         </div>
                     </section>
 

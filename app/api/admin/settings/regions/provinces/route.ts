@@ -2,6 +2,10 @@ import { NextResponse } from "next/server";
 
 import { auth } from "@/auth";
 import { rajaOngkirFetch } from "@/lib/rajaongkir";
+import {
+    UpstreamError,
+    isUpstreamTimeout,
+} from "@/lib/upstream-error";
 
 type Province = {
     id: number;
@@ -50,8 +54,32 @@ export async function GET() {
     } catch (error) {
         console.error(
             "GET PROVINCES ERROR:",
-            error
+            error instanceof Error
+                ? error.message
+                : error
         );
+
+        if (isUpstreamTimeout(error)) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Layanan wilayah sedang lambat. Silakan coba lagi.",
+                },
+                { status: 504 }
+            );
+        }
+
+        if (error instanceof UpstreamError) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Layanan wilayah sedang tidak merespons. Silakan coba lagi.",
+                },
+                { status: 502 }
+            );
+        }
 
         return NextResponse.json(
             {

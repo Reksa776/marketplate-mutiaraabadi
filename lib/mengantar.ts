@@ -306,6 +306,142 @@ export async function searchMengantarAreas(
 
 /*
  * ============================================================
+ * PICKUP ADDRESSES + TIME SLOTS (admin settings)
+ * ============================================================
+ *
+ * GET /address lists the pickup addresses REGISTERED on the
+ * Mengantar account. Its `_id` is the ONLY valid
+ * pickup.address_id for POST /order — it is a DIFFERENT id space
+ * from the origin AREA id returned by /address/search.
+ *
+ * GET /time?address={pickupAddressId} lists that pickup address's
+ * time slots; its `_id` is pickup.time_id for scheduledPickup.
+ *
+ * Responses are defensively normalized: the exact casing of the
+ * stored field names is not guaranteed by the public docs, so we
+ * accept both the documented uppercase names and camelCase.
+ */
+
+export type MengantarPickupAddress = {
+    _id: string;
+    name: string | null;
+    address: string | null;
+    pic: string | null;
+    picPhone: string | null;
+    /** PICKUP_AUTOFILL = the area _id the pickup address sits in. */
+    areaId: string | null;
+};
+
+export type MengantarPickupTime = {
+    _id: string;
+    date: string | null;
+    time: string | null;
+};
+
+function toOptionalString(value: unknown): string | null {
+    if (typeof value === "string" && value.trim()) {
+        return value.trim();
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return String(value);
+    }
+
+    return null;
+}
+
+export async function listMengantarPickupAddresses(): Promise<
+    MengantarPickupAddress[]
+> {
+    const result = await mengantarRequest<unknown[]>(
+        keyPath(`/address`),
+        { method: "GET" }
+    );
+
+    if (!Array.isArray(result)) return [];
+
+    const addresses: MengantarPickupAddress[] = [];
+
+    for (const raw of result) {
+        const item = (raw ?? {}) as Record<string, unknown>;
+
+        const id =
+            toOptionalString(item._id) ??
+            toOptionalString(item.id);
+
+        if (!id) continue;
+
+        addresses.push({
+            _id: id,
+            name:
+                toOptionalString(item.PICKUP_NAME) ??
+                toOptionalString(item.pickupName) ??
+                toOptionalString(item.name),
+            address:
+                toOptionalString(item.PICKUP_ADDRESS) ??
+                toOptionalString(item.pickupAddress) ??
+                toOptionalString(item.address),
+            pic:
+                toOptionalString(item.PICKUP_PIC) ??
+                toOptionalString(item.pickupPic) ??
+                toOptionalString(item.pic),
+            picPhone:
+                toOptionalString(item.PICKUP_PIC_PHONE) ??
+                toOptionalString(item.pickupPicPhone) ??
+                toOptionalString(item.phone),
+            areaId:
+                toOptionalString(item.PICKUP_AUTOFILL) ??
+                toOptionalString(item.pickupAutofill) ??
+                toOptionalString(item.areaId),
+        });
+    }
+
+    return addresses;
+}
+
+export async function listMengantarPickupTimes(
+    addressId: string
+): Promise<MengantarPickupTime[]> {
+    const id = String(addressId ?? "").trim();
+
+    if (!id) return [];
+
+    const result = await mengantarRequest<unknown[]>(
+        keyPath(
+            `/time?address=${encodeURIComponent(id)}`
+        ),
+        { method: "GET" }
+    );
+
+    if (!Array.isArray(result)) return [];
+
+    const times: MengantarPickupTime[] = [];
+
+    for (const raw of result) {
+        const item = (raw ?? {}) as Record<string, unknown>;
+
+        const timeId =
+            toOptionalString(item._id) ??
+            toOptionalString(item.id);
+
+        if (!timeId) continue;
+
+        times.push({
+            _id: timeId,
+            date:
+                toOptionalString(item.date) ??
+                toOptionalString(item.DATE),
+            time:
+                toOptionalString(item.time) ??
+                toOptionalString(item.TIME),
+        });
+    }
+
+    return times;
+}
+
+/*
+ * ============================================================
  * SHIPPING ESTIMATE
  * ============================================================
  */

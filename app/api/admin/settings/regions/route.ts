@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { rajaOngkirFetch } from "@/lib/rajaongkir";
+import {
+    UpstreamError,
+    isUpstreamTimeout,
+} from "@/lib/upstream-error";
 
 async function checkAdmin() {
     const session = await auth();
@@ -127,10 +131,39 @@ export async function GET(request: NextRequest) {
             data,
         });
     } catch (error) {
+        /*
+         * Never log the raw error object: a fetch failure used to
+         * surface as `AbortError: This operation was aborted` with a
+         * stack trace. Log the normalized message only.
+         */
         console.error(
             "REGION API ERROR:",
-            error
+            error instanceof Error
+                ? error.message
+                : error
         );
+
+        if (isUpstreamTimeout(error)) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Layanan wilayah sedang lambat. Silakan coba lagi.",
+                },
+                { status: 504 }
+            );
+        }
+
+        if (error instanceof UpstreamError) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Layanan wilayah sedang tidak merespons. Silakan coba lagi.",
+                },
+                { status: 502 }
+            );
+        }
 
         return NextResponse.json(
             {

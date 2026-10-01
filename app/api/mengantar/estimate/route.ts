@@ -8,6 +8,10 @@ import {
     redactMengantarKey,
 } from "@/lib/mengantar";
 import {
+    UpstreamError,
+    isUpstreamTimeout,
+} from "@/lib/upstream-error";
+import {
     buildMengantarShippingOptions,
     getMengantarOriginConfig,
 } from "@/lib/mengantar/shipping";
@@ -194,6 +198,17 @@ export async function POST(request: Request) {
                 ? redactMengantarKey(error.message)
                 : error
         );
+
+        if (error instanceof UpstreamError) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Layanan Mengantar sedang tidak merespons. Silakan coba lagi.",
+                },
+                { status: isUpstreamTimeout(error) ? 504 : 502 }
+            );
+        }
 
         return NextResponse.json(
             {

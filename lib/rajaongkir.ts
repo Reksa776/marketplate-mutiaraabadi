@@ -190,7 +190,13 @@ export async function calculateDomesticCost({
             },
             body: form.toString(),
             cache: "no-store",
-        }
+        },
+        /*
+         * Pricing POST: side-effect free, so it is safe to retry
+         * once on a transient timeout/network error. (Mengantar's
+         * order/payment POSTs deliberately do NOT opt in.)
+         */
+        { idempotent: true }
     );
 
     const text = await response.text();
