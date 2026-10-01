@@ -117,6 +117,47 @@ type MengantarPickupTime = {
     time: string | null;
 };
 
+type SafePickupCandidate = {
+    id: string;
+    name: string | null;
+    address: string | null;
+    areaId: string | null;
+};
+
+type OriginResolve = {
+    status: string;
+    id?: string;
+    confidence?: string;
+    matchedFields?: string[];
+    province?: string | null;
+    city?: string | null;
+    district?: string | null;
+    subdistrict?: string | null;
+    postalCode?: string | null;
+    candidates?: MengantarArea[];
+};
+
+type PickupResolve = {
+    status: string;
+    id?: string;
+    confidence?: string;
+    matchedFields?: string[];
+    name?: string | null;
+    address?: string | null;
+    areaId?: string | null;
+    candidates?: SafePickupCandidate[];
+};
+
+type StoreAddressPreview = {
+    storeName: string;
+    address: string;
+    province: string | null;
+    city: string | null;
+    district: string | null;
+    subdistrict: string | null;
+    postalCode: string | null;
+};
+
 const initialForm: StoreForm = {
     storeName: "",
     phone: "",
@@ -223,6 +264,18 @@ export default function AdminSettingsForm() {
         useState("");
     const [loadingMengantar, setLoadingMengantar] =
         useState(false);
+    const [mengantarResolving, setMengantarResolving] =
+        useState(false);
+    const [mengantarResolved, setMengantarResolved] =
+        useState(false);
+    const [mengantarStorePreview, setMengantarStorePreview] =
+        useState<StoreAddressPreview | null>(null);
+    const [mengantarOriginResolve, setMengantarOriginResolve] =
+        useState<OriginResolve | null>(null);
+    const [mengantarPickupResolve, setMengantarPickupResolve] =
+        useState<PickupResolve | null>(null);
+    const [mengantarResolveMessage, setMengantarResolveMessage] =
+        useState<string | null>(null);
 
     function updateField<K extends keyof StoreForm>(
         field: K,
@@ -1332,6 +1385,173 @@ export default function AdminSettingsForm() {
         }
     }
 
+    function maskId(id?: string | null): string {
+        if (!id) return "-";
+        return id.length <= 10
+            ? id
+            : `${id.slice(0, 6)}…${id.slice(-4)}`;
+    }
+
+    function originAreaLabel(area: {
+        province?: string | null;
+        city?: string | null;
+        district?: string | null;
+        subdistrict?: string | null;
+        postalCode?: string | null;
+    }): string {
+        return [
+            area.subdistrict,
+            area.district,
+            area.city,
+            area.province,
+            area.postalCode,
+        ]
+            .filter(Boolean)
+            .join(" / ");
+    }
+
+    /**
+     * ============================
+     * MENGANTAR AUTO-DETECT
+     * ============================
+     *
+     * Read-only server resolve. Called ONLY on explicit admin
+     * action (or refresh) — never on every render. It never
+     * overwrites an existing configuration unless the admin
+     * confirms by saving.
+     */
+
+    async function detectMengantar() {
+        try {
+            setMengantarResolving(true);
+            setMengantarResolveMessage(null);
+
+            const response = await fetch(
+                "/api/admin/settings/mengantar/resolve",
+                { method: "POST" }
+            );
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(
+                    data.message ||
+                        "Gagal mendeteksi konfigurasi Mengantar."
+                );
+            }
+
+            if (data.configured === false) {
+                setMengantarStorePreview(null);
+                setMengantarOriginResolve(null);
+                setMengantarPickupResolve(null);
+
+                toast.error(
+                    data.message ||
+                        "API key Mengantar belum diatur."
+                );
+                return;
+            }
+
+            const origin =
+                (data.origin as OriginResolve) ?? null;
+            const pickup =
+                (data.pickup as PickupResolve) ?? null;
+
+            setMengantarResolved(true);
+            setMengantarStorePreview(data.store ?? null);
+            setMengantarOriginResolve(origin);
+            setMengantarPickupResolve(pickup);
+
+            if (origin?.status === "MATCHED" && origin.id) {
+                setForm((prev) => ({
+                    ...prev,
+                    mengantarOriginAreaId:
+                        origin.id as string,
+                }));
+                setMengantarOriginLabel(
+                    originAreaLabel(origin)
+                );
+            }
+
+            if (pickup?.status === "MATCHED" && pickup.id) {
+                setForm((prev) => ({
+                    ...prev,
+                    mengantarPickupAddressId:
+                        pickup.id as string,
+                    mengantarPickupTimeId: "",
+                }));
+                setMengantarPickupLabel(
+                    pickup.name ?? pickup.address ?? ""
+                );
+                void loadMengantarTimes(pickup.id);
+                void loadMengantarPickupAddresses();
+            }
+
+            if (
+                origin?.status === "MATCHED" &&
+                pickup?.status === "MATCHED"
+            ) {
+                setMengantarResolveMessage(null);
+
+                toast.success(
+                    "Origin area & pickup address berhasil terdeteksi."
+                );
+            } else {
+                setMengantarResolveMessage(
+                    "Sebagian konfigurasi belum unik — pilih kandidat yang disediakan, lalu simpan."
+                );
+            }
+        } catch (error) {
+            console.error("MENGANTAR DETECT ERROR:", error);
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal mendeteksi konfigurasi Mengantar."
+            );
+        } finally {
+            setMengantarResolving(false);
+        }
+    }
+
+    function selectResolvedOrigin(area: MengantarArea) {
+        selectMengantarOrigin(area);
+        setMengantarOriginResolve((prev) =>
+            prev
+                ? {
+                      ...prev,
+                      status: "MATCHED",
+                      id: area.id,
+                  }
+                : prev
+        );
+    }
+
+    function selectResolvedPickup(
+        candidate: SafePickupCandidate
+    ) {
+        setForm((prev) => ({
+            ...prev,
+            mengantarPickupAddressId: candidate.id,
+            mengantarPickupTimeId: "",
+        }));
+        setMengantarPickupLabel(
+            candidate.name ?? candidate.address ?? ""
+        );
+        setMengantarPickupResolve((prev) =>
+            prev
+                ? {
+                      ...prev,
+                      status: "MATCHED",
+                      id: candidate.id,
+                      name: candidate.name,
+                      address: candidate.address,
+                  }
+                : prev
+        );
+        void loadMengantarTimes(candidate.id);
+    }
+
     /**
      * ============================
      * SUBMIT
@@ -2433,6 +2653,77 @@ export default function AdminSettingsForm() {
                             </p>
                         )}
 
+                        {/* ALAMAT TOKO + AUTO DETECT */}
+
+                        <div className="mt-5 rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div>
+                                    <p className="text-sm font-medium text-gray-700">
+                                        Alamat Toko
+                                    </p>
+
+                                    <p className="mt-1 text-xs text-gray-500">
+                                        Konfigurasi Mengantar
+                                        diturunkan dari alamat toko
+                                        ini.
+                                    </p>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={detectMengantar}
+                                    disabled={
+                                        mengantarResolving ||
+                                        !form.mengantarApiConfigured
+                                    }
+                                    className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {mengantarResolving
+                                        ? "Mendeteksi..."
+                                        : "Deteksi Otomatis"}
+                                </button>
+                            </div>
+
+                            <p className="mt-3 text-sm text-gray-800">
+                                {[
+                                    form.address,
+                                    form.subdistrict,
+                                    form.district,
+                                    form.city,
+                                    form.province,
+                                    form.postalCode,
+                                ]
+                                    .filter(
+                                        (part) =>
+                                            part &&
+                                            part.trim()
+                                    )
+                                    .join(", ")}
+                            </p>
+
+                            {mengantarResolved &&
+                                mengantarStorePreview && (
+                                    <p className="mt-1 text-xs text-gray-400">
+                                        Terakhir dideteksi dari:{" "}
+                                        {
+                                            mengantarStorePreview.storeName
+                                        }
+                                    </p>
+                                )}
+
+                            {mengantarResolveMessage && (
+                                <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                    ⚠ {mengantarResolveMessage}
+                                </p>
+                            )}
+
+                            <p className="mt-2 text-xs text-gray-500">
+                                Jika alamat toko diubah, jalankan
+                                Deteksi Otomatis lagi sebelum
+                                menyimpan.
+                            </p>
+                        </div>
+
                         {/* ORIGIN AREA */}
 
                         <div className="mt-5">
@@ -2445,6 +2736,92 @@ export default function AdminSettingsForm() {
                                 BUKAN RajaOngkir destination
                                 ID.
                             </p>
+
+                            {mengantarOriginResolve?.status ===
+                                "MATCHED" && (
+                                <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                                    <p className="text-xs font-semibold text-emerald-700">
+                                        ✓ Terdeteksi otomatis
+                                    </p>
+
+                                    <p className="mt-1 text-sm text-emerald-900">
+                                        {originAreaLabel(
+                                            mengantarOriginResolve
+                                        )}
+                                    </p>
+
+                                    <p className="mt-1 text-xs text-emerald-700">
+                                        ID:{" "}
+                                        {maskId(
+                                            mengantarOriginResolve.id
+                                        )}{" "}
+                                        • keyakinan:{" "}
+                                        {mengantarOriginResolve.confidence ??
+                                            "-"}
+                                    </p>
+                                </div>
+                            )}
+
+                            {mengantarOriginResolve?.status ===
+                                "AMBIGUOUS" && (
+                                <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                                    <p className="text-xs font-semibold text-amber-800">
+                                        ⚠ Ditemukan beberapa
+                                        kandidat. Pilih satu.
+                                    </p>
+
+                                    <ul className="mt-2 space-y-1">
+                                        {(
+                                            mengantarOriginResolve.candidates ??
+                                            []
+                                        ).map((candidate) => (
+                                            <li
+                                                key={
+                                                    candidate.id
+                                                }
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        selectResolvedOrigin(
+                                                            candidate
+                                                        )
+                                                    }
+                                                    className="w-full rounded-lg px-3 py-2 text-left text-sm transition hover:bg-amber-100"
+                                                >
+                                                    <span className="block font-medium text-amber-900">
+                                                        {originAreaLabel(
+                                                            candidate
+                                                        )}
+                                                    </span>
+
+                                                    <span className="block text-xs text-amber-700">
+                                                        ID:{" "}
+                                                        {maskId(
+                                                            candidate.id
+                                                        )}
+                                                    </span>
+                                                </button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {(mengantarOriginResolve?.status ===
+                                "NOT_FOUND" ||
+                                mengantarOriginResolve?.status ===
+                                    "INSUFFICIENT_DATA") && (
+                                <p className="mt-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700">
+                                    ⚠ Origin belum terdeteksi
+                                    {mengantarOriginResolve.status ===
+                                    "INSUFFICIENT_DATA"
+                                        ? " (data alamat toko belum lengkap)."
+                                        : "."}{" "}
+                                    Gunakan pencarian area di
+                                    bawah, lalu simpan.
+                                </p>
+                            )}
 
                             <div className="mt-2 flex flex-wrap gap-2">
                                 <input
@@ -2523,22 +2900,15 @@ export default function AdminSettingsForm() {
                                 </ul>
                             )}
 
-                            <input
-                                type="text"
-                                value={
-                                    form.mengantarOriginAreaId
-                                }
-                                onChange={(e) =>
-                                    updateField(
-                                        "mengantarOriginAreaId",
-                                        e.target.value.trim()
-                                    )
-                                }
-                                className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
-                                placeholder="Origin area _id"
-                                autoComplete="off"
-                                spellCheck={false}
-                            />
+                            <p className="mt-2 text-xs text-gray-500">
+                                Origin area ID disimpan otomatis
+                                (tidak perlu diketik):{" "}
+                                <span className="font-mono">
+                                    {maskId(
+                                        form.mengantarOriginAreaId
+                                    )}
+                                </span>
+                            </p>
 
                             {mengantarOriginLabel && (
                                 <p className="mt-1 text-xs text-gray-500">
@@ -2577,6 +2947,80 @@ export default function AdminSettingsForm() {
                                 Mengantar.
                             </p>
 
+                            {mengantarPickupResolve?.status ===
+                                "MATCHED" && (
+                                <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                                    <p className="text-xs font-semibold text-emerald-700">
+                                        ✓ Terdeteksi otomatis
+                                    </p>
+
+                                    <p className="mt-1 text-sm text-emerald-900">
+                                        {mengantarPickupResolve.name ??
+                                            "Pickup address"}
+                                    </p>
+
+                                    <p className="mt-1 whitespace-pre-line text-xs text-emerald-800">
+                                        {mengantarPickupResolve.address ??
+                                            ""}
+                                    </p>
+
+                                    <p className="mt-1 text-xs text-emerald-700">
+                                        ID:{" "}
+                                        {maskId(
+                                            mengantarPickupResolve.id
+                                        )}{" "}
+                                        • keyakinan:{" "}
+                                        {mengantarPickupResolve.confidence ??
+                                            "-"}
+                                    </p>
+                                </div>
+                            )}
+
+                            {mengantarPickupResolve?.status ===
+                                "AMBIGUOUS" && (
+                                <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                                    <p className="text-xs font-semibold text-amber-800">
+                                        ⚠ Ditemukan beberapa pickup
+                                        address. Pilih satu.
+                                    </p>
+
+                                    <ul className="mt-2 space-y-1">
+                                        {(
+                                            mengantarPickupResolve.candidates ??
+                                            []
+                                        ).map((candidate) => (
+                                            <li
+                                                key={
+                                                    candidate.id
+                                                }
+                                            >
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        selectResolvedPickup(
+                                                            candidate
+                                                        )
+                                                    }
+                                                    className="w-full rounded-lg px-3 py-2 text-left text-sm transition hover:bg-amber-100"
+                                                >
+                                                    <span className="block font-medium text-amber-900">
+                                                        {candidate.name ??
+                                                            "Pickup address"}
+                                                    </span>
+
+                                                    <span className="block text-xs text-amber-700">
+                                                        {candidate.address ??
+                                                            maskId(
+                                                                candidate.id
+                                                            )}
+                                                    </span>
+                                                </button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
                             {mengantarPickupAddresses.length >
                             0 ? (
                                 <select
@@ -2614,21 +3058,12 @@ export default function AdminSettingsForm() {
                                     )}
                                 </select>
                             ) : (
-                                <input
-                                    type="text"
-                                    value={
-                                        form.mengantarPickupAddressId
-                                    }
-                                    onChange={(e) =>
-                                        handleMengantarPickupChange(
-                                            e.target.value.trim()
-                                        )
-                                    }
-                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
-                                    placeholder="Pickup address _id"
-                                    autoComplete="off"
-                                    spellCheck={false}
-                                />
+                                <p className="mt-2 text-xs text-gray-500">
+                                    Klik "Muat daftar pickup address"
+                                    atau "Deteksi Otomatis" untuk
+                                    memilih dari daftar resmi
+                                    Mengantar.
+                                </p>
                             )}
 
                             {mengantarPickupLabel && (
@@ -2728,6 +3163,26 @@ export default function AdminSettingsForm() {
                                     time dikosongkan (NULL).
                                 </p>
                             )}
+                        </div>
+
+                        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+                            <p className="text-xs text-gray-500">
+                                Konfigurasi lama tidak akan
+                                berubah sampai tombol simpan
+                                ditekan.
+                            </p>
+
+                            <button
+                                type="submit"
+                                disabled={saving}
+                                className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <FiSave size={16} />
+
+                                {saving
+                                    ? "Menyimpan..."
+                                    : "Simpan Konfigurasi"}
+                            </button>
                         </div>
                     </section>
 
