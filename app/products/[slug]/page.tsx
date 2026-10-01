@@ -1,4 +1,4 @@
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 
 import { auth } from "@/auth";
@@ -67,15 +67,14 @@ export default async function ProductDetailPage({
 
     const { slug } = await params;
 
-    // Guest redirect
-    if (!session?.user) {
-        redirect(
-            `/products?guestProduct=${encodeURIComponent(
-                slug
-            )}`
-        );
-    }
-
+    /*
+     * Product detail is public: guests may browse any non-archived
+     * product. Purchasing actions (add to cart / buy now) remain
+     * protected server-side by their own API routes.
+     *
+     * Session is read only to decide whether the BottomNavbar is
+     * shown (authenticated only); it does NOT gate the page.
+     */
     const product =
         await prisma.product.findFirst({
             where: {
@@ -188,7 +187,7 @@ export default async function ProductDetailPage({
                 product={serializedProduct}
             />
 
-            <BottomNavbar />
+            {session?.user && <BottomNavbar />}
         </main>
     );
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 
 import ProductCard from "./ProductCard";
 import ProductSkeleton from "../skeletons/ProductSkeleton";
@@ -46,9 +45,6 @@ export default function ProductGrid() {
         []
     );
 
-    const [authenticated, setAuthenticated] =
-        useState(false);
-
     const [loading, setLoading] =
         useState(true);
 
@@ -87,10 +83,6 @@ export default function ProductGrid() {
                         "Gagal mengambil produk."
                 );
             }
-
-            setAuthenticated(
-                Boolean(data.authenticated)
-            );
 
             /*
              * Pastikan setiap product mempunyai
@@ -205,19 +197,13 @@ export default function ProductGrid() {
             <div className="mb-5 flex items-end justify-between gap-4">
                 <div>
                     <h2 className="text-xl font-bold text-gray-900">
-                        Produk Terlaris
+                        Semua Produk
                     </h2>
 
                     <p className="mt-1 text-sm text-gray-500">
-                        Pilihan favorit pelanggan
+                        Jelajahi seluruh katalog produk kami.
                     </p>
                 </div>
-
-                {authenticated && (
-                    <span className="text-sm font-medium text-emerald-600">
-                        Semua Produk
-                    </span>
-                )}
             </div>
 
             {/* PRODUCTS */}
@@ -242,46 +228,6 @@ export default function ProductGrid() {
                             />
                         )
                     )}
-                </div>
-            )}
-
-            {/* GUEST LOGIN WALL */}
-            {!authenticated && (
-                <div className="relative mt-10 overflow-hidden rounded-3xl border border-gray-200 bg-white">
-                    <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-rose-50 to-transparent" />
-
-                    <div className="relative px-6 py-10 text-center">
-                        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-rose-100 text-xl">
-                            🔒
-                        </div>
-
-                        <h3 className="mt-4 text-lg font-bold text-gray-900">
-                            Ingin melihat semua produk?
-                        </h3>
-
-                        <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-500">
-                            Kamu sedang melihat produk
-                            terlaris. Login atau daftar
-                            untuk melihat seluruh katalog
-                            produk dan melakukan pembelian.
-                        </p>
-
-                        <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
-                            <Link
-                                href="/login"
-                                className="rounded-xl bg-rose-600 px-7 py-3 text-sm font-semibold text-white transition hover:bg-rose-700"
-                            >
-                                Login
-                            </Link>
-
-                            <Link
-                                href="/register"
-                                className="rounded-xl border border-gray-300 bg-white px-7 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
-                            >
-                                Register
-                            </Link>
-                        </div>
-                    </div>
                 </div>
             )}
         </section>

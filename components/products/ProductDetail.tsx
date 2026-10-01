@@ -6,6 +6,7 @@ import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
 import { buildTikTokProductProperties } from "@/lib/analytics/tiktok-catalog";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import toast from "react-hot-toast";
 import {
     FiChevronLeft,
@@ -50,6 +51,26 @@ export default function ProductDetail({
     product,
 }: Props) {
     const router = useRouter();
+
+    /*
+     * Auth state is read from the existing SessionProvider
+     * (next-auth/react). Guests may browse, but account-required
+     * actions (add to cart / buy now) are gated here so no private
+     * API is called before the session is known. A 401 from the API
+     * remains the fallback while the session is still loading.
+     */
+    const { status: sessionStatus } = useSession();
+
+    const productPath = `/products/${product.slug}`;
+
+    /*
+     * Internal callback target only, URL-encoded so it cannot be
+     * turned into an open redirect / external URL.
+     */
+    const loginCallback = encodeURIComponent(productPath);
+
+    const [showLoginPrompt, setShowLoginPrompt] =
+        useState(false);
 
 
     /*
@@ -288,6 +309,16 @@ export default function ProductDetail({
 
     async function handleAddToCart() {
         /*
+         * Guest (session known to be unauthenticated): never touch the
+         * cart API. Show a login prompt instead.
+         */
+        if (sessionStatus === "unauthenticated") {
+            setShowLoginPrompt(true);
+
+            return;
+        }
+
+        /*
          * Pastikan variant dipilih.
          */
         if (!selectedVariant) {
@@ -360,7 +391,7 @@ export default function ProductDetail({
                 );
 
                 router.push(
-                    `/login?callbackUrl=/products/${product.slug}`
+                    `/login?callbackUrl=${loginCallback}`
                 );
 
                 return;
@@ -426,6 +457,16 @@ export default function ProductDetail({
         if (!selectedVariant) return;
 
         if (quantity > selectedVariant.stock) {
+            return;
+        }
+
+        /*
+         * Guest: go to login with a safe internal callback before any
+         * Buy Now page/API is reached. No order or payment is created.
+         */
+        if (sessionStatus === "unauthenticated") {
+            router.push(`/login?callbackUrl=${loginCallback}`);
+
             return;
         }
 
@@ -874,6 +915,53 @@ export default function ProductDetail({
 
             </section>
 
+            {/* GUEST LOGIN PROMPT */}
+            {showLoginPrompt && (
+                <div
+                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 px-5"
+                    role="dialog"
+                    aria-modal="true"
+                >
+                    <div className="w-full max-w-md rounded-3xl bg-white p-7 shadow-2xl">
+                        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-100 text-2xl">
+                            🔐
+                        </div>
+
+                        <h2 className="mt-5 text-center text-xl font-bold text-gray-900">
+                            Login diperlukan
+                        </h2>
+
+                        <p className="mt-3 text-center text-sm leading-6 text-gray-500">
+                            Silakan login terlebih dahulu untuk
+                            menambahkan produk ke keranjang.
+                        </p>
+
+                        <div className="mt-7 grid grid-cols-2 gap-3">
+                            <Link
+                                href={`/login?callbackUrl=${loginCallback}`}
+                                className="flex h-11 items-center justify-center rounded-xl bg-rose-600 text-sm font-semibold text-white hover:bg-rose-700"
+                            >
+                                Masuk
+                            </Link>
+
+                            <Link
+                                href={`/register?callbackUrl=${loginCallback}`}
+                                className="flex h-11 items-center justify-center rounded-xl border border-rose-600 text-sm font-semibold text-rose-600 hover:bg-rose-50"
+                            >
+                                Daftar
+                            </Link>
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={() => setShowLoginPrompt(false)}
+                            className="mt-3 h-11 w-full rounded-xl border border-gray-300 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                        >
+                            Batal
+                        </button>
+                    </div>
+                </div>
+            )}
         </main>
     );
 }

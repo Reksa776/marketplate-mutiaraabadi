@@ -11,11 +11,16 @@ export async function GET() {
             session?.user?.id
         );
 
+        /*
+         * Guest and logged-in customers see the same public catalog:
+         * every non-archived product. Guests are no longer limited to
+         * bestsellers. Only the internal stock figure stays hidden from
+         * guests (see the variant mapping below).
+         */
         const products =
             await prisma.product.findMany({
                 where: {
                     isArchived: false,
-                    ...(authenticated ? {} : { bestseller: true }),
                 },
 
                 orderBy: [

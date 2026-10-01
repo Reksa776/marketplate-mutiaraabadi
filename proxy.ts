@@ -62,13 +62,18 @@ const PROTECTED_API_PREFIXES = [
  * These page routes redirect to /login
  * if the user is not authenticated.
  */
+/*
+ * NOTE: `/orders` is intentionally NOT listed here. The orders
+ * PAGE is public so guests can see a soft-login state, while the
+ * `/api/orders` API stays in PROTECTED_API_PREFIXES (see above)
+ * and each route handler still enforces auth + ownership.
+ */
 const PROTECTED_PAGE_ROUTES = [
     "/profile",
     "/wishlist",
     "/cart",
     "/checkout",
     "/buy-now",
-    "/orders",
     "/address",
     "/addresses",
     "/admin",
@@ -156,7 +161,6 @@ export const config = {
         "/cart/:path*",
         "/checkout/:path*",
         "/buy-now/:path*",
-        "/orders/:path*",
         "/address/:path*",
         "/addresses/:path*",
         "/admin/:path*",

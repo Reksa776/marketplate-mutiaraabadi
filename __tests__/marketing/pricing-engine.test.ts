@@ -315,8 +315,18 @@ test("Proxy protects /buy-now routes", () => {
     assert(proxyCode.includes("/buy-now/:path*"), "Should protect /buy-now routes");
 });
 
-test("Proxy protects /orders routes", () => {
-    assert(proxyCode.includes("/orders/:path*"), "Should protect /orders routes");
+test("Proxy no longer guards the /orders page (guest soft-login)", () => {
+    assert(
+        !proxyCode.includes("/orders/:path*"),
+        "Page-level /orders route must not be forced behind login"
+    );
+});
+
+test("Proxy still protects the /api/orders API", () => {
+    assert(
+        proxyCode.includes('\"/api/orders\"'),
+        "Order API must remain protected"
+    );
 });
 
 test("Proxy protects /admin routes", () => {
