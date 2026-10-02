@@ -22,6 +22,9 @@
 
 export const MENGANTAR_SHIPMENT_STATUSES = [
     "NOT_CREATED",
+    // Enqueued for automatic creation (payment authoritatively PAID).
+    // A durable outbox job exists and the worker will claim it.
+    "SHIPMENT_PENDING",
     "CREATING",
     "WAITING_SHIPPING_PAYMENT",
     "PAYING",
@@ -54,6 +57,7 @@ const TERMINAL_SHIPMENT_STATUSES = new Set<string>([
  */
 const SHIPMENT_STATUS_RANK: Record<string, number> = {
     NOT_CREATED: 0,
+    SHIPMENT_PENDING: 1,
     CREATING: 1,
     WAITING_SHIPPING_PAYMENT: 1,
     PAYING: 1,
@@ -197,6 +201,9 @@ export function shipmentStatusToEventKey(
     ) {
         case "WAITING_SHIPPING_PAYMENT":
             return "SHIPPING_PAYMENT_REQUIRED";
+        // SHIPMENT_PENDING is a transient enqueued state → silent.
+        case "SHIPMENT_PENDING":
+            return null;
         case "CREATED":
         case "SHIPPING_PAID":
             return "SHIPMENT_CREATED";

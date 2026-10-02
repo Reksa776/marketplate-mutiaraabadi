@@ -946,10 +946,11 @@ describe("shipment state machine regression", () => {
 
         expect(code).toContain('type: "dropOff"');
         expect(code).toContain('type: "scheduledPickup"');
-        expect(code).toContain("time_id: pickup.pickupTimeId");
-        expect(code).toContain(
-            "address_id: pickup.pickupAddressId"
-        );
+        // The pickup payload is now built from the resolved schedule
+        // (auto-shipping: a fresh slot per shipment).
+        expect(code).toContain("resolveMengantarPickupSchedule");
+        expect(code).toContain("time_id: schedule.time_id");
+        expect(code).toContain("address_id: schedule.address_id");
     });
 
     test("the status module still maps + guards transitions", () => {

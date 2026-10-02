@@ -206,6 +206,17 @@ export async function GET(
             shippingService: true,
             shippingCost: true,
             updatedAt: true,
+            // Automatic-shipment outbox state (read-only, admin UI).
+            shipmentJob: {
+                select: {
+                    status: true,
+                    stage: true,
+                    attempts: true,
+                    lastError: true,
+                    pickupDate: true,
+                    pickupTime: true,
+                },
+            },
         },
     });
 

@@ -13,6 +13,10 @@ import {
     getMengantarOriginConfig,
     resolveMengantarDestinationAreaId,
 } from "@/lib/mengantar/shipping";
+import {
+    resolveMengantarPickupSchedule,
+    type ResolvedMengantarPickup,
+} from "@/lib/mengantar/pickup-schedule";
 
 /*
  * ============================================================
@@ -80,6 +84,8 @@ export type ShipmentActionResult = {
     trackingNumber?: string | null;
     batchId?: string | null;
     shipmentId?: string | null;
+    /** Resolved pickup schedule (persisted by the worker on the job). */
+    pickupSchedule?: { date: string; time: string } | null;
 };
 
 function toKilograms(grams: number): number {
@@ -166,6 +172,7 @@ export async function createShipmentForOrder(
         select: {
             id: true,
             orderNumber: true,
+            status: true,
             recipientName: true,
             phone: true,
             address: true,
@@ -197,6 +204,29 @@ export async function createShipmentForOrder(
             ok: false,
             reason:
                 "Pesanan ini tidak menggunakan pengiriman Mengantar.",
+        };
+    }
+
+    /*
+     * ---- Cancellation / money-returned guard ----
+     *
+     * An order whose customer payment is REFUNDED, or that has been
+     * CANCELLED, must NEVER get a shipment created. This preserves
+     * the separation between the shipping state machine and the
+     * money-returned flow: that flow never has to know about
+     * shipments, and the shipment flow never resurrects a REFUNDED
+     * order.
+     */
+    if (
+        order.status === "CANCELLED" ||
+        order.paymentStatus === "REFUNDED"
+    ) {
+        return {
+            ok: false,
+            changed: false,
+            reason:
+                "Pesanan sudah dibatalkan atau dana dikembalikan; shipment tidak dibuat.",
+            shipmentStatus: order.shipmentStatus ?? null,
         };
     }
 
@@ -350,7 +380,11 @@ export async function createShipmentForOrder(
                 { shipmentStatus: null },
                 {
                     shipmentStatus: {
-                        in: ["NOT_CREATED", "FAILED"],
+                        in: [
+                            "NOT_CREATED",
+                            "SHIPMENT_PENDING",
+                            "FAILED",
+                        ],
                     },
                 },
                 {
@@ -390,22 +424,45 @@ export async function createShipmentForOrder(
         };
     }
 
+    /*
+     * ---- Pickup schedule resolution (AFTER the claim) ----
+     *
+     * For scheduledPickup this performs POST /time. It runs only for
+     * the single claim holder, so concurrent callers can never create
+     * duplicate schedules. A failure releases the claim and throws;
+     * no shipment is fabricated.
+     */
+    let schedule: ResolvedMengantarPickup;
+
+    try {
+        schedule = await resolveMengantarPickupSchedule(pickup);
+    } catch (error) {
+        await releaseShipmentClaim(
+            order.id,
+            "CREATING",
+            "NOT_CREATED"
+        );
+
+        throw error;
+    }
+
     let result: Awaited<ReturnType<typeof createMengantarOrder>>;
 
     try {
         result = await createMengantarOrder({
             courier,
-            pickup: pickup.pickupTimeId
-                ? {
-                      type: "scheduledPickup",
-                      volume: "volumeMotor",
-                      address_id: pickup.pickupAddressId,
-                      time_id: pickup.pickupTimeId,
-                  }
-                : {
-                      type: "dropOff",
-                      address_id: pickup.pickupAddressId,
-                  },
+            pickup:
+                schedule.type === "scheduledPickup"
+                    ? {
+                          type: "scheduledPickup",
+                          volume: schedule.volume,
+                          address_id: schedule.address_id,
+                          time_id: schedule.time_id,
+                      }
+                    : {
+                          type: "dropOff",
+                          address_id: schedule.address_id,
+                      },
             orders: [orderPayload],
         });
     } catch (error) {
@@ -482,6 +539,7 @@ export async function createShipmentForOrder(
         batchId:
             result.batch_id || created.batch_id || null,
         shipmentId: created.ORDER_ID ?? null,
+        pickupSchedule: schedule.schedule,
     };
 }
 

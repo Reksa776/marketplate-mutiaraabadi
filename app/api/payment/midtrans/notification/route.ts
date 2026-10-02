@@ -12,6 +12,11 @@ import {
 import { prisma } from "@/lib/prisma";
 import { releaseStockAndVoucherForOrder } from "@/lib/order-stock";
 
+import {
+    enqueueShipmentJobTx,
+    scheduleShipmentProcessing,
+} from "@/lib/mengantar/shipment-worker";
+
 export const dynamic =
     "force-dynamic";
 
@@ -382,6 +387,22 @@ export async function POST(
                 settled = true;
 
                 /*
+                 * AUTO MENGANTAR SHIPPING — durable outbox enqueue.
+                 * Atomic with the PAID transition, non-COD only, and
+                 * never touches paymentStatus. createMany +
+                 * skipDuplicates keeps a replayed settlement safe.
+                 */
+                if (
+                    existingOrder.shippingProvider === "MENGANTAR" &&
+                    existingOrder.paymentMethod !== "COD"
+                ) {
+                    await enqueueShipmentJobTx(
+                        tx,
+                        existingOrder.id
+                    );
+                }
+
+                /*
                  * Kosongkan cart HANYA kalau order ini
                  * berasal dari checkout cart (bukan buy-now,
                  * bukan COD yang sudah dihapus di endpoint lain).
@@ -503,6 +524,25 @@ export async function POST(
                         existingOrder.clientUserAgent ??
                         null,
                 });
+
+                /*
+                 * AUTO MENGANTAR SHIPPING — run the shipment job AFTER
+                 * the response is sent so the webhook never blocks on
+                 * Mengantar. Failures stay in the durable outbox.
+                 */
+                if (
+                    existingOrder.shippingProvider === "MENGANTAR" &&
+                    existingOrder.paymentMethod !== "COD"
+                ) {
+                    try {
+                        await scheduleShipmentProcessing();
+                    } catch (shipmentError) {
+                        console.error(
+                            "AUTO MENGANTAR SHIPPING SCHEDULE ERROR:",
+                            shipmentError
+                        );
+                    }
+                }
             }
 
             return json({

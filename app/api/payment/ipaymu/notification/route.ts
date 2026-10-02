@@ -19,6 +19,11 @@ import {
 
 import { getIpaymuConfig } from "@/lib/payment/config";
 
+import {
+    enqueueShipmentJobTx,
+    scheduleShipmentProcessing,
+} from "@/lib/mengantar/shipment-worker";
+
 export const dynamic = "force-dynamic";
 
 function json(
@@ -440,7 +445,29 @@ export async function POST(
                         return;
                     }
 
-                    settled = true;                    /* Clear cart ONLY for cart checkout orders */
+                    settled = true;
+
+                    /*
+                     * AUTO MENGANTAR SHIPPING — durable outbox enqueue.
+                     *
+                     * Runs INSIDE the settlement transaction so the job
+                     * is atomic with the PAID transition. Non-COD only
+                     * (COD contract still frozen). createMany +
+                     * skipDuplicates means a replayed settlement never
+                     * throws. This NEVER touches paymentStatus.
+                     */
+                    if (
+                        existingOrder.shippingProvider ===
+                            "MENGANTAR" &&
+                        existingOrder.paymentMethod !== "COD"
+                    ) {
+                        await enqueueShipmentJobTx(
+                            tx,
+                            existingOrder.id
+                        );
+                    }
+
+                    /* Clear cart ONLY for cart checkout orders */
                     if (
                         existingOrder.orderNumber.startsWith(
                             "PAY-CART-"
@@ -559,6 +586,27 @@ export async function POST(
                         existingOrder.clientUserAgent ??
                         null,
                 });
+
+                /*
+                 * AUTO MENGANTAR SHIPPING — process the just-enqueued
+                 * job AFTER this response is sent (never blocks the
+                 * webhook). Failures are swallowed; the job stays in the
+                 * durable outbox for the sweeper / admin retry.
+                 */
+                if (
+                    existingOrder.shippingProvider ===
+                        "MENGANTAR" &&
+                    existingOrder.paymentMethod !== "COD"
+                ) {
+                    try {
+                        await scheduleShipmentProcessing();
+                    } catch (shipmentError) {
+                        console.error(
+                            "AUTO MENGANTAR SHIPPING SCHEDULE ERROR:",
+                            shipmentError
+                        );
+                    }
+                }
             }
 
             return json({

@@ -349,6 +349,11 @@ model Order {
   // Refund relation (optional)
   refund Refund?
 
+  // Automatic-shipment outbox (Mengantar auto-shipping). One job
+  // per order; created atomically when payment authoritatively
+  // settles, processed by the shipment worker with retry/backoff.
+  shipmentJob ShipmentJob?
+
   @@index([userId])
   @@index([status])
   @@index([paymentStatus])
@@ -377,6 +382,47 @@ model OrderItem {
   @@index([productId])
   @@index([variantId])
   @@map("orderitem")
+}
+
+// ============================================================
+// ShipmentJob — minimal DB-backed outbox for AUTO MENGANTAR SHIPPING
+// ============================================================
+//
+// There is no general job queue in this project (the notification queue
+// is in-memory only). This table is the durable outbox that guarantees
+// an authoritatively-PAID order eventually gets exactly one Mengantar
+// shipment, even across process restarts / concurrent workers.
+//
+// status    → PENDING | PROCESSING | DONE | FAILED | CANCELLED
+// stage     → CREATE (POST /order) | PAY (POST /order/pay-unpaid)
+// attempts  → consumed retry budget
+// lastError → sanitized (API key redacted) failure reason
+// lock      → PROCESSING + lockedAt; stale locks are reclaimable
+// pickup*   → resolved Mengantar pickup schedule (defensive: a fresh
+//             schedule is created per shipment; never reused)
+//
+// No credential is ever stored here.
+model ShipmentJob {
+  id              Int      @id @default(autoincrement())
+  orderId         Int      @unique
+  status          String   @default("PENDING")
+  stage           String   @default("CREATE")
+  attempts        Int      @default(0)
+  maxAttempts     Int      @default(6)
+  lastError       String?  @db.Text
+  nextAttemptAt   DateTime @default(now())
+  lockedAt        DateTime?
+  pickupAddressId String?
+  pickupTimeId    String?
+  pickupDate      String?
+  pickupTime      String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@map("shipmentjob")
 }
 
 model StoreSetting {

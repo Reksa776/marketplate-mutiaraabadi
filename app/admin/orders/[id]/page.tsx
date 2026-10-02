@@ -106,6 +106,15 @@ type ShipmentState = {
     shippingService: string | null;
     shippingCost: number | null;
     updatedAt: string | null;
+    // Automatic-shipment outbox state.
+    shipmentJob?: {
+        status: string;
+        stage: string;
+        attempts: number;
+        lastError: string | null;
+        pickupDate: string | null;
+        pickupTime: string | null;
+    } | null;
 };
 
 /*
@@ -114,6 +123,7 @@ type ShipmentState = {
  */
 const SHIPMENT_STATUS_LABELS: Record<string, string> = {
     NOT_CREATED: "Belum dibuat",
+    SHIPMENT_PENDING: "Menunggu pembuatan otomatis",
     CREATING: "Sedang dibuat...",
     FAILED: "Gagal dibuat",
     WAITING_SHIPPING_PAYMENT: "Menunggu pembayaran ongkir",
@@ -442,6 +452,42 @@ export default function AdminOrderDetailPage() {
                 error instanceof Error
                     ? error.message
                     : "Gagal membayar ongkir.";
+            setShipmentError(message);
+            toast.error(message);
+        } finally {
+            setShipmentBusy(false);
+        }
+    }
+
+    // Manual recovery only. The normal path is fully automatic.
+    async function retryShipment() {
+        try {
+            setShipmentBusy(true);
+            setShipmentError(null);
+
+            const response = await fetch(
+                `/api/admin/orders/${id}/shipment/retry`,
+                { method: "POST" }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.message ||
+                        "Gagal memproses pengiriman."
+                );
+            }
+
+            toast.success("Pengiriman diproses ulang.");
+
+            await loadOrder();
+            await loadShipment();
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Gagal memproses pengiriman.";
             setShipmentError(message);
             toast.error(message);
         } finally {
@@ -1201,11 +1247,25 @@ export default function AdminOrderDetailPage() {
                                 const busyLock =
                                     status === "CREATING" ||
                                     status === "PAYING";
+                                // Automatic flow creates the shipment.
+                                // The manual button is a recovery path
+                                // shown only after a genuine failure.
                                 const canCreate =
+                                    !shipmentId &&
+                                    status === "FAILED";
+                                const canRetry =
                                     !shipmentId &&
                                     (!status ||
                                         status === "NOT_CREATED" ||
+                                        status === "SHIPMENT_PENDING" ||
                                         status === "FAILED");
+                                const job =
+                                    shipment?.shipmentJob;
+                                const pickupSchedule =
+                                    job?.pickupDate &&
+                                    job?.pickupTime
+                                        ? `${job.pickupDate} ${job.pickupTime}`
+                                        : null;
 
                                 return (
                                     <div className="mt-5 rounded-xl border border-gray-200 bg-white">
@@ -1296,6 +1356,19 @@ export default function AdminOrderDetailPage() {
 
                                             <div className="flex justify-between gap-3">
                                                 <span className="text-gray-400">
+                                                    Jadwal pickup
+                                                </span>
+                                                <span className="font-medium text-gray-900">
+                                                    {pickupSchedule ??
+                                                        (job?.stage ===
+                                                        "PAY"
+                                                            ? "Menunggu saldo"
+                                                            : "-")}
+                                                </span>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3">
+                                                <span className="text-gray-400">
                                                     ID shipment
                                                 </span>
                                                 <span className="break-all text-right font-medium text-gray-900">
@@ -1352,6 +1425,43 @@ export default function AdminOrderDetailPage() {
                                                 </div>
                                             )}
 
+                                            {canRetry &&
+                                                !busyLock &&
+                                                status !==
+                                                    "WAITING_SHIPPING_PAYMENT" && (
+                                                    <div className="border-l-2 border-blue-300 bg-blue-50 px-3 py-2">
+                                                        <p className="text-xs leading-5 text-blue-700">
+                                                            Pengiriman dibuat
+                                                            otomatis setelah
+                                                            pembayaran lunas.
+                                                            {status ===
+                                                            "SHIPMENT_PENDING"
+                                                                ? " Job sedang menunggu diproses."
+                                                                : " Menunggu antrean otomatis."}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                            {(status === "FAILED" ||
+                                                status ===
+                                                    "WAITING_SHIPPING_PAYMENT") &&
+                                                !busyLock && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={
+                                                            retryShipment
+                                                        }
+                                                        disabled={
+                                                            shipmentBusy
+                                                        }
+                                                        className="h-10 w-full rounded-lg border border-gray-300 bg-white px-4 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    >
+                                                        {shipmentBusy
+                                                            ? "Memproses..."
+                                                            : "Proses Ulang Otomatis"}
+                                                    </button>
+                                                )}
+
                                             {status ===
                                                 "WAITING_SHIPPING_PAYMENT" && (
                                                 <>
@@ -1401,6 +1511,15 @@ export default function AdminOrderDetailPage() {
                                                             {trackingNumber
                                                                 ? ` • Resi ${trackingNumber}`
                                                                 : ""}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                            {job?.lastError &&
+                                                !shipmentError && (
+                                                    <div className="border-l-2 border-red-400 bg-red-50 px-3 py-2">
+                                                        <p className="break-words text-xs leading-5 text-red-700">
+                                                            {job.lastError}
                                                         </p>
                                                     </div>
                                                 )}

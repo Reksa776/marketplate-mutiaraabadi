@@ -440,6 +440,88 @@ export async function listMengantarPickupTimes(
     return times;
 }
 
+/**
+ * Create a pickup schedule slot — POST /time.
+ *
+ * Body: { address_id, date: "mm-dd-yyyy", time }
+ * Mengantar REQUIRES the slot to be ≥ 90 minutes in the future,
+ * otherwise the request is rejected. Callers must compute a valid
+ * slot (see lib/mengantar/pickup-schedule.ts).
+ *
+ * POST is deliberately NOT retried by fetchWithRetry (the call is
+ * not idempotent); a failure propagates so the caller can retry on
+ * its own schedule.
+ *
+ * Returns the normalized slot (its `_id` is pickup.time_id).
+ */
+export async function createMengantarPickupTime({
+    addressId,
+    date,
+    time,
+}: {
+    addressId: string;
+    /** mm-dd-yyyy (Mengantar's documented format). */
+    date: string;
+    /** One of 9:00 … 18:00. */
+    time: string;
+}): Promise<MengantarPickupTime> {
+    const id = String(addressId ?? "").trim();
+
+    if (!id) {
+        throw new MengantarError(
+            "Pickup address Mengantar tidak valid."
+        );
+    }
+
+    if (!/^\d{2}-\d{2}-\d{4}$/.test(String(date ?? ""))) {
+        throw new MengantarError(
+            "Tanggal pickup Mengantar tidak valid (mm-dd-yyyy)."
+        );
+    }
+
+    if (!String(time ?? "").trim()) {
+        throw new MengantarError(
+            "Jam pickup Mengantar tidak valid."
+        );
+    }
+
+    const result = await mengantarRequest<unknown>(
+        keyPath(`/time`),
+        {
+            method: "POST",
+            body: JSON.stringify({
+                address_id: id,
+                date,
+                time,
+            }),
+        }
+    );
+
+    const item = (result ?? {}) as Record<string, unknown>;
+
+    const timeId =
+        toOptionalString(item._id) ??
+        toOptionalString(item.id);
+
+    if (!timeId) {
+        throw new MengantarError(
+            "Mengantar tidak mengembalikan ID jadwal pickup."
+        );
+    }
+
+    return {
+        _id: timeId,
+        date:
+            toOptionalString(item.date) ??
+            toOptionalString(item.DATE) ??
+            date,
+        time:
+            toOptionalString(item.time) ??
+            toOptionalString(item.TIME) ??
+            time,
+    };
+}
+
 /*
  * ============================================================
  * SHIPPING ESTIMATE
