@@ -85,6 +85,13 @@ type TrackingDeliveryStatus = {
 };
 
 type TrackingData = {
+    /*
+     * "MENGANTAR" when the order is fulfilled by Mengantar. In that
+     * case the tracking is served by the provider (never RajaOngkir)
+     * and `message` carries the admin-facing explanation.
+     */
+    source?: string;
+    message?: string;
     summary?: TrackingSummary;
     details?: unknown;
     deliveryStatus?: TrackingDeliveryStatus;
@@ -143,6 +150,23 @@ const SHIPPING_PAYMENT_LABELS: Record<string, string> = {
     UNPAID: "Belum dibayar",
     PAID: "Sudah dibayar",
 };
+
+/*
+ * Shipment states that are still in motion. Only while the order
+ * sits in one of these does the admin detail page poll — and it polls
+ * our OWN `/api/admin/orders/:id/shipment` route, never Mengantar
+ * directly (the browser must never hold a provider key). Polling
+ * stops the moment the shipment settles.
+ */
+const TRANSIENT_SHIPMENT_STATUSES = new Set([
+    "SHIPMENT_PENDING",
+    "CREATING",
+    "PAYING",
+]);
+
+// Exponential backoff: 2s → 4s → 8s → 15s (then stay at 15s).
+const SHIPMENT_POLL_BASE_MS = 2000;
+const SHIPMENT_POLL_MAX_MS = 15000;
 
 const statuses = [
     "PENDING",
@@ -257,6 +281,18 @@ export default function AdminOrderDetailPage() {
             }
 
             setTracking({
+                source:
+                    typeof result.data?.source ===
+                    "string"
+                        ? result.data.source
+                        : undefined,
+
+                message:
+                    typeof result.data?.message ===
+                    "string"
+                        ? result.data.message
+                        : undefined,
+
                 summary:
                     result.data?.summary ??
                     undefined,
@@ -386,6 +422,63 @@ export default function AdminOrderDetailPage() {
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [order?.id, order?.shippingProvider, order?.shipmentStatus]);
+
+    /*
+     * Realtime shipment progress.
+     *
+     * Polls ONLY while the shipment is transient, ONLY this page, and
+     * ONLY against our own app API. The delay doubles per attempt up
+     * to 15s; a settled status (CREATED / FAILED / DELIVERED / …)
+     * re-runs the effect, which returns early and stops the loop. No
+     * full page reload is ever needed.
+     */
+    useEffect(() => {
+        if (
+            !order?.id ||
+            order.shippingProvider !== "MENGANTAR"
+        ) {
+            return;
+        }
+
+        const currentStatus =
+            shipment?.shipmentStatus ??
+            order.shipmentStatus;
+
+        if (
+            !currentStatus ||
+            !TRANSIENT_SHIPMENT_STATUSES.has(currentStatus)
+        ) {
+            return;
+        }
+
+        let cancelled = false;
+        let delay = SHIPMENT_POLL_BASE_MS;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+
+        const poll = async () => {
+            await loadShipment();
+            if (cancelled) return;
+
+            delay = Math.min(
+                SHIPMENT_POLL_MAX_MS,
+                delay * 2
+            );
+            timer = setTimeout(poll, delay);
+        };
+
+        timer = setTimeout(poll, delay);
+
+        return () => {
+            cancelled = true;
+            if (timer) clearTimeout(timer);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [
+        order?.id,
+        order?.shippingProvider,
+        order?.shipmentStatus,
+        shipment?.shipmentStatus,
+    ]);
 
     async function createShipment() {
         try {
@@ -841,14 +934,34 @@ export default function AdminOrderDetailPage() {
                                     0) && (
                                     <div className="px-5 py-8">
                                         <div className="border-l-2 border-gray-200 pl-4">
-                                            <p className="text-sm font-medium text-gray-700">
-                                                Riwayat tracking belum tersedia
-                                            </p>
+                                            {tracking?.source ===
+                                            "MENGANTAR" ? (
+                                                <>
+                                                    <p className="text-sm font-medium text-gray-700">
+                                                        {tracking
+                                                            .message ??
+                                                            "Status tracking diperbarui melalui Mengantar."}
+                                                    </p>
 
-                                            <p className="mt-1 text-sm leading-5 text-gray-500">
-                                                Data perjalanan paket belum
-                                                tersedia dari kurir.
-                                            </p>
+                                                    <p className="mt-1 text-sm leading-5 text-gray-500">
+                                                        Resi dan status
+                                                        pengiriman Mengantar
+                                                        ditampilkan pada panel
+                                                        Pengiriman Mengantar.
+                                                    </p>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <p className="text-sm font-medium text-gray-700">
+                                                        Riwayat tracking belum tersedia
+                                                    </p>
+
+                                                    <p className="mt-1 text-sm leading-5 text-gray-500">
+                                                        Data perjalanan paket belum
+                                                        tersedia dari kurir.
+                                                    </p>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
                                 )}

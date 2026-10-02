@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { getMengantarOrderByTracking } from "@/lib/mengantar";
+import {
+    buildMengantarTrackingData,
+    isMengantarOrder,
+} from "@/lib/mengantar/tracking";
 
 type RouteContext = {
     params: Promise<{
@@ -128,6 +133,15 @@ export async function GET(
                     shippingService: true,
 
                     trackingNumber: true,
+
+                    // ---- Shipment provider (tracking routing) ----
+                    shippingProvider: true,
+                    providerCourier: true,
+                    providerShipmentId: true,
+                    providerBatchId: true,
+                    shipmentStatus: true,
+                    shippingPaymentStatus: true,
+                    codAmount: true,
                 },
             });
 
@@ -146,7 +160,86 @@ export async function GET(
 
         /*
          * ==========================================
-         * VALIDATE TRACKING
+         * PROVIDER ROUTING
+         * ==========================================
+         *
+         * `shippingProvider` is the source of truth. MENGANTAR
+         * couriers ("JT") are not RajaOngkir codes and must never
+         * be sent there. No RajaOngkir fallback on Mengantar
+         * failure — return persisted state with a clear message.
+         */
+
+        if (isMengantarOrder(order.shippingProvider)) {
+            let fetched = null;
+
+            if (order.trackingNumber) {
+                try {
+                    fetched =
+                        await getMengantarOrderByTracking(
+                            order.trackingNumber
+                        );
+                } catch {
+                    console.error(
+                        "MENGANTAR TRACKING UNAVAILABLE:",
+                        order.id
+                    );
+                    fetched = null;
+                }
+            }
+
+            return NextResponse.json({
+                success: true,
+
+                data: {
+                    order: {
+                        id: order.id,
+
+                        orderNumber:
+                            order.orderNumber,
+
+                        shippingCourier:
+                            order.shippingCourier,
+
+                        shippingService:
+                            order.shippingService,
+
+                        trackingNumber:
+                            order.trackingNumber,
+                    },
+
+                    ...buildMengantarTrackingData(
+                        {
+                            shippingProvider:
+                                order.shippingProvider,
+                            providerCourier:
+                                order.providerCourier,
+                            providerShipmentId:
+                                order.providerShipmentId,
+                            providerBatchId:
+                                order.providerBatchId,
+                            shipmentStatus:
+                                order.shipmentStatus,
+                            shippingPaymentStatus:
+                                order.shippingPaymentStatus,
+                            codAmount: order.codAmount
+                                ? Number(order.codAmount)
+                                : null,
+                            shippingCourier:
+                                order.shippingCourier,
+                            shippingService:
+                                order.shippingService,
+                            trackingNumber:
+                                order.trackingNumber,
+                        },
+                        fetched
+                    ),
+                },
+            });
+        }
+
+        /*
+         * ==========================================
+         * VALIDATE TRACKING (RAJAONGKIR)
          * ==========================================
          */
 

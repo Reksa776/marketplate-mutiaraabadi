@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { auth } from "@/auth";
 import { processShipmentJobs } from "@/lib/mengantar/shipment-worker";
+import { reconcileMengantarShipments } from "@/lib/mengantar/reconcile";
 
 export const dynamic = "force-dynamic";
 
@@ -40,11 +41,25 @@ export async function POST() {
             );
         }
 
+        /*
+         * Self-healing pass first: provider-verify locally-CREATED
+         * Mengantar shipments and reset the ones the provider
+         * authoritatively confirms are gone, then drain the outbox
+         * so the recovered orders are re-created immediately.
+         */
+        const reconcile = await reconcileMengantarShipments({
+            limit: 25,
+        });
+
         const result = await processShipmentJobs({ limit: 50 });
 
         return NextResponse.json({
             success: true,
-            data: { processed: result.processed },
+            data: {
+                processed: result.processed,
+                scanned: reconcile.scanned,
+                reconciled: reconcile.reconciled,
+            },
         });
     } catch (error) {
         console.error(
