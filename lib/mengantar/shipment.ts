@@ -479,7 +479,17 @@ export async function createShipmentForOrder(
 
     const created = result.data?.[0];
 
-    if (!created || created.error) {
+    /*
+     * A shipment Mengantar created ALWAYS carries a provider
+     * ORDER_ID — it is returned on success and on insufficient
+     * balance. `isPaid:false` / `cnote_no:null` is therefore still a
+     * CREATED order, NOT a rejection. Only an item without an
+     * ORDER_ID means nothing was created. Gating on anything else
+     * (e.g. the documented `error: null` field, or a missing
+     * `cnote_no`) misreports a real provider shipment as
+     * "Gagal dibuat" and makes the next retry POST a duplicate order.
+     */
+    if (!created || !created.ORDER_ID) {
         await releaseShipmentClaim(
             order.id,
             "CREATING",
@@ -510,25 +520,54 @@ export async function createShipmentForOrder(
     const shippingPaymentStatus =
         isCod ? "NOT_APPLICABLE" : paid ? "PAID" : "UNPAID";
 
+    const finalizeData = {
+        providerShipmentId: created.ORDER_ID,
+        providerBatchId:
+            result.batch_id || created.batch_id || null,
+        providerCourier: courier,
+        trackingNumber: created.cnote_no ?? null,
+        shipmentStatus,
+        shippingPaymentStatus,
+    };
+
     // CAS persistence: only the claim holder (CREATING) may finalize,
     // so a concurrent duplicate can never overwrite a newer state.
-    await prisma.order.updateMany({
+    const finalized = await prisma.order.updateMany({
         where: {
             id: order.id,
             shipmentStatus: "CREATING",
         },
-        data: {
-            providerShipmentId: created.ORDER_ID ?? null,
-            providerBatchId:
-                result.batch_id ||
-                created.batch_id ||
-                null,
-            providerCourier: courier,
-            trackingNumber: created.cnote_no ?? null,
-            shipmentStatus,
-            shippingPaymentStatus,
-        },
+        data: finalizeData,
     });
+
+    /*
+     * Finalize-miss recovery.
+     *
+     * If the CAS above did not land (the 5-minute claim was reclaimed,
+     * or the write raced), the provider order still EXISTS. An
+     * unrecorded ORDER_ID is exactly what makes a later retry POST a
+     * SECOND shipment, so the identifiers must never be dropped.
+     * Backfill only while the provider id is still empty and the
+     * shipment has not moved past create — this can never regress a
+     * shipped parcel nor overwrite a concurrent finalize.
+     */
+    if (finalized.count === 0) {
+        await prisma.order.updateMany({
+            where: {
+                id: order.id,
+                providerShipmentId: null,
+                shipmentStatus: {
+                    in: [
+                        "CREATING",
+                        "FAILED",
+                        "NOT_CREATED",
+                        "SHIPMENT_PENDING",
+                    ],
+                },
+            },
+            data: finalizeData,
+        });
+    }
 
     return {
         ok: true,
@@ -538,7 +577,7 @@ export async function createShipmentForOrder(
         trackingNumber: created.cnote_no ?? null,
         batchId:
             result.batch_id || created.batch_id || null,
-        shipmentId: created.ORDER_ID ?? null,
+        shipmentId: created.ORDER_ID,
         pickupSchedule: schedule.schedule,
     };
 }

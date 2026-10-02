@@ -664,21 +664,57 @@ export async function createMengantarOrder({
     batch_id: string;
     errors?: unknown;
 }> {
-    const result = await mengantarRequest<{
-        data?: MengantarCreateOrderResponse[];
-        batch_id?: string;
+    /*
+     * DOCUMENTED CONTRACT (api-public.mengantar.com/docs, POST /order):
+     *
+     *   { success: true,
+     *     data: [ { ORDER_ID, batch_id, cnote_no, isPaid,
+     *               queueStatus, status, statusCategory,
+     *               error: null, ... } ],   // <-- the ITEM ARRAY
+     *     batch_id: "...",                   // <-- TOP-LEVEL sibling
+     *     batch: "...", errors: [] }
+     *
+     * `mengantarRequest` already unwraps `success`/`data`, so the
+     * PAYLOAD IS THE ITEM ARRAY — it is NOT an object with its own
+     * `.data`. Reading `result.data` on it yields `undefined`, which
+     * previously discarded every created order and made the caller
+     * report a rejection for a shipment Mengantar had actually made.
+     *
+     * `batch_id` is a sibling of `data`, so it is not visible through
+     * the unwrapped payload; the provider also stamps every item with
+     * the same `batch_id`, which is used as the fallback. A nested
+     * `{ data: [...] }` shape is still tolerated so a partner-mirror
+     * response cannot break creation again.
+     */
+    const result = await mengantarRequest<unknown>(
+        keyPath(`/order`),
+        {
+            method: "POST",
+            body: JSON.stringify({ courier, pickup, orders }),
+        }
+    );
+
+    const envelope = (result ?? {}) as {
+        data?: unknown;
+        batch_id?: unknown;
         errors?: unknown;
-    }>(keyPath(`/order`), {
-        method: "POST",
-        body: JSON.stringify({ courier, pickup, orders }),
-    });
+    };
+
+    const list = Array.isArray(result)
+        ? (result as MengantarCreateOrderResponse[])
+        : Array.isArray(envelope.data)
+          ? (envelope.data as MengantarCreateOrderResponse[])
+          : [];
+
+    const items = list.filter(Boolean);
 
     return {
-        data: Array.isArray(result?.data)
-            ? result!.data!
-            : [],
-        batch_id: result?.batch_id ?? "",
-        errors: result?.errors,
+        data: items,
+        batch_id:
+            toOptionalString(envelope.batch_id) ??
+            toOptionalString(items[0]?.batch_id) ??
+            "",
+        errors: envelope.errors,
     };
 }
 
