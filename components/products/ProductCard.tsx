@@ -7,12 +7,15 @@ import {
     FiPlus,
     FiStar,
 } from "react-icons/fi";
+import { resolvePriceDisplay } from "@/lib/price-display";
 
 type ProductVariant = {
     id: number;
     name: string;
     price: string | number;
     effectivePrice?: number;
+    /** DISPLAY-ONLY "Harga Normal" (never charged). */
+    comparePrice?: number | null;
     hasDiscount?: boolean;
     discount?: number;
     priceSource?: string;
@@ -82,29 +85,40 @@ export default function ProductCard({
         : [];
 
     /*
-     * Ambil semua harga variant (marketing-aware).
+     * Ambil harga dengan SATU aturan display bersama
+     * (lib/price-display) agar ProductCard/cart/detail
+     * tidak pernah divergen dan tidak pernah ada dua
+     * harga tercoret sekaligus.
      */
-    const prices = variants
-        .map((variant) =>
-            Number(variant.effectivePrice ?? variant.price)
-        )
-        .filter(
-            (price) =>
-                Number.isFinite(price)
-        );
-
-    const originalPrices = variants
-        .map((variant) =>
-            Number(variant.price)
-        )
-        .filter(
-            (price) =>
-                Number.isFinite(price)
-        );
-
-    const hasAnyDiscount = variants.some(
-        (v) => v.hasDiscount
+    const displays = variants.map((variant) =>
+        resolvePriceDisplay({
+            effectivePrice: Number(
+                variant.effectivePrice ?? variant.price
+            ),
+            originalPrice: Number(variant.price),
+            comparePrice:
+                variant.comparePrice == null
+                    ? null
+                    : Number(variant.comparePrice),
+        })
     );
+
+    const prices = displays
+        .map((display) => display.price)
+        .filter((price) =>
+            Number.isFinite(price)
+        );
+
+    /*
+     * Strikethrough values come from the shared rule: either the
+     * explicit comparePrice or the marketing original — never both.
+     */
+    const strikethroughs = displays
+        .map((display) => display.strikethrough)
+        .filter(
+            (value): value is number =>
+                value != null && Number.isFinite(value)
+        );
 
     const lowestPrice =
         prices.length > 0
@@ -117,22 +131,20 @@ export default function ProductCard({
             : 0;
 
     const lowestOriginalPrice =
-        originalPrices.length > 0
-            ? Math.min(...originalPrices)
+        strikethroughs.length > 0
+            ? Math.min(...strikethroughs)
             : 0;
 
     const highestOriginalPrice =
-        originalPrices.length > 0
-            ? Math.max(...originalPrices)
+        strikethroughs.length > 0
+            ? Math.max(...strikethroughs)
             : 0;
 
     const hasPriceRange =
         lowestPrice !== highestPrice;
 
     /*
-     * Discount percentage — calculated from
-     * lowest original vs lowest effective price.
-     * This gives the best visible discount.
+     * Discount percentage — lowest strikethrough vs lowest price.
      */
     const discountPercent =
         calculateDiscountPercent(
@@ -141,19 +153,11 @@ export default function ProductCard({
         );
 
     /*
-     * Determine if we should show the marketing
-     * price layout (strikethrough + badge).
-     *
-     * For single-variant products:
-     *   Show marketing layout if hasAnyDiscount.
-     *
-     * For multi-variant products:
-     *   Show marketing layout if the lowest price
-     *   differs from the lowest original price.
+     * Show the strikethrough layout whenever the shared rule
+     * produced exactly one struck price.
      */
     const showMarketingLayout =
-        hasAnyDiscount ||
-        lowestPrice < lowestOriginalPrice;
+        strikethroughs.length > 0;
 
     return (
         <Link

@@ -332,6 +332,11 @@ export async function GET(request: NextRequest) {
                         pricing
                             ?.originalPrice ??
                         rawPrice,
+                    // DISPLAY-ONLY (never charged).
+                    comparePrice:
+                        item.variant.comparePrice != null
+                            ? Number(item.variant.comparePrice)
+                            : null,
                     discount:
                         pricing
                             ?.discountAmount ??

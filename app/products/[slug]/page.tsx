@@ -145,6 +145,13 @@ export default async function ProductDetailPage({
                     id: variant.id,
                     name: variant.name,
                     price: rawPrice,
+                    // DISPLAY-ONLY (never charged).
+                    comparePrice:
+                        variant.comparePrice != null
+                            ? Number(
+                                  variant.comparePrice
+                              )
+                            : null,
                     effectivePrice:
                         pricing
                             ?.effectivePrice ??

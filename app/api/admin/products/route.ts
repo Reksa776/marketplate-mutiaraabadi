@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import {
+    normalizeComparePrice,
+    parseComparePrice,
+} from "@/lib/price-display";
 
 export async function GET(request: NextRequest) {
     try {
@@ -249,6 +253,27 @@ export async function POST(request: Request) {
                     }
                 );
             }
+
+            /*
+             * comparePrice is DISPLAY-ONLY. Validate here so an
+             * invalid value can never be persisted; it is never
+             * used for checkout/payment/order totals.
+             */
+            const compareResult = parseComparePrice(
+                variant.comparePrice,
+                price
+            );
+
+            if (!compareResult.ok) {
+                return NextResponse.json(
+                    {
+                        message: `Harga normal variant "${variant.name}" tidak valid. ${compareResult.message}`,
+                    },
+                    {
+                        status: 400,
+                    }
+                );
+            }
         }
 
         /*
@@ -315,6 +340,12 @@ export async function POST(request: Request) {
                                 price: Number(
                                     variant.price
                                 ),
+
+                                comparePrice:
+                                    normalizeComparePrice(
+                                        variant.comparePrice,
+                                        Number(variant.price)
+                                    ),
 
                                 stock: Number(
                                     variant.stock

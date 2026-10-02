@@ -15,6 +15,7 @@ import {
     IPAYMU_MIN_AMOUNT_UI_NOTE,
     isIpaymuAmountAllowed,
 } from "@/lib/payment/ipaymu-min-amount";
+import { resolvePriceDisplay } from "@/lib/price-display";
 
 type Address = {
     id: string;
@@ -54,6 +55,9 @@ type CheckoutItem = {
     image: string | null;
 
     price: number;
+    originalPrice?: number;
+    /** DISPLAY-ONLY "Harga Normal" (never charged). */
+    comparePrice?: number | null;
     quantity: number;
 
     availableStock: number;
@@ -2137,6 +2141,30 @@ export default function CheckoutPage() {
                                                         "id-ID"
                                                     )}
                                                 </p>
+
+                                                {(() => {
+                                                    const display =
+                                                        resolvePriceDisplay({
+                                                            effectivePrice:
+                                                                item.price,
+                                                            originalPrice:
+                                                                item.originalPrice ??
+                                                                item.price,
+                                                            comparePrice:
+                                                                item.comparePrice ??
+                                                                null,
+                                                        });
+
+                                                    return display.strikethrough !=
+                                                        null ? (
+                                                        <p className="mt-0.5 text-xs text-gray-400 line-through">
+                                                            Rp{" "}
+                                                            {display.strikethrough.toLocaleString(
+                                                                "id-ID"
+                                                            )}
+                                                        </p>
+                                                    ) : null;
+                                                })()}
 
                                                 <p className="mt-1 text-xs text-gray-400">
                                                     Berat:{" "}

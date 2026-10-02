@@ -15,6 +15,7 @@ import {
     IPAYMU_MIN_AMOUNT_UI_NOTE,
     isIpaymuAmountAllowed,
 } from "@/lib/payment/ipaymu-min-amount";
+import { resolvePriceDisplay } from "@/lib/price-display";
 
 /*
  * =========================================================
@@ -101,6 +102,8 @@ type VariantData = {
     image: string | null;
     price: number;
     originalPrice?: number;
+    /** DISPLAY-ONLY "Harga Normal" (never charged). */
+    comparePrice?: number | null;
     effectivePrice?: number;
     discount?: number;
     hasDiscount?: boolean;
@@ -2862,16 +2865,39 @@ export default function BuyNowPage({
                                                 "id-ID"
                                             )}
                                         </p>
-                                        {(data.variant.hasDiscount ?? false) && (
-                                            <p className="mt-0.5 text-xs text-gray-400 line-through">
-                                                Rp {Number(
-                                                    data.variant
-                                                        .originalPrice ??
-                                                    data.variant
-                                                        .price
-                                                ).toLocaleString("id-ID")}
-                                            </p>
-                                        )}
+                                        {(() => {
+                                            const display =
+                                                resolvePriceDisplay({
+                                                    effectivePrice:
+                                                        Number(
+                                                            data.variant
+                                                                .effectivePrice ??
+                                                            data.variant
+                                                                .price
+                                                        ),
+                                                    originalPrice:
+                                                        Number(
+                                                            data.variant
+                                                                .originalPrice ??
+                                                            data.variant
+                                                                .price
+                                                        ),
+                                                    comparePrice:
+                                                        data.variant
+                                                            .comparePrice ??
+                                                        null,
+                                                });
+
+                                            return display.strikethrough !=
+                                                null ? (
+                                                <p className="mt-0.5 text-xs text-gray-400 line-through">
+                                                    Rp{" "}
+                                                    {display.strikethrough.toLocaleString(
+                                                        "id-ID"
+                                                    )}
+                                                </p>
+                                            ) : null;
+                                        })()}
                                         {(data.variant.priceSource === "FLASH_SALE") && data.variant.flashSaleName && (
                                             <p className="mt-0.5 text-xs font-medium text-rose-500">
                                                 🔥 {data.variant.flashSaleName}

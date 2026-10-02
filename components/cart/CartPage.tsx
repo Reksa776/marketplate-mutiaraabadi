@@ -10,6 +10,7 @@ import {
     FiTrash2,
 } from "react-icons/fi";
 import toast from "react-hot-toast";
+import { resolvePriceDisplay } from "@/lib/price-display";
 
 /**
  * Cart item structure matches /api/cart GET response.
@@ -25,6 +26,7 @@ type CartItem = {
     image: string | null;
     price: number;           // effectivePrice (marketing-adjusted)
     originalPrice: number;   // raw variant.price
+    comparePrice: number | null; // DISPLAY-ONLY "Harga Normal" (never charged)
     discount: number;        // discount amount
     hasDiscount: boolean;
     priceSource: string;     // ORIGINAL | FLASH_SALE | PRODUCT_DISCOUNT | CAMPAIGN | BULK_DISCOUNT
@@ -422,7 +424,14 @@ export default function CartPage() {
                              * originalPrice shown as strikethrough if discounted.
                              */
                             const price = item.price;
-                            const originalPrice = item.originalPrice;
+                            const display = resolvePriceDisplay({
+                                effectivePrice: price,
+                                originalPrice: item.originalPrice,
+                                comparePrice:
+                                    item.comparePrice == null
+                                        ? null
+                                        : Number(item.comparePrice),
+                            });
                             const itemTotal = price * item.quantity;
                             const image = item.image;
 
@@ -545,10 +554,10 @@ export default function CartPage() {
                                                         )}
                                                     </p>
 
-                                                    {item.hasDiscount && originalPrice > price && (
+                                                    {display.strikethrough != null && (
                                                         <p className="text-xs text-gray-400 line-through">
                                                             Rp{" "}
-                                                            {originalPrice.toLocaleString(
+                                                            {display.strikethrough.toLocaleString(
                                                                 "id-ID"
                                                             )}
                                                         </p>

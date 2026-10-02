@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import {
+    normalizeComparePrice,
+    parseComparePrice,
+} from "@/lib/price-display";
 
 async function checkAdmin() {
     const session = await auth();
@@ -117,6 +121,10 @@ export async function GET(
                         price: Number(
                             variant.price
                         ),
+                        comparePrice:
+                            variant.comparePrice != null
+                                ? Number(variant.comparePrice)
+                                : null,
                     })
                 ),
             },
@@ -361,6 +369,28 @@ export async function PUT(
                     }
                 );
             }
+
+            /*
+             * comparePrice is DISPLAY-ONLY. Validate so an invalid
+             * value can never be persisted; it is never used for
+             * checkout/payment/order totals.
+             */
+            const compareResult = parseComparePrice(
+                variant.comparePrice,
+                price
+            );
+
+            if (!compareResult.ok) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message: `Harga normal variant "${variant.name}" tidak valid. ${compareResult.message}`,
+                    },
+                    {
+                        status: 400,
+                    }
+                );
+            }
         }
 
         /*
@@ -495,6 +525,10 @@ export async function PUT(
                     const variantData = {
                         name: variant.name.trim(),
                         price: Number(variant.price),
+                        comparePrice: normalizeComparePrice(
+                            variant.comparePrice,
+                            Number(variant.price)
+                        ),
                         stock: Number(variant.stock),
                         weight: Number(variant.weight),
                         image:
@@ -570,6 +604,10 @@ export async function PUT(
                         price: Number(
                             variant.price
                         ),
+                        comparePrice:
+                            variant.comparePrice != null
+                                ? Number(variant.comparePrice)
+                                : null,
                     })
                 ),
             },

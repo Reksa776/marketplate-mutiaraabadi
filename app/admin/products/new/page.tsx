@@ -12,10 +12,15 @@ import {
 } from "react-icons/fi";
 
 import ProductImageUpload from "@/components/admin/ProductImageUpload";
+import {
+    parseComparePrice,
+    resolvePriceDisplay,
+} from "@/lib/price-display";
 
 type Variant = {
     name: string;
     price: string;
+    comparePrice: string;
     stock: string;
     weight: string;
 };
@@ -49,6 +54,7 @@ export default function NewProductPage() {
             {
                 name: "",
                 price: "",
+                comparePrice: "",
                 stock: "",
                 weight: "",
             },
@@ -87,6 +93,7 @@ export default function NewProductPage() {
             {
                 name: "",
                 price: "",
+                comparePrice: "",
                 stock: "",
                 weight: "",
             },
@@ -155,6 +162,23 @@ export default function NewProductPage() {
             return;
         }
 
+        /*
+         * Harga Normal (comparePrice) is DISPLAY-ONLY. Validate
+         * (server re-validates) so it can never be persisted wrong.
+         */
+        const invalidCompare = variants.some((variant) => {
+            const raw = variant.comparePrice.trim();
+            if (!raw) return false;
+            return !parseComparePrice(raw, Number(variant.price)).ok;
+        });
+
+        if (invalidCompare) {
+            toast.error(
+                "Harga normal harus angka bulat dan tidak boleh lebih kecil dari harga jual."
+            );
+            return;
+        }
+
         try {
             setLoading(true);
 
@@ -185,6 +209,13 @@ export default function NewProductPage() {
                                     price: Number(
                                         variant.price
                                     ),
+                                    comparePrice:
+                                        variant.comparePrice.trim() ===
+                                        ""
+                                            ? null
+                                            : Number(
+                                                  variant.comparePrice
+                                              ),
                                     stock: Number(
                                         variant.stock
                                     ),
@@ -518,7 +549,7 @@ export default function NewProductPage() {
 
                                             <div>
                                                 <label className="mb-1.5 block text-xs font-medium text-gray-600">
-                                                    Harga
+                                                    Harga Jual
                                                 </label>
 
                                                 <div className="relative">
@@ -545,6 +576,84 @@ export default function NewProductPage() {
                                                         className="h-10 w-full rounded-lg border border-gray-300 bg-white pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-rose-500 focus:ring-1 focus:ring-rose-500"
                                                     />
                                                 </div>
+                                            </div>
+
+                                            {/* HARGA NORMAL (comparePrice, display-only) */}
+
+                                            <div>
+                                                <label className="mb-1.5 block text-xs font-medium text-gray-600">
+                                                    Harga Normal
+                                                    <span className="ml-1 text-[10px] font-normal text-gray-400">
+                                                        (opsional, harga coret)
+                                                    </span>
+                                                </label>
+
+                                                <div className="relative">
+                                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">
+                                                        Rp
+                                                    </span>
+
+                                                    <input
+                                                        type="number"
+                                                        min="0"
+                                                        value={
+                                                            variant.comparePrice
+                                                        }
+                                                        onChange={(
+                                                            event
+                                                        ) =>
+                                                            updateVariant(
+                                                                index,
+                                                                "comparePrice",
+                                                                event.target.value
+                                                            )
+                                                        }
+                                                        placeholder="65000"
+                                                        className="h-10 w-full rounded-lg border border-gray-300 bg-white pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-rose-500 focus:ring-1 focus:ring-rose-500"
+                                                    />
+                                                </div>
+
+                                                {(() => {
+                                                    const display =
+                                                        resolvePriceDisplay({
+                                                            effectivePrice:
+                                                                Number(
+                                                                    variant.price
+                                                                ) || 0,
+                                                            originalPrice:
+                                                                Number(
+                                                                    variant.price
+                                                                ) || 0,
+                                                            comparePrice:
+                                                                variant.comparePrice.trim() ===
+                                                                ""
+                                                                    ? null
+                                                                    : Number(
+                                                                          variant.comparePrice
+                                                                      ),
+                                                        });
+
+                                                    return (
+                                                        <p className="mt-1 text-[11px] text-gray-500">
+                                                            Preview:{" "}
+                                                            <span className="font-semibold text-gray-900">
+                                                                Rp{" "}
+                                                                {display.price.toLocaleString(
+                                                                    "id-ID"
+                                                                )}
+                                                            </span>
+                                                            {display.strikethrough !=
+                                                                null && (
+                                                                <span className="ml-1 text-gray-400 line-through">
+                                                                    Rp{" "}
+                                                                    {display.strikethrough.toLocaleString(
+                                                                        "id-ID"
+                                                                    )}
+                                                                </span>
+                                                            )}
+                                                        </p>
+                                                    );
+                                                })()}
                                             </div>
 
                                             {/* STOCK */}

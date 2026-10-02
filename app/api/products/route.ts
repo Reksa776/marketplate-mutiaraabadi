@@ -107,6 +107,14 @@ export async function GET() {
                                     variant.productId,
                                 name: variant.name,
                                 price: rawPrice,
+                                // DISPLAY-ONLY (never charged).
+                                comparePrice:
+                                    variant.comparePrice !=
+                                    null
+                                        ? Number(
+                                              variant.comparePrice
+                                          )
+                                        : null,
                                 effectivePrice:
                                     pricing
                                         ?.effectivePrice ??

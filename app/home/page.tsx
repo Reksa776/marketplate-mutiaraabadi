@@ -185,6 +185,13 @@ async function getProducts() {
                     id: variant.id,
                     name: variant.name,
                     price: rawPrice,
+                    // DISPLAY-ONLY (never charged).
+                    comparePrice:
+                        variant.comparePrice != null
+                            ? Number(
+                                  variant.comparePrice
+                              )
+                            : null,
                     effectivePrice: pricing?.effectivePrice ?? rawPrice,
                     discount: pricing?.discountAmount ?? 0,
                     hasDiscount: (pricing?.discountAmount ?? 0) > 0,

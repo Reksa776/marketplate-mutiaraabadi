@@ -26,7 +26,7 @@ async function formatCartResponse(
             variantId: number;
             quantity: number;
             product: { id: number; name: string; slug: string; image: string | null; category: string | null };
-            variant: { id: number; name: string; price: any; stock: number; image: string | null; weight: number };
+            variant: { id: number; name: string; price: any; comparePrice: any; stock: number; image: string | null; weight: number };
         }>;
     } | null
 ) {
@@ -104,6 +104,11 @@ async function formatCartResponse(
             variantName: item.variant.name,
             image: item.variant.image || item.product.image || null,
             price: effectivePrice,
+            // DISPLAY-ONLY (never charged).
+            comparePrice:
+                item.variant.comparePrice != null
+                    ? Number(item.variant.comparePrice)
+                    : null,
             originalPrice: pricing?.originalPrice ?? rawPrice,
             discount: pricing?.discountAmount ?? 0,
             hasDiscount: (pricing?.discountAmount ?? 0) > 0,

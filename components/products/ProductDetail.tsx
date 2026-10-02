@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import toast from "react-hot-toast";
+import { resolvePriceDisplay } from "@/lib/price-display";
 import {
     FiChevronLeft,
     FiMinus,
@@ -22,6 +23,8 @@ type ProductVariant = {
     price: number;
     effectivePrice?: number;
     originalPrice?: number;
+    /** DISPLAY-ONLY "Harga Normal" (never charged). */
+    comparePrice?: number | null;
     discount?: number;
     hasDiscount?: boolean;
     priceSource?: string;
@@ -206,8 +209,26 @@ export default function ProductDetail({
         selectedVariant?.originalPrice ??
         selectedVariant?.price ?? 0;
 
+    /*
+     * Single shared display rule (lib/price-display): the explicit
+     * comparePrice wins when higher than the actual price, otherwise
+     * fall back to the existing marketing strikethrough. At most ONE
+     * struck price is ever rendered.
+     */
+    const priceDisplay = resolvePriceDisplay({
+        effectivePrice: price,
+        originalPrice,
+        comparePrice:
+            selectedVariant?.comparePrice == null
+                ? null
+                : Number(selectedVariant.comparePrice),
+    });
+
     const hasDiscount =
-        selectedVariant?.hasDiscount ?? false;
+        priceDisplay.strikethrough !== null;
+
+    const strikethroughPrice =
+        priceDisplay.strikethrough;
 
     const flashSaleName =
         selectedVariant?.flashSaleName ?? null;
@@ -596,7 +617,7 @@ export default function ProductDetail({
                             {hasDiscount ? (
                                 <>
                                     <p className="text-sm text-gray-400 line-through">
-                                        Rp {formatPrice(originalPrice)}
+                                        Rp {formatPrice(strikethroughPrice ?? 0)}
                                     </p>
                                     <p className="text-3xl font-bold text-rose-600">
                                         Rp {formatPrice(price)}

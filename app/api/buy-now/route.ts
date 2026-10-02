@@ -357,6 +357,13 @@ export async function GET(
                 name: variant.name,
                 image: variant.image,
                 price,
+                // DISPLAY-ONLY (never charged).
+                comparePrice:
+                    variant.comparePrice != null
+                        ? Number(
+                              variant.comparePrice
+                          )
+                        : null,
                 originalPrice:
                     pricing?.originalPrice ?? rawPrice,
                 discount:
