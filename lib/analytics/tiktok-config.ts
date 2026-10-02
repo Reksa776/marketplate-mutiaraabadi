@@ -9,6 +9,7 @@ import {
 import {
     analyzeTikTokPixelCode,
     normalizeTikTokPixelName,
+    stripAutomaticTikTokPageView,
 } from "@/lib/analytics/tiktok-pixel-code";
 
 /**
@@ -52,6 +53,26 @@ export async function getTikTokPixelConfig(): Promise<TikTokPixelConfig> {
             return { ...DISABLED_TIKTOK_PIXEL };
         }
 
+        /*
+         * Application-controlled PageView: the automatic `ttq.page()`
+         * is removed from the executable script so the app's own
+         * tracker can emit PageView AFTER Advanced Matching identity
+         * has been applied. ttq.load() plus the rest of the admin base
+         * code still run unchanged. The stored code is not rewritten.
+         */
+        const executableScript =
+            stripAutomaticTikTokPageView(
+                analysis.script
+            );
+
+        /*
+         * A base code that reduced to nothing was only a PageView call
+         * with no pixel initialization — nothing to render.
+         */
+        if (executableScript.trim().length === 0) {
+            return { ...DISABLED_TIKTOK_PIXEL };
+        }
+
         return {
             enabled: true,
 
@@ -69,7 +90,7 @@ export async function getTikTokPixelConfig(): Promise<TikTokPixelConfig> {
                 setting.tiktokPixelName
             ),
 
-            script: analysis.script,
+            script: executableScript,
         };
     } catch (error) {
         console.error(

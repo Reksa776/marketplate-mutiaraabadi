@@ -1,5 +1,8 @@
+import { Suspense } from "react";
+
 import TikTokAdvancedMatching from "./TikTokAdvancedMatching";
 import TikTokAttribution from "./TikTokAttribution";
+import TikTokPageViewTracker from "./TikTokPageViewTracker";
 import TikTokPixel from "./TikTokPixel";
 
 import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
@@ -39,6 +42,19 @@ export default async function AnalyticsProvider() {
             <TikTokAdvancedMatching
                 enabled={tiktokPixel.enabled}
             />
+
+            {/*
+             * Application-controlled PageView. The base code's own
+             * `ttq.page()` is stripped, so this is the ONLY source of
+             * PageView — fired after Advanced Matching identity has
+             * settled. Wrapped in Suspense because it reads search
+             * params (required by the App Router).
+             */}
+            <Suspense fallback={null}>
+                <TikTokPageViewTracker
+                    enabled={tiktokPixel.enabled}
+                />
+            </Suspense>
 
             <TikTokAttribution />
         </>

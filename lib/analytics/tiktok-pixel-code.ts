@@ -148,6 +148,54 @@ export function analyzeTikTokPixelCode(
 }
 
 /**
+ * ==========================================
+ * AUTOMATIC PAGEVIEW — STRIPPED FROM THE EXECUTABLE CODE
+ * ==========================================
+ *
+ * The admin base code historically ends with:
+ *
+ *     ttq.load("<PIXEL_ID>");
+ *     ttq.page();            // ← PageView
+ *
+ * `ttq.page()` is queued SYNCHRONOUSLY at script load, i.e. before the
+ * authenticated session resolves, before /api/analytics/tiktok-match,
+ * and before `ttq.identify(digests)` runs. PageView could therefore
+ * never carry Advanced Matching identity.
+ *
+ * Application events already wait for identity via
+ * `whenTikTokReadyForEvents()`. PageView must do the same, so ownership
+ * of PageView moves to the application
+ * (components/analytics/TikTokPageViewTracker). To make that possible,
+ * THIS removes the automatic `ttq.page()` call from the code that is
+ * actually executed, while leaving everything else (ttq.load,
+ * initialization, the `tiktok-pixel-ready` dispatch, custom code) intact.
+ *
+ * Deliberately only matches a `ttq.page(...)` INVOCATION:
+ *   - `ttq.methods = ["page", ...]`      → not matched (no `(`)
+ *   - `"ttq.page:"` in prose/comments    → not matched
+ * The stored admin code is NOT rewritten; the transform is applied to
+ * the executable script only (see lib/analytics/tiktok-config.ts).
+ */
+export function stripAutomaticTikTokPageView(
+    script: string
+): string {
+    if (typeof script !== "string" || !script) {
+        return typeof script === "string" ? script : "";
+    }
+
+    /*
+     * A fresh, non-global-stateful expression per call. `ttq.page(...)`
+     * takes no arguments in the shipped base code, but `[^)]*` also
+     * tolerates a future call that does, without swallowing a closing
+     * parenthesis of a wrapping expression.
+     */
+    const callPattern =
+        /ttq\s*\.\s*page\s*\([^)]*\)\s*;?/g;
+
+    return script.replace(callPattern, "");
+}
+
+/**
  * Normalisasi nilai yang dikirim admin.
  *
  * - hanya string

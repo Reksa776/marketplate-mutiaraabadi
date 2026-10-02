@@ -135,6 +135,17 @@ function readFile(relativePath: string): string {
 }
 
 /**
+ * Remove comments so source scans inspect CODE, not prose: a doc
+ * comment that mentions `ttq.page()` (or `ttq.load(`) is not an
+ * implementation of it.
+ */
+function stripComments(source: string): string {
+    return source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+/**
  * Daftar file (rekursif) di dalam sebuah folder.
  */
 function listFiles(
@@ -1021,7 +1032,7 @@ describe("TikTok Pixel — single initialisation", () => {
             "components/analytics/AnalyticsProvider.tsx",
             "lib/analytics/tiktok-config.ts",
         ]) {
-            const code = readFile(file);
+            const code = stripComments(readFile(file));
 
             // The admin base code owns ttq.load / ttq.page
             expect(code).not.toContain("ttq.load(");
