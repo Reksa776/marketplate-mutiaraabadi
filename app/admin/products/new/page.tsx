@@ -163,7 +163,7 @@ export default function NewProductPage() {
         }
 
         /*
-         * Harga Normal (comparePrice) is DISPLAY-ONLY. Validate
+         * Harga Coret (comparePrice) is DISPLAY-ONLY. Validate
          * (server re-validates) so it can never be persisted wrong.
          */
         const invalidCompare = variants.some((variant) => {
@@ -174,7 +174,7 @@ export default function NewProductPage() {
 
         if (invalidCompare) {
             toast.error(
-                "Harga normal harus angka bulat dan tidak boleh lebih kecil dari harga jual."
+                "Harga coret harus angka bulat dan tidak boleh lebih kecil dari harga normal."
             );
             return;
         }
@@ -549,7 +549,10 @@ export default function NewProductPage() {
 
                                             <div>
                                                 <label className="mb-1.5 block text-xs font-medium text-gray-600">
-                                                    Harga Jual
+                                                    Harga Normal
+                                                    <span className="ml-1 text-[10px] font-normal text-gray-400">
+                                                        (dasar transaksi)
+                                                    </span>
                                                 </label>
 
                                                 <div className="relative">
@@ -578,13 +581,13 @@ export default function NewProductPage() {
                                                 </div>
                                             </div>
 
-                                            {/* HARGA NORMAL (comparePrice, display-only) */}
+                                            {/* HARGA CORET (comparePrice, display-only) */}
 
                                             <div>
                                                 <label className="mb-1.5 block text-xs font-medium text-gray-600">
-                                                    Harga Normal
+                                                    Harga Coret
                                                     <span className="ml-1 text-[10px] font-normal text-gray-400">
-                                                        (opsional, harga coret)
+                                                        (opsional, tampilan saja)
                                                     </span>
                                                 </label>
 

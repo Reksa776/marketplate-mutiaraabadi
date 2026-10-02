@@ -201,7 +201,7 @@ export default function EditProductPage() {
         event.preventDefault();
 
         /*
-         * Harga Normal (comparePrice) is DISPLAY-ONLY. Validate
+         * Harga Coret (comparePrice) is DISPLAY-ONLY. Validate
          * (server re-validates) so it can never be persisted wrong.
          */
         const invalidCompare = variants.some((variant) => {
@@ -212,7 +212,7 @@ export default function EditProductPage() {
 
         if (invalidCompare) {
             toast.error(
-                "Harga normal harus angka bulat dan tidak boleh lebih kecil dari harga jual."
+                "Harga coret harus angka bulat dan tidak boleh lebih kecil dari harga normal."
             );
             return;
         }
@@ -697,7 +697,10 @@ export default function EditProductPage() {
 
                                                 <div>
                                                     <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                                        Harga Jual
+                                                        Harga Normal
+                                                        <span className="ml-1 text-[10px] font-normal normal-case tracking-normal text-gray-400">
+                                                            (dasar transaksi)
+                                                        </span>
                                                     </label>
 
                                                     <input
@@ -723,11 +726,11 @@ export default function EditProductPage() {
                                                     />
                                                 </div>
 
-                                                {/* HARGA NORMAL (comparePrice, display-only) */}
+                                                {/* HARGA CORET (comparePrice, display-only) */}
 
                                                 <div>
                                                     <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                                        Harga Normal
+                                                        Harga Coret
                                                     </label>
 
                                                     <input

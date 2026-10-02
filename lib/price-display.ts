@@ -3,15 +3,16 @@
  * PRICE DISPLAY RULE — SINGLE SOURCE OF TRUTH (CLIENT-SAFE)
  * ============================================================
  *
- * `ProductVariant.price` is the authoritative SELL/base price.
- * `ProductVariant.comparePrice` ("Harga Normal") is DISPLAY-ONLY.
+ * `ProductVariant.price` is the authoritative base price ("Harga Normal").
+ * `ProductVariant.comparePrice` ("Harga Coret") is DISPLAY-ONLY.
  *
  * HARD RULES:
  *   - comparePrice is NEVER used for checkout, payment, order
  *     totals, vouchers, affiliate or refund.
  *   - The actual price charged is `effectivePrice` (marketing
- *     pricing applied). `originalPrice` is the marketing base
- *     (= raw variant.price) and is only a fallback strikethrough.
+ *     pricing applied to the Harga Normal). `originalPrice` is the
+ *     marketing base (= raw variant.price) and is only a fallback
+ *     strikethrough.
  *
  * STRIKETHROUGH PRECEDENCE (exactly one struck price, ever):
  *   1. comparePrice != null AND comparePrice > effectivePrice
@@ -65,7 +66,7 @@ export function resolvePriceDisplay(
         ? input.originalPrice
         : effective;
 
-    // Rule 1 — explicit "Harga Normal" wins when it is higher.
+    // Rule 1 — explicit "Harga Coret" wins when it is higher.
     if (
         isFiniteNumber(input.comparePrice) &&
         input.comparePrice > effective
@@ -97,7 +98,7 @@ export function resolvePriceDisplay(
  *   - null / undefined / "" → null (no compare price)
  *   - numeric INTEGER rupiah only; reject float / NaN / Infinity
  *   - > 0
- *   - >= sell price
+ *   - >= base "Harga Normal" price
  */
 
 export type ComparePriceParse =
@@ -123,7 +124,7 @@ export function parseComparePrice(
             return {
                 ok: false,
                 message:
-                    "Harga normal harus berupa angka bulat (tanpa desimal).",
+                    "Harga coret harus berupa angka bulat (tanpa desimal).",
             };
         }
 
@@ -131,38 +132,38 @@ export function parseComparePrice(
     } else {
         return {
             ok: false,
-            message: "Harga normal tidak valid.",
+            message: "Harga coret tidak valid.",
         };
     }
 
     if (!Number.isFinite(value)) {
-        return { ok: false, message: "Harga normal tidak valid." };
+        return { ok: false, message: "Harga coret tidak valid." };
     }
 
     if (!Number.isInteger(value)) {
         return {
             ok: false,
             message:
-                "Harga normal harus bilangan bulat (tanpa desimal).",
+                "Harga coret harus bilangan bulat (tanpa desimal).",
         };
     }
 
     if (value <= 0) {
         return {
             ok: false,
-            message: "Harga normal harus lebih dari 0.",
+            message: "Harga coret harus lebih dari 0.",
         };
     }
 
     if (!Number.isFinite(sellPrice) || sellPrice <= 0) {
-        return { ok: false, message: "Harga jual tidak valid." };
+        return { ok: false, message: "Harga normal tidak valid." };
     }
 
     if (value < sellPrice) {
         return {
             ok: false,
             message:
-                "Harga normal tidak boleh lebih kecil dari harga jual.",
+                "Harga coret tidak boleh lebih kecil dari harga normal.",
         };
     }
 

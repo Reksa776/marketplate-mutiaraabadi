@@ -26,7 +26,7 @@ type CartItem = {
     image: string | null;
     price: number;           // effectivePrice (marketing-adjusted)
     originalPrice: number;   // raw variant.price
-    comparePrice: number | null; // DISPLAY-ONLY "Harga Normal" (never charged)
+    comparePrice: number | null; // DISPLAY-ONLY "Harga Coret" (never charged)
     discount: number;        // discount amount
     hasDiscount: boolean;
     priceSource: string;     // ORIGINAL | FLASH_SALE | PRODUCT_DISCOUNT | CAMPAIGN | BULK_DISCOUNT

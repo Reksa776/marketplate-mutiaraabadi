@@ -23,7 +23,7 @@ type ProductVariant = {
     price: number;
     effectivePrice?: number;
     originalPrice?: number;
-    /** DISPLAY-ONLY "Harga Normal" (never charged). */
+    /** DISPLAY-ONLY "Harga Coret" (never charged). */
     comparePrice?: number | null;
     discount?: number;
     hasDiscount?: boolean;

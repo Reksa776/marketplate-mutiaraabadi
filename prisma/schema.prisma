@@ -114,8 +114,11 @@ model Product {
 model ProductVariant {
   id         Int         @id @default(autoincrement())
   name       String
+  // "Harga Normal" — authoritative BASE / transaction price.
+  // Marketing overrides (product discount / flash sale / campaign /
+  // bulk) are applied to THIS value. comparePrice is never charged.
   price      Decimal     @db.Decimal(12, 2)
-  // DISPLAY-ONLY "Harga Normal"/coret (nullable).
+  // DISPLAY-ONLY "Harga Coret" (nullable).
   // NEVER used for checkout / payment / order totals.
   // NULL = no strikethrough (existing products stay NULL).
   comparePrice Decimal?  @db.Decimal(12, 2)

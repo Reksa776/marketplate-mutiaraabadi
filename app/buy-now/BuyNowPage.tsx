@@ -102,7 +102,7 @@ type VariantData = {
     image: string | null;
     price: number;
     originalPrice?: number;
-    /** DISPLAY-ONLY "Harga Normal" (never charged). */
+    /** DISPLAY-ONLY "Harga Coret" (never charged). */
     comparePrice?: number | null;
     effectivePrice?: number;
     discount?: number;
