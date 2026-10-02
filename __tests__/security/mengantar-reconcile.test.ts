@@ -94,7 +94,10 @@ import {
 } from "@/lib/mengantar/reconcile";
 import { createShipmentForOrder } from "@/lib/mengantar/shipment";
 
-import { GET as cronGET } from "@/app/api/cron/shipment-reconcile/route";
+import {
+    GET as cronGET,
+    POST as cronPOST,
+} from "@/app/api/cron/shipment-reconcile/route";
 
 const mockedOrder = prisma.order as unknown as {
     findUnique: jest.Mock;
@@ -763,6 +766,195 @@ describe("GET /api/cron/shipment-reconcile", () => {
         expect(serialized).not.toContain(SECRET);
 
         delete process.env.CRON_SECRET;
+    });
+
+    it("POST is accepted (schedulers may use either method)", async () => {
+        process.env.CRON_SECRET = SECRET;
+        mockedOrder.findMany.mockResolvedValue([]);
+
+        const response = (await cronPOST(
+            new Request(
+                "http://test/api/cron/shipment-reconcile",
+                {
+                    method: "POST",
+                    headers: {
+                        authorization: `Bearer ${SECRET}`,
+                    },
+                }
+            )
+        )) as Response;
+
+        expect(response.status).toBe(200);
+        expect(mockedProcessJobs).toHaveBeenCalledTimes(1);
+
+        delete process.env.CRON_SECRET;
+    });
+
+    it("POST without a secret is rejected (401), not served", async () => {
+        process.env.CRON_SECRET = SECRET;
+
+        const headersList: Array<
+            Record<string, string>
+        > = [
+            {},
+            { authorization: "Bearer " },
+            { authorization: "Bearer wrong" },
+            { "x-cron-secret": "wrong" },
+        ];
+
+        for (const headers of headersList) {
+            const response = (await cronPOST(
+                new Request(
+                    "http://test/api/cron/shipment-reconcile",
+                    { method: "POST", headers }
+                )
+            )) as Response;
+
+            expect(response.status).toBe(401);
+        }
+
+        expect(mockedProcessJobs).not.toHaveBeenCalled();
+
+        delete process.env.CRON_SECRET;
+    });
+
+    it("both methods fail closed (503) with no CRON_SECRET", async () => {
+        delete process.env.CRON_SECRET;
+
+        const get = (await cronGET(request())) as Response;
+        const post = (await cronPOST(
+            new Request(
+                "http://test/api/cron/shipment-reconcile",
+                { method: "POST" }
+            )
+        )) as Response;
+
+        expect(get.status).toBe(503);
+        expect(post.status).toBe(503);
+        expect(mockedProcessJobs).not.toHaveBeenCalled();
+    });
+
+    it("a non-empty CRON_SECRET of a different length is still rejected", async () => {
+        process.env.CRON_SECRET = SECRET;
+
+        const response = (await cronGET(
+            request({
+                authorization: `Bearer ${SECRET}-longer`,
+            })
+        )) as Response;
+
+        expect(response.status).toBe(401);
+
+        delete process.env.CRON_SECRET;
+    });
+});
+
+/* ==========================================
+ * NO PROVIDER WRITE UNTIL CONFIRMED MISSING
+ * ========================================== */
+
+describe("reconciliation never POSTs to Mengantar first", () => {
+    it("only issues a provider GET; never a create POST", async () => {
+        mockedOrder.findMany.mockResolvedValue([
+            {
+                id: 963,
+                providerShipmentId: ORDER_ID,
+                trackingNumber: "JO0328436240",
+                shipmentStatus: "CREATED",
+            },
+        ]);
+        // Provider still HAS the shipment → must not reset, and must
+        // never call createMengantarOrder (POST /order).
+        mockedLookup.mockResolvedValue({ orderId: ORDER_ID });
+
+        await reconcileMengantarShipments({ limit: 25 });
+
+        // Read-only verification happened…
+        expect(mockedLookup).toHaveBeenCalledWith(
+            "JO0328436240"
+        );
+        // …and NOTHING was enqueued or created.
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+        expect(mockedOrder.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("a confirmed-missing order is enqueued but still not POSTed by reconcile itself", async () => {
+        mockedOrder.findMany.mockResolvedValue([
+            {
+                id: 963,
+                providerShipmentId: ORDER_ID,
+                trackingNumber: "JO0328436240",
+                shipmentStatus: "CREATED",
+            },
+        ]);
+        mockedLookup.mockResolvedValue(null);
+
+        await reconcileMengantarShipments({ limit: 25 });
+
+        // Reconcile only queues the durable job — it never calls the
+        // provider's create endpoint. The worker does that later,
+        // behind its CAS claim.
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+        expect(mockedJob.updateMany).toHaveBeenCalled();
+    });
+
+    it("never verifies with a POST-capable client (GET only)", () => {
+        const code = readFile("lib/mengantar/reconcile.ts");
+
+        expect(code).toContain(
+            "getMengantarOrderByTracking"
+        );
+        expect(code).not.toContain("createMengantarOrder");
+        expect(code).not.toContain("payMengantarUnpaid");
+        expect(code).not.toContain('method: "POST"');
+    });
+
+    it("getMengantarOrderByTracking is a GET", () => {
+        const code = readFile("lib/mengantar.ts");
+        const start = code.indexOf(
+            "export async function getMengantarOrderByTracking"
+        );
+        const slice = code.slice(start, start + 1600);
+
+        expect(slice).toContain('method: "GET"');
+    });
+});
+
+/* ==========================================
+ * EDGE / PROXY REACHABILITY
+ * ========================================== */
+
+describe("scheduler reachability + guards", () => {
+    it("the auth proxy does not block /api/cron (handler owns the secret)", () => {
+        const code = readFile("proxy.ts");
+
+        // If /api/cron were in the PROTECTED list a scheduler without a
+        // session cookie could never reach it.
+        expect(code).not.toMatch(
+            /PROTECTED_API_PREFIXES[\s\S]*?"\/api\/cron/
+        );
+        // It is also not claimed as public-without-secret.
+        expect(code).not.toMatch(
+            /PUBLIC_API_PREFIXES[\s\S]*?"\/api\/cron/
+        );
+    });
+
+    it("the cron route validates the secret before doing any work", () => {
+        const code = readFile(
+            "app/api/cron/shipment-reconcile/route.ts"
+        );
+
+        const guardIndex = code.indexOf(
+            "if (!isAuthorized(request))"
+        );
+        const workIndex = code.indexOf(
+            "await reconcileMengantarShipments({"
+        );
+
+        expect(guardIndex).toBeGreaterThan(-1);
+        expect(workIndex).toBeGreaterThan(-1);
+        expect(guardIndex).toBeLessThan(workIndex);
     });
 });
 
