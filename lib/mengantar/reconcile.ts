@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import {
+    getMengantarOrderByOrderId,
     getMengantarOrderByTracking,
     redactMengantarKey,
 } from "@/lib/mengantar";
@@ -56,31 +57,48 @@ export type MengantarLookupVerdict =
     | "uncertain";
 
 /**
- * PURE. Interpret a provider lookup result.
+ * PURE. Interpret an AUTHORITATIVE lookup result (by providerShipmentId
+ * / ORDER_ID). The official GET /order documents `order_id` as a
+ * unique lookup, so:
  *
- *   null result                         → provider has no such order
- *   ORDER_ID === our providerShipmentId → the shipment exists
- *   ORDER_ID differs / unknown          → not ours → missing, but
- *   a missing ORDER_ID on an entry      → uncertain (never reset)
+ *   null                      → provider has no such order → missing
+ *   entry with isDeleted:true → provider deleted it         → missing
+ *   any other returned entry  → it still exists             → exists
+ *
+ * A returned row is ALWAYS treated as "exists" (never "missing"), so
+ * this can only ever fail safe towards NOT resetting.
  */
 export function classifyMengantarLookup(
-    result: { orderId: string | null } | null,
-    expectedProviderShipmentId: string | null
+    result: { isDeleted?: boolean } | null
 ): MengantarLookupVerdict {
     if (result === null) {
         return "missing";
     }
 
-    if (
-        !expectedProviderShipmentId ||
-        !result.orderId
-    ) {
+    if (result.isDeleted === true) {
+        return "missing";
+    }
+
+    return "exists";
+}
+
+/**
+ * PURE. Interpret a TRACKING-ONLY lookup result. A local resi can be
+ * stale, so an empty result is NOT authoritative: it is `uncertain`,
+ * never `missing`. Only an explicit `isDeleted:true` proves absence.
+ */
+export function classifyMengantarTrackingLookup(
+    result: { isDeleted?: boolean } | null
+): MengantarLookupVerdict {
+    if (result === null) {
         return "uncertain";
     }
 
-    return result.orderId === expectedProviderShipmentId
-        ? "exists"
-        : "missing";
+    if (result.isDeleted === true) {
+        return "missing";
+    }
+
+    return "exists";
 }
 
 /**
@@ -117,6 +135,12 @@ export type ReconcileResult = {
 /**
  * Ask Mengantar whether the shipment referenced by this order still
  * exists. Never throws — every failure maps to a verdict.
+ *
+ * Provider identifier preference:
+ *   1. `providerShipmentId` (ORDER_ID) — authoritative, never stale.
+ *   2. `trackingNumber` (cnote_no)     — fallback; its absence is
+ *      ambiguous, so it can report `exists`/`missing(deleted)` but
+ *      NEVER `missing` purely from an empty result.
  */
 export async function verifyMengantarShipment(
     order: Pick<
@@ -124,23 +148,34 @@ export async function verifyMengantarShipment(
         "providerShipmentId" | "trackingNumber"
     >
 ): Promise<MengantarLookupVerdict> {
-    if (!order.trackingNumber) {
-        // Without a resi we cannot authoritatively confirm absence.
-        return "uncertain";
+    if (order.providerShipmentId) {
+        try {
+            const result =
+                await getMengantarOrderByOrderId(
+                    order.providerShipmentId
+                );
+
+            return classifyMengantarLookup(result);
+        } catch (error) {
+            return classifyMengantarLookupError(error);
+        }
     }
 
-    try {
-        const result = await getMengantarOrderByTracking(
-            order.trackingNumber
-        );
+    if (order.trackingNumber) {
+        try {
+            const result =
+                await getMengantarOrderByTracking(
+                    order.trackingNumber
+                );
 
-        return classifyMengantarLookup(
-            result,
-            order.providerShipmentId
-        );
-    } catch (error) {
-        return classifyMengantarLookupError(error);
+            return classifyMengantarTrackingLookup(result);
+        } catch (error) {
+            return classifyMengantarLookupError(error);
+        }
     }
+
+    // No provider identifier at all → cannot confirm anything.
+    return "uncertain";
 }
 
 /**

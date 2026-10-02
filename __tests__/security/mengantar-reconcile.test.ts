@@ -50,6 +50,7 @@ jest.mock("@/lib/mengantar", () => ({
         code?: string;
     },
     getMengantarOrderByTracking: jest.fn(),
+    getMengantarOrderByOrderId: jest.fn(),
     createMengantarOrder: jest.fn(),
     estimateMengantarShipping: jest.fn(),
     payMengantarUnpaid: jest.fn(),
@@ -78,6 +79,7 @@ import { prisma } from "@/lib/prisma";
 import {
     createMengantarOrder,
     getMengantarOrderByTracking,
+    getMengantarOrderByOrderId,
 } from "@/lib/mengantar";
 import {
     getMengantarOriginConfig,
@@ -87,6 +89,7 @@ import { processShipmentJobs } from "@/lib/mengantar/shipment-worker";
 
 import {
     classifyMengantarLookup,
+    classifyMengantarTrackingLookup,
     classifyMengantarLookupError,
     reconcileMengantarShipment,
     reconcileMengantarShipments,
@@ -109,6 +112,8 @@ const mockedJob = prisma.shipmentJob as unknown as {
     createMany: jest.Mock;
 };
 const mockedLookup =
+    getMengantarOrderByOrderId as unknown as jest.Mock;
+const mockedTrackingLookup =
     getMengantarOrderByTracking as unknown as jest.Mock;
 const mockedCreateOrder =
     createMengantarOrder as unknown as jest.Mock;
@@ -213,6 +218,10 @@ beforeEach(() => {
     mockedJob.updateMany.mockResolvedValue({ count: 1 });
     mockedJob.createMany.mockResolvedValue({ count: 0 });
     mockedProcessJobs.mockResolvedValue({ processed: 0 });
+
+    // Deterministic provider defaults per test.
+    mockedLookup.mockResolvedValue(null);
+    mockedTrackingLookup.mockResolvedValue(null);
 });
 
 /* ==========================================
@@ -220,37 +229,34 @@ beforeEach(() => {
  * ========================================== */
 
 describe("provider lookup classification", () => {
-    it("exists only for an exact ORDER_ID match", () => {
-        expect(
-            classifyMengantarLookup(
-                { orderId: ORDER_ID },
-                ORDER_ID
-            )
-        ).toBe("exists");
+    it("missing for an empty authoritative (order_id) result", () => {
+        expect(classifyMengantarLookup(null)).toBe("missing");
     });
 
-    it("missing for an empty provider result", () => {
+    it("exists whenever the authoritative lookup returns a row", () => {
+        expect(classifyMengantarLookup({})).toBe("exists");
+    });
+
+    it("missing when the provider flags the order isDeleted", () => {
         expect(
-            classifyMengantarLookup(null, ORDER_ID)
+            classifyMengantarLookup({ isDeleted: true })
         ).toBe("missing");
     });
 
-    it("missing when the id differs (not our shipment)", () => {
+    it("a stale resi alone is NOT authoritative (tracking-only)", () => {
+        // Empty tracking result must never be treated as missing…
+        expect(classifyMengantarTrackingLookup(null)).toBe(
+            "uncertain"
+        );
+        // …but a returned row, or an explicit deletion, is decisive.
+        expect(classifyMengantarTrackingLookup({})).toBe(
+            "exists"
+        );
         expect(
-            classifyMengantarLookup(
-                { orderId: "OTHER" },
-                ORDER_ID
-            )
+            classifyMengantarTrackingLookup({
+                isDeleted: true,
+            })
         ).toBe("missing");
-    });
-
-    it("uncertain when the provider entry has no ORDER_ID", () => {
-        expect(
-            classifyMengantarLookup(
-                { orderId: null },
-                ORDER_ID
-            )
-        ).toBe("uncertain");
     });
 
     it("only a 404 error means confirmed-missing", () => {
@@ -502,14 +508,68 @@ describe("reconcileMengantarShipment", () => {
         );
     });
 
-    it("never reconciles an order without a resi (cannot verify)", async () => {
+    it("verifies via providerShipmentId even when the resi is missing", async () => {
+        mockedLookup.mockResolvedValue({});
+
         const result = await verifyMengantarShipment({
             providerShipmentId: ORDER_ID,
             trackingNumber: null,
         });
 
+        expect(result).toBe("exists");
+        expect(mockedLookup).toHaveBeenCalledWith(ORDER_ID);
+    });
+
+    it("a stale resi that returns empty is NOT treated as missing", async () => {
+        // No providerShipmentId → tracking fallback → empty → uncertain.
+        mockedTrackingLookup.mockResolvedValue(null);
+
+        const result = await verifyMengantarShipment({
+            providerShipmentId: null,
+            trackingNumber: "JO0123456789",
+        });
+
         expect(result).toBe("uncertain");
         expect(mockedLookup).not.toHaveBeenCalled();
+        expect(mockedTrackingLookup).toHaveBeenCalledWith(
+            "JO0123456789"
+        );
+    });
+
+    it("a tracking row marked isDeleted IS confirmed missing", async () => {
+        mockedTrackingLookup.mockResolvedValue({
+            isDeleted: true,
+        });
+
+        const result = await verifyMengantarShipment({
+            providerShipmentId: null,
+            trackingNumber: "JO0123456789",
+        });
+
+        expect(result).toBe("missing");
+    });
+
+    it("prefers providerShipmentId over the resi", async () => {
+        mockedLookup.mockResolvedValue({});
+
+        await verifyMengantarShipment({
+            providerShipmentId: ORDER_ID,
+            trackingNumber: "JO0328436240",
+        });
+
+        expect(mockedLookup).toHaveBeenCalledWith(ORDER_ID);
+        expect(mockedTrackingLookup).not.toHaveBeenCalled();
+    });
+
+    it("cannot verify without any provider identifier", async () => {
+        const result = await verifyMengantarShipment({
+            providerShipmentId: null,
+            trackingNumber: null,
+        });
+
+        expect(result).toBe("uncertain");
+        expect(mockedLookup).not.toHaveBeenCalled();
+        expect(mockedTrackingLookup).not.toHaveBeenCalled();
     });
 });
 
@@ -870,9 +930,7 @@ describe("reconciliation never POSTs to Mengantar first", () => {
         await reconcileMengantarShipments({ limit: 25 });
 
         // Read-only verification happened…
-        expect(mockedLookup).toHaveBeenCalledWith(
-            "JO0328436240"
-        );
+        expect(mockedLookup).toHaveBeenCalledWith(ORDER_ID);
         // …and NOTHING was enqueued or created.
         expect(mockedCreateOrder).not.toHaveBeenCalled();
         expect(mockedOrder.updateMany).not.toHaveBeenCalled();
@@ -903,6 +961,9 @@ describe("reconciliation never POSTs to Mengantar first", () => {
         const code = readFile("lib/mengantar/reconcile.ts");
 
         expect(code).toContain(
+            "getMengantarOrderByOrderId"
+        );
+        expect(code).toContain(
             "getMengantarOrderByTracking"
         );
         expect(code).not.toContain("createMengantarOrder");
@@ -910,14 +971,20 @@ describe("reconciliation never POSTs to Mengantar first", () => {
         expect(code).not.toContain('method: "POST"');
     });
 
-    it("getMengantarOrderByTracking is a GET", () => {
+    it("the provider lookup helper is a GET on /order", () => {
         const code = readFile("lib/mengantar.ts");
         const start = code.indexOf(
-            "export async function getMengantarOrderByTracking"
+            "async function lookupMengantarOrder"
         );
-        const slice = code.slice(start, start + 1600);
+        const slice = code.slice(start, start + 700);
 
         expect(slice).toContain('method: "GET"');
+        expect(slice).toContain("/order?");
+        // Both lookup filters are documented provider query params.
+        expect(code).toContain('params.set("order_id", orderId)');
+        expect(code).toContain(
+            'params.set("tracking_id", trackingNumber)'
+        );
     });
 });
 
@@ -1001,6 +1068,31 @@ describe("realtime UI + guards", () => {
             "MENGANTAR_WEBHOOK_SECRET"
         );
         expect(adminPage).not.toContain("CRON_SECRET");
+    });
+
+    it("9. the shipment panel shows the fresh state, never the stale order fallback", () => {
+        // `shipment?.providerShipmentId ?? order.providerShipmentId`
+        // would re-show the OLD id after a reset nulled it.
+        expect(adminPage).not.toMatch(
+            /shipment\?\.providerShipmentId/
+        );
+        expect(adminPage).not.toMatch(
+            /shipment\?\.providerBatchId/
+        );
+        expect(adminPage).not.toMatch(
+            /shipment\?\.trackingNumber/
+        );
+
+        // Authoritative: the loaded shipment wins, order is fallback.
+        expect(adminPage).toMatch(
+            /shipment\s*\? shipment\.providerShipmentId\s*: order\.providerShipmentId/
+        );
+        expect(adminPage).toMatch(
+            /shipment\s*\? shipment\.providerBatchId\s*: order\.providerBatchId/
+        );
+        expect(adminPage).toMatch(
+            /shipment\s*\? shipment\.trackingNumber\s*: order\.trackingNumber/
+        );
     });
 
     it("15. reconciliation never touches RajaOngkir", () => {

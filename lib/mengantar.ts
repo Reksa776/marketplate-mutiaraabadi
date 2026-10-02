@@ -801,31 +801,39 @@ export type MengantarOrderHistoryEntry = {
     desc: string;
 };
 
-export async function getMengantarOrderByTracking(
-    trackingNumber: string
-): Promise<
-    | {
-          orderId: string | null;
-          status: string | null;
-          statusCategory: string | null;
-          trackingNumber: string | null;
-          history: MengantarOrderHistoryEntry[];
-      }
-    | null
-> {
-    if (!trackingNumber) return null;
+export type MengantarOrderLookup = {
+    orderId: string | null;
+    trackingNumber: string | null;
+    status: string | null;
+    statusCategory: string | null;
+    /**
+     * Soft-delete flag returned by GET /order. `true` means the order
+     * was removed from the account (DELETE /order or the dashboard)
+     * and is an authoritative "shipment no longer exists" signal.
+     */
+    isDeleted: boolean;
+    history: MengantarOrderHistoryEntry[];
+};
 
-    const params = new URLSearchParams();
-    params.set("tracking_id", trackingNumber);
+type MengantarOrderLookupRow = {
+    ORDER_ID?: string;
+    cnote_no?: string;
+    status?: string;
+    statusCategory?: string;
+    isDeleted?: boolean;
+    history?: MengantarOrderHistoryEntry[];
+};
 
+/**
+ * Single GET /order lookup. The official API documents `order_id` AND
+ * `tracking_id` as lookups and returns an array of matches, so an
+ * empty array is the documented "no such order" result.
+ */
+async function lookupMengantarOrder(
+    params: URLSearchParams
+): Promise<MengantarOrderLookup | null> {
     const result = await mengantarRequest<
-        Array<{
-            ORDER_ID?: string;
-            cnote_no?: string;
-            status?: string;
-            statusCategory?: string;
-            history?: MengantarOrderHistoryEntry[];
-        }>
+        MengantarOrderLookupRow[]
     >(
         keyPath(`/order?${params.toString()}`),
         { method: "GET" }
@@ -839,13 +847,48 @@ export async function getMengantarOrderByTracking(
 
     return {
         orderId: order.ORDER_ID ?? null,
+        trackingNumber: order.cnote_no ?? null,
         status: order.status ?? null,
         statusCategory: order.statusCategory ?? null,
-        trackingNumber: order.cnote_no ?? null,
+        isDeleted: order.isDeleted === true,
         history: Array.isArray(order.history)
             ? order.history
             : [],
     };
+}
+
+/**
+ * Authoritative lookup by the provider ORDER_ID (what we store as
+ * `providerShipmentId`). Unlike a resi, this identifier does not
+ * become stale, so an empty result is a reliable "missing".
+ */
+export async function getMengantarOrderByOrderId(
+    orderId: string
+): Promise<MengantarOrderLookup | null> {
+    if (!orderId) return null;
+
+    const params = new URLSearchParams();
+    params.set("order_id", orderId);
+
+    return lookupMengantarOrder(params);
+}
+
+/**
+ * Lookup by resi (cnote_no). Tracking number is `cnote_no`, not
+ * `tracking_id`; here `tracking_id` is the documented QUERY filter.
+ * A stale resi makes an empty result ambiguous, so reconciliation
+ * uses this only as a fallback and never treats its absence alone as
+ * authoritative (see reconcile.ts).
+ */
+export async function getMengantarOrderByTracking(
+    trackingNumber: string
+): Promise<MengantarOrderLookup | null> {
+    if (!trackingNumber) return null;
+
+    const params = new URLSearchParams();
+    params.set("tracking_id", trackingNumber);
+
+    return lookupMengantarOrder(params);
 }
 
 /*

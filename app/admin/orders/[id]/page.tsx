@@ -1340,21 +1340,31 @@ export default function AdminOrderDetailPage() {
                         {/* MENGANTAR SHIPMENT */}
                         {order.shippingProvider === "MENGANTAR" &&
                             (() => {
-                                const status =
-                                    shipment?.shipmentStatus ??
-                                    order.shipmentStatus;
-                                const payStatus =
-                                    shipment?.shippingPaymentStatus ??
-                                    order.shippingPaymentStatus;
-                                const shipmentId =
-                                    shipment?.providerShipmentId ??
-                                    order.providerShipmentId;
-                                const batchId =
-                                    shipment?.providerBatchId ??
-                                    order.providerBatchId;
-                                const trackingNumber =
-                                    shipment?.trackingNumber ??
-                                    order.trackingNumber;
+                                /*
+                                 * The live `/shipment` read is
+                                 * AUTHORITATIVE once loaded. Using
+                                 * `?? order.x` would resurrect the
+                                 * OLD provider id / batch / resi after
+                                 * a self-healing reset cleared them
+                                 * (the order object is only loaded
+                                 * once). Fall back to the order only
+                                 * before the first shipment load.
+                                 */
+                                const status = shipment
+                                    ? shipment.shipmentStatus
+                                    : order.shipmentStatus;
+                                const payStatus = shipment
+                                    ? shipment.shippingPaymentStatus
+                                    : order.shippingPaymentStatus;
+                                const shipmentId = shipment
+                                    ? shipment.providerShipmentId
+                                    : order.providerShipmentId;
+                                const batchId = shipment
+                                    ? shipment.providerBatchId
+                                    : order.providerBatchId;
+                                const trackingNumber = shipment
+                                    ? shipment.trackingNumber
+                                    : order.trackingNumber;
                                 const isCod =
                                     order.paymentMethod === "COD";
                                 const busyLock =
