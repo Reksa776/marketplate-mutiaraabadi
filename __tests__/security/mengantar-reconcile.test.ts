@@ -36,10 +36,15 @@ const mockShipmentJob = {
     createMany: jest.fn(),
 };
 
+const mockAuditLog = {
+    create: jest.fn(),
+};
+
 jest.mock("@/lib/prisma", () => ({
     prisma: {
         order: mockOrder,
         shipmentJob: mockShipmentJob,
+        adminAuditLog: mockAuditLog,
         orderItem: { findMany: jest.fn() },
     },
 }));
@@ -111,6 +116,11 @@ const mockedJob = prisma.shipmentJob as unknown as {
     updateMany: jest.Mock;
     createMany: jest.Mock;
 };
+const mockedAudit = (
+    prisma as unknown as {
+        adminAuditLog: { create: jest.Mock };
+    }
+).adminAuditLog;
 const mockedLookup =
     getMengantarOrderByOrderId as unknown as jest.Mock;
 const mockedTrackingLookup =
@@ -237,10 +247,10 @@ describe("provider lookup classification", () => {
         expect(classifyMengantarLookup({})).toBe("exists");
     });
 
-    it("missing when the provider flags the order isDeleted", () => {
+    it("DELETED when the provider explicitly flags the order isDeleted", () => {
         expect(
             classifyMengantarLookup({ isDeleted: true })
-        ).toBe("missing");
+        ).toBe("deleted");
     });
 
     it("a stale resi alone is NOT authoritative (tracking-only)", () => {
@@ -256,7 +266,7 @@ describe("provider lookup classification", () => {
             classifyMengantarTrackingLookup({
                 isDeleted: true,
             })
-        ).toBe("missing");
+        ).toBe("deleted");
     });
 
     it("only a 404 error means confirmed-missing", () => {
@@ -536,7 +546,7 @@ describe("reconcileMengantarShipment", () => {
         );
     });
 
-    it("a tracking row marked isDeleted IS confirmed missing", async () => {
+    it("a tracking row marked isDeleted IS confirmed deleted", async () => {
         mockedTrackingLookup.mockResolvedValue({
             isDeleted: true,
         });
@@ -546,7 +556,7 @@ describe("reconcileMengantarShipment", () => {
             trackingNumber: "JO0123456789",
         });
 
-        expect(result).toBe("missing");
+        expect(result).toBe("deleted");
     });
 
     it("prefers providerShipmentId over the resi", async () => {
@@ -1119,5 +1129,323 @@ describe("realtime UI + guards", () => {
         expect(code).toContain("timingSafeEqual");
         expect(code).toContain("CRON_SECRET");
         expect(code).toContain("503");
+    });
+});
+
+/* ==========================================
+ * HYBRID SELF-HEALING — INTENTIONAL DELETION
+ * ==========================================
+ *
+ * isDeleted:true  → clear local state, NOT_CREATED, NEVER recreate.
+ * missing (no flag) → anomaly → reset + re-queue + recreate.
+ */
+
+describe("hybrid self-healing — explicit provider deletion", () => {
+    it("1. clears ids + NOT_CREATED, cancels jobs, never POSTs, audits", async () => {
+        mockedLookup.mockResolvedValue({ isDeleted: true });
+        mockedOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        const result = await reconcileMengantarShipment(
+            createdOrder()
+        );
+
+        expect(result.verdict).toBe("deleted");
+        expect(result.action).toBe("deleted");
+        expect(result.reconciled).toBe(true);
+
+        const call = mockedOrder.updateMany.mock.calls[0][0];
+        expect(call.data).toEqual(
+            expect.objectContaining({
+                shipmentStatus: "NOT_CREATED",
+                providerShipmentId: null,
+                providerBatchId: null,
+                trackingNumber: null,
+            })
+        );
+        // It must NOT take the anomaly reset path.
+        expect(resetCall()).toBeUndefined();
+
+        // A queued job is cancelled, NEVER re-queued.
+        expect(mockedJob.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                where: expect.objectContaining({
+                    orderId: 963,
+                }),
+                data: expect.objectContaining({
+                    status: "CANCELLED",
+                }),
+            })
+        );
+        expect(mockedJob.updateMany).not.toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    status: "PENDING",
+                }),
+            })
+        );
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+
+        // NEVER a provider create.
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+
+        // Safe audit record.
+        expect(mockedAudit.create).toHaveBeenCalledTimes(1);
+        const audit = mockedAudit.create.mock.calls[0][0].data;
+        expect(audit.action).toBe(
+            "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY"
+        );
+        expect(audit.entityId).toBe(963);
+        expect(JSON.stringify(audit)).not.toMatch(
+            /api[_-]?key|webhook|secret|token/i
+        );
+    });
+
+    it("1b. a lost CAS clears nothing, audits nothing, touches no job", async () => {
+        mockedLookup.mockResolvedValue({ isDeleted: true });
+        mockedOrder.updateMany.mockResolvedValue({ count: 0 });
+
+        const result = await reconcileMengantarShipment(
+            createdOrder()
+        );
+
+        expect(result.reconciled).toBe(false);
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+        expect(mockedAudit.create).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("5. AFTER deletion a later reconcile never recreates the shipment", async () => {
+        // Post-deletion the ids are already cleared, so verification is
+        // inconclusive (no identifier) → uncertain → strict no-op. This
+        // is exactly why a cleared order can never be auto-recreated.
+        const second = await reconcileMengantarShipment(
+            createdOrder({
+                shipmentStatus: "NOT_CREATED",
+                providerShipmentId: null,
+                trackingNumber: null,
+            })
+        );
+
+        expect(second.reconciled).toBe(false);
+        expect(second.verdict).toBe("uncertain");
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("5b. even an anomaly-missing on a NOT_CREATED order never re-queues", async () => {
+        mockedLookup.mockResolvedValue(null);
+        mockedOrder.updateMany.mockResolvedValue({ count: 0 });
+
+        const result = await reconcileMengantarShipment(
+            createdOrder({
+                shipmentStatus: "NOT_CREATED",
+                providerShipmentId: null,
+                trackingNumber: null,
+            })
+        );
+
+        expect(result.reconciled).toBe(false);
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+    });
+
+    it("8. two concurrent deletions → one clear, one audit, no duplicate recreate", async () => {
+        mockedLookup.mockResolvedValue({ isDeleted: true });
+        mockedOrder.updateMany
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 });
+
+        const [a, b] = await Promise.all([
+            reconcileMengantarShipment(createdOrder()),
+            reconcileMengantarShipment(createdOrder()),
+        ]);
+
+        expect([a, b].filter((r) => r.reconciled)).toHaveLength(1);
+        expect(mockedAudit.create).toHaveBeenCalledTimes(1);
+        expect(mockedJob.updateMany).toHaveBeenCalledTimes(1);
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+});
+
+describe("hybrid self-healing — unexpected missing (anomaly)", () => {
+    it("2. missing without a deletion flag → recovery path + exactly one POST", async () => {
+        // 1) reconcile detects the anomaly and re-queues (no POST yet).
+        mockedLookup.mockResolvedValue(null);
+        mockedOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        const result = await reconcileMengantarShipment(
+            createdOrder()
+        );
+
+        expect(result.verdict).toBe("missing");
+        expect(result.action).toBe("recreated");
+        expect(mockedJob.updateMany).toHaveBeenCalledWith(
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    status: "PENDING",
+                    stage: "CREATE",
+                }),
+            })
+        );
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+        expect(mockedAudit.create).not.toHaveBeenCalled();
+
+        // 2) the existing worker create path posts EXACTLY once.
+        mockedOrder.findUnique.mockResolvedValue(
+            baseOrder({
+                shipmentStatus: "SHIPMENT_PENDING",
+                providerShipmentId: null,
+            })
+        );
+        mockedCreateOrder.mockResolvedValue({
+            data: [
+                {
+                    ORDER_ID: "NEW-ORDER-1",
+                    batch_id: "NEW-BATCH",
+                    cnote_no: "NEW-CNOTE",
+                    isPaid: true,
+                    error: null,
+                },
+            ],
+            batch_id: "NEW-BATCH",
+        });
+        mockedOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        const created = await createShipmentForOrder(963);
+
+        expect(created.ok).toBe(true);
+        expect(created.shipmentId).toBe("NEW-ORDER-1");
+        expect(created.trackingNumber).toBe("NEW-CNOTE");
+        expect(mockedCreateOrder).toHaveBeenCalledTimes(1);
+    });
+
+    it("3. provider still has the shipment → no reset/job/POST/audit", async () => {
+        mockedLookup.mockResolvedValue({ orderId: ORDER_ID });
+
+        const result = await reconcileMengantarShipment(
+            createdOrder()
+        );
+
+        expect(result.verdict).toBe("exists");
+        expect(result.reconciled).toBe(false);
+        expect(mockedOrder.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+        expect(mockedAudit.create).not.toHaveBeenCalled();
+    });
+
+    it("4. repeated reconcile of one missing shipment → one job, one POST", async () => {
+        mockedLookup.mockResolvedValue(null);
+        mockedOrder.updateMany
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 });
+
+        const first = await reconcileMengantarShipment(
+            createdOrder()
+        );
+        const second = await reconcileMengantarShipment(
+            createdOrder()
+        );
+
+        expect(first.reconciled).toBe(true);
+        expect(second.reconciled).toBe(false);
+        // Only the winner re-queues; the loser never touches jobs.
+        expect(mockedJob.updateMany).toHaveBeenCalledTimes(1);
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+});
+
+describe("manual recovery + cancelled guard", () => {
+    it("6. NOT_CREATED + PAID + MENGANTAR + non-COD → admin create succeeds", async () => {
+        mockedOrder.findUnique.mockResolvedValue(
+            baseOrder({
+                shipmentStatus: "NOT_CREATED",
+                providerShipmentId: null,
+                providerBatchId: null,
+                trackingNumber: null,
+            })
+        );
+        mockedCreateOrder.mockResolvedValue({
+            data: [
+                {
+                    ORDER_ID: "NEW-ORDER-1",
+                    batch_id: "NEW-BATCH",
+                    cnote_no: "NEW-CNOTE",
+                    isPaid: true,
+                    error: null,
+                },
+            ],
+            batch_id: "NEW-BATCH",
+        });
+        mockedOrder.updateMany.mockResolvedValue({ count: 1 });
+
+        const result = await createShipmentForOrder(963);
+
+        expect(result.ok).toBe(true);
+        expect(result.shipmentId).toBe("NEW-ORDER-1");
+        expect(result.trackingNumber).toBe("NEW-CNOTE");
+
+        const finalize = mockedOrder.updateMany.mock.calls[1][0];
+        expect(finalize.data.providerShipmentId).toBe(
+            "NEW-ORDER-1"
+        );
+        expect(finalize.data.trackingNumber).toBe("NEW-CNOTE");
+    });
+
+    it("6b. manual create is refused while an auto job still holds the claim", async () => {
+        mockedOrder.findUnique.mockResolvedValue(
+            baseOrder({ shipmentStatus: "SHIPMENT_PENDING" })
+        );
+        mockedOrder.updateMany.mockResolvedValue({ count: 0 });
+
+        const result = await createShipmentForOrder(963);
+
+        expect(result.ok).toBe(false);
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("7. a CANCELLED order is recoverable neither manually nor automatically", async () => {
+        mockedOrder.findUnique.mockResolvedValue(
+            baseOrder({ status: "CANCELLED" })
+        );
+
+        const manual = await createShipmentForOrder(963);
+        expect(manual.ok).toBe(false);
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+
+        mockedOrder.updateMany.mockResolvedValue({ count: 0 });
+        mockedLookup.mockResolvedValue(null);
+
+        const reconciled = await reconcileMengantarShipment(
+            createdOrder({ status: "CANCELLED" })
+        );
+
+        expect(reconciled.reconciled).toBe(false);
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("7b. the reconcile source keeps the cancelled/COD/payment guards", () => {
+        const code = readFile("lib/mengantar/reconcile.ts");
+
+        expect(code).toContain('status: { not: "CANCELLED" }');
+        expect(code).toContain('paymentMethod: { not: "COD" }');
+        expect(code).toContain('paymentStatus: "PAID"');
+    });
+
+    it("7c. intentional deletion NEVER enqueues → no recreate safety source guard", () => {
+        const code = readFile("lib/mengantar/reconcile.ts");
+
+        // The deletion handler must cancel jobs, not create them.
+        expect(code).toContain(
+            "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY"
+        );
+        expect(code).toContain('shipmentStatus: "NOT_CREATED"');
+        // It must not call the provider create endpoint.
+        expect(code).not.toContain("createMengantarOrder");
+        expect(code).not.toContain("payMengantarUnpaid");
     });
 });

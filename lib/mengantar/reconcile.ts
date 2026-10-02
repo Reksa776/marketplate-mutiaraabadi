@@ -4,6 +4,7 @@ import {
     getMengantarOrderByTracking,
     redactMengantarKey,
 } from "@/lib/mengantar";
+import { createAuditLog } from "@/lib/admin/audit-log";
 
 /*
  * ============================================================
@@ -24,20 +25,43 @@ import {
  *   CREATED → provider confirmed missing → SHIPMENT_PENDING
  *           → ShipmentJob PENDING → worker → POST /order → CREATED
  *
+ * HYBRID SELF-HEALING (two DIFFERENT kinds of "gone"):
+ *
+ *   A. `isDeleted === true` — Mengantar EXPLICITLY flags the order as
+ *      deleted. This is INTENTIONAL. The local shipment is cleared to
+ *      `NOT_CREATED` (no ids, no resi) and is NEVER auto-recreated.
+ *      An admin can recreate it manually via the existing shipment
+ *      create flow. Audited as MENGANTAR_SHIPMENT_DELETED_EXTERNALLY.
+ *
+ *   B. Provider confirmed missing WITHOUT a deletion flag (empty
+ *      authoritative lookup / HTTP 404) — an ANOMALY. Reset to
+ *      `SHIPMENT_PENDING` and re-queue so the worker recreates it.
+ *
+ *   C. Provider still has the shipment — no-op (no reset, no job,
+ *      no duplicate).
+ *
  * SAFETY (hard rules):
  *   - `shippingProvider` = "MENGANTAR", `paymentStatus` = PAID and
  *     non-COD are ALL required. COD never self-heals.
  *   - A provider read that is NOT a confirmed "not found" (401/403
  *     credential, 429 rate limit, 5xx, timeout, network error,
- *     malformed response, or an entry without ORDER_ID) is treated
- *     as UNCERTAIN and NEVER triggers a reset.
- *   - The reset is an atomic CAS on the exact `CREATED` +
+ *     malformed response) is treated as UNCERTAIN and NEVER triggers
+ *     a reset.
+ *   - Every write is an atomic CAS on the exact `CREATED` +
  *     `providerShipmentId` we verified, so concurrent reconcilers
  *     cannot double-reset, and the existing worker claim remains the
  *     single gate before any `POST /order`.
  *   - NEVER writes Order.paymentStatus.
  * ============================================================
  */
+
+/**
+ * Safe, non-credential audit event emitted when Mengantar explicitly
+ * deletes a shipment. Stored via the existing AdminAuditLog and also
+ * logged. NEVER carries a provider credential.
+ */
+export const MENGANTAR_SHIPMENT_DELETED_EXTERNALLY =
+    "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY";
 
 /**
  * Only reconcile shipments that have been stable for a while. This
@@ -53,7 +77,10 @@ const RECONCILE_ELIGIBLE_STATUS = "CREATED";
 
 export type MengantarLookupVerdict =
     | "exists"
+    /** Authoritative miss WITHOUT a deletion flag → anomaly → recreate. */
     | "missing"
+    /** Provider explicitly flagged `isDeleted:true` → intentional → NO recreate. */
+    | "deleted"
     | "uncertain";
 
 /**
@@ -61,12 +88,14 @@ export type MengantarLookupVerdict =
  * / ORDER_ID). The official GET /order documents `order_id` as a
  * unique lookup, so:
  *
- *   null                      → provider has no such order → missing
- *   entry with isDeleted:true → provider deleted it         → missing
- *   any other returned entry  → it still exists             → exists
+ *   null                      → provider has no such order → "missing"
+ *   entry with isDeleted:true → provider DELETED it         → "deleted"
+ *   any other returned entry  → it still exists             → "exists"
  *
  * A returned row is ALWAYS treated as "exists" (never "missing"), so
- * this can only ever fail safe towards NOT resetting.
+ * this can only ever fail safe towards NOT resetting. The deletion
+ * flag is the ONLY signal that distinguishes an intentional deletion
+ * from an unexpected disappearance.
  */
 export function classifyMengantarLookup(
     result: { isDeleted?: boolean } | null
@@ -76,7 +105,7 @@ export function classifyMengantarLookup(
     }
 
     if (result.isDeleted === true) {
-        return "missing";
+        return "deleted";
     }
 
     return "exists";
@@ -85,7 +114,8 @@ export function classifyMengantarLookup(
 /**
  * PURE. Interpret a TRACKING-ONLY lookup result. A local resi can be
  * stale, so an empty result is NOT authoritative: it is `uncertain`,
- * never `missing`. Only an explicit `isDeleted:true` proves absence.
+ * never `missing` (a wrong resi must never cause a duplicate create).
+ * Only an explicit `isDeleted:true` proves an intentional deletion.
  */
 export function classifyMengantarTrackingLookup(
     result: { isDeleted?: boolean } | null
@@ -95,7 +125,7 @@ export function classifyMengantarTrackingLookup(
     }
 
     if (result.isDeleted === true) {
-        return "missing";
+        return "deleted";
     }
 
     return "exists";
@@ -129,6 +159,11 @@ export type ReconcileResult = {
     orderId: number;
     verdict: MengantarLookupVerdict;
     reconciled: boolean;
+    /**
+     * `deleted`   → ids cleared, NOT_CREATED, NEVER auto-recreated
+     * `recreated` → reset to SHIPMENT_PENDING and re-queued
+     */
+    action?: "deleted" | "recreated";
     reason?: string;
 };
 
@@ -139,8 +174,8 @@ export type ReconcileResult = {
  * Provider identifier preference:
  *   1. `providerShipmentId` (ORDER_ID) — authoritative, never stale.
  *   2. `trackingNumber` (cnote_no)     — fallback; its absence is
- *      ambiguous, so it can report `exists`/`missing(deleted)` but
- *      NEVER `missing` purely from an empty result.
+ *      ambiguous, so it can report `exists`/`deleted` but NEVER
+ *      `missing` (recreate) purely from an empty result.
  */
 export async function verifyMengantarShipment(
     order: Pick<
@@ -179,14 +214,122 @@ export async function verifyMengantarShipment(
 }
 
 /**
- * Reconcile ONE order. Returns `reconciled: true` only when this
- * call won the atomic reset and re-queued the job.
+ * CASE A — provider explicitly deleted the shipment (`isDeleted:true`).
+ *
+ * This is an INTENTIONAL deletion, so the local shipment is cleared and
+ * the order is left at `NOT_CREATED`: NO ShipmentJob is enqueued and NO
+ * `POST /order` is ever made. An admin can recreate it manually through
+ * the EXISTING create flow.
+ *
+ * Atomic CAS on the exact `CREATED` + `providerShipmentId` we verified,
+ * so two concurrent reconcilers cannot both clear (and a state that has
+ * already moved on is never touched). Any queued job is CANCELLED so a
+ * worker sweep cannot auto-recreate it either.
+ */
+async function handleMengantarExternalDeletion(
+    order: ReconcileCandidate
+): Promise<ReconcileResult> {
+    const cleared = await prisma.order.updateMany({
+        where: {
+            id: order.id,
+            shippingProvider: "MENGANTAR",
+            shipmentStatus: RECONCILE_ELIGIBLE_STATUS,
+            providerShipmentId: order.providerShipmentId,
+            paymentStatus: "PAID",
+            paymentMethod: { not: "COD" },
+            status: { not: "CANCELLED" },
+        },
+        data: {
+            shipmentStatus: "NOT_CREATED",
+            providerShipmentId: null,
+            providerBatchId: null,
+            trackingNumber: null,
+        },
+    });
+
+    if (cleared.count === 0) {
+        return {
+            orderId: order.id,
+            verdict: "deleted",
+            reconciled: false,
+            action: "deleted",
+            reason:
+                "State berubah atau pesanan tidak lagi memenuhi syarat.",
+        };
+    }
+
+    /*
+     * Defence-in-depth: cancel any queued (or permanently-failed) job so
+     * the sweeper cannot auto-recreate an INTENTIONALLY deleted
+     * shipment. A PROCESSING job is left alone (it is already past the
+     * claim; racing it would be unsafe).
+     */
+    await prisma.shipmentJob.updateMany({
+        where: {
+            orderId: order.id,
+            status: { in: ["PENDING", "FAILED"] },
+        },
+        data: {
+            status: "CANCELLED",
+            lockedAt: null,
+            lastError:
+                "Shipment dihapus di provider (intentional).",
+        },
+    });
+
+    /*
+     * Safe audit trail — only the local order id, never a provider
+     * credential, key, or raw provider payload.
+     */
+    await createAuditLog({
+        adminId: "SYSTEM",
+        action: MENGANTAR_SHIPMENT_DELETED_EXTERNALLY,
+        entityType: "Order",
+        entityId: order.id,
+        description:
+            "Mengantar menandai shipment isDeleted:true — shipment lokal dihapus dan TIDAK dibuat ulang otomatis.",
+        metadata: {
+            orderId: order.id,
+            event: MENGANTAR_SHIPMENT_DELETED_EXTERNALLY,
+            hadProviderShipmentId: Boolean(
+                order.providerShipmentId
+            ),
+        },
+    });
+
+    console.warn(MENGANTAR_SHIPMENT_DELETED_EXTERNALLY, {
+        orderId: order.id,
+    });
+
+    return {
+        orderId: order.id,
+        verdict: "deleted",
+        reconciled: true,
+        action: "deleted",
+    };
+}
+
+/**
+ * Reconcile ONE order.
+ *
+ *   deleted → ids cleared, NOT_CREATED, no enqueue (intentional)
+ *   missing → reset to SHIPMENT_PENDING + re-queue (anomaly)
+ *   exists  → no-op
+ *
+ * Returns `reconciled: true` only when this call actually changed the
+ * order (deletion clear or anomaly reset).
  */
 export async function reconcileMengantarShipment(
     order: ReconcileCandidate
 ): Promise<ReconcileResult> {
     const verdict = await verifyMengantarShipment(order);
 
+    // CASE A — explicit, intentional provider deletion: NEVER recreate.
+    if (verdict === "deleted") {
+        return handleMengantarExternalDeletion(order);
+    }
+
+    // CASE C (exists) / uncertain — no-op.
     if (verdict !== "missing") {
         return { orderId: order.id, verdict, reconciled: false };
     }
@@ -268,7 +411,12 @@ export async function reconcileMengantarShipment(
         }
     );
 
-    return { orderId: order.id, verdict, reconciled: true };
+    return {
+        orderId: order.id,
+        verdict,
+        reconciled: true,
+        action: "recreated",
+    };
 }
 
 /**

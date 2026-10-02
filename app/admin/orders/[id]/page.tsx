@@ -1370,20 +1370,41 @@ export default function AdminOrderDetailPage() {
                                 const busyLock =
                                     status === "CREATING" ||
                                     status === "PAYING";
-                                // Automatic flow creates the shipment.
-                                // The manual button is a recovery path
-                                // shown only after a genuine failure.
+                                const job =
+                                    shipment?.shipmentJob;
+                                // An in-flight automatic job is the primary
+                                // creator; the manual button must not
+                                // compete with it.
+                                const autoJobActive =
+                                    job?.status === "PENDING" ||
+                                    job?.status === "PROCESSING";
+                                // Manual creation is a RECOVERY path:
+                                //  - a genuine automatic failure, OR
+                                //  - an intentional provider deletion,
+                                //    which leaves the order paid at
+                                //    NOT_CREATED with no auto job.
+                                // Never offered for an unpaid non-COD
+                                // order, nor while auto is still queued.
                                 const canCreate =
                                     !shipmentId &&
-                                    status === "FAILED";
+                                    (status === "FAILED" ||
+                                        (status ===
+                                            "NOT_CREATED" &&
+                                            (order.paymentStatus ===
+                                                "PAID" ||
+                                                isCod) &&
+                                            !autoJobActive));
+                                // Only SHIPMENT_PENDING (or an unset state)
+                                // genuinely waits for the automatic queue.
+                                // NOT_CREATED means "no auto job" (e.g.
+                                // deleted externally) and must not promise
+                                // an automatic retry.
                                 const canRetry =
                                     !shipmentId &&
                                     (!status ||
-                                        status === "NOT_CREATED" ||
-                                        status === "SHIPMENT_PENDING" ||
+                                        status ===
+                                            "SHIPMENT_PENDING" ||
                                         status === "FAILED");
-                                const job =
-                                    shipment?.shipmentJob;
                                 const pickupSchedule =
                                     job?.pickupDate &&
                                     job?.pickupTime

@@ -26,6 +26,16 @@ type Order = {
     trackingNumber: string | null;
     trackingUrl: string | null;
 
+    /*
+     * Mengantar shipment state. Read-only, already persisted — the
+     * customer UI can render "dibuat otomatis", the courier and the
+     * latest shipment status even BEFORE a resi exists, without any
+     * admin input. providerShipmentId / providerBatchId stay private.
+     */
+    shippingProvider: string | null;
+    providerCourier: string | null;
+    shipmentStatus: string | null;
+
     subtotal: number;
     shippingCost: number;
     total: number;
@@ -202,6 +212,19 @@ export async function GET(
 
             trackingUrl:
                 order.trackingUrl,
+
+            /*
+             * Mengantar shipment state (read-only). Never provider
+             * identifiers, never credentials.
+             */
+            shippingProvider:
+                order.shippingProvider,
+
+            providerCourier:
+                order.providerCourier,
+
+            shipmentStatus:
+                order.shipmentStatus,
 
             /*
              * ===============================

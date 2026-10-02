@@ -42,6 +42,9 @@ export type AuditAction =
     | "ORDER_TRACKING_ASSIGNED"
     | "SHIPMENT_CREATED"
     | "SHIPMENT_PAID"
+    // Provider explicitly deleted the shipment; local state was cleared
+    // and intentionally NOT auto-recreated (system actor).
+    | "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY"
     // Refund
     | "REFUND_REQUESTED"
     | "REFUND_APPROVED"

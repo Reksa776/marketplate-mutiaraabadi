@@ -61,6 +61,15 @@ type Order = {
     paymentStatus: string;
     paidAt: string | null;
 
+    /*
+     * Mengantar shipment state (server-persisted). Lets the customer
+     * see "dibuat otomatis" + the courier + the latest shipment
+     * status even before a resi exists — no admin input required.
+     */
+    shippingProvider: string | null;
+    providerCourier: string | null;
+    shipmentStatus: string | null;
+
     subtotal: number;
     shippingCost: number;
     total: number;
@@ -144,6 +153,32 @@ function getStatusLabel(status: string) {
     );
 }
 
+/*
+ * Internal shipment status → customer-facing label. Mirrors the
+ * statuses the Mengantar webhook writes onto the order. Never a
+ * provider raw status.
+ */
+function getShipmentStatusLabel(
+    status: string | null
+) {
+    if (!status) return null;
+
+    const labels: Record<string, string> = {
+        SHIPMENT_PENDING: "Dibuat otomatis",
+        CREATED: "Menunggu Penjemputan",
+        WAITING_SHIPPING_PAYMENT:
+            "Menunggu penjemputan",
+        PICKED_UP: "Paket Dijemput Kurir",
+        IN_TRANSIT: "Dalam Perjalanan",
+        UNDELIVERED: "Gagal Diantar",
+        DELIVERED: "Sudah Diterima",
+        RETURNED: "Dikembalikan",
+        CANCELLED: "Pengiriman Dibatalkan",
+    };
+
+    return labels[status] ?? status;
+}
+
 function getPaymentLabel(
     paymentMethod: string
 ) {
@@ -211,7 +246,14 @@ export default function OrderDetailPage() {
             return;
         }
 
-        if (!order.trackingNumber) {
+        // Fetch provider tracking for ANY Mengantar order (even before
+        // a resi exists) so the customer sees the latest shipment
+        // state/courier automatically; legacy orders still wait for a
+        // resi before calling the RajaOngkir tracking backend.
+        if (
+            !order.trackingNumber &&
+            order.shippingProvider !== "MENGANTAR"
+        ) {
             setTracking(null);
             return;
         }
@@ -220,13 +262,18 @@ export default function OrderDetailPage() {
     }, [
         order?.id,
         order?.trackingNumber,
+        order?.shippingProvider,
+        order?.shipmentStatus,
     ]);
     async function loadTracking() {
         if (!order?.id) {
             return;
         }
 
-        if (!order.trackingNumber) {
+        if (
+            !order.trackingNumber &&
+            order.shippingProvider !== "MENGANTAR"
+        ) {
             setTracking(null);
             return;
         }
@@ -281,6 +328,13 @@ export default function OrderDetailPage() {
                 deliveryStatus:
                     result.data
                         ?.deliveryStatus ??
+                    undefined,
+
+                // Mengantar persists its shipment state on the provider
+                // response — keep it so the UI can render status/courier
+                // before a resi exists.
+                shipment:
+                    result.data?.shipment ??
                     undefined,
 
                 manifest:
@@ -749,8 +803,19 @@ export default function OrderDetailPage() {
                                 </p>
 
                                 <p className="mt-1 font-semibold">
-                                    {order.shippingCourier
-                                        ? order.shippingCourier.toUpperCase()
+                                    {(
+                                        order.shippingCourier ??
+                                        order.providerCourier ??
+                                        tracking?.summary
+                                            ?.courier_name ??
+                                        ""
+                                    )
+                                        ? String(
+                                              order.shippingCourier ??
+                                                  order.providerCourier ??
+                                                  tracking?.summary
+                                                      ?.courier_name
+                                          ).toUpperCase()
                                         : "-"}
                                 </p>
 
@@ -915,23 +980,31 @@ export default function OrderDetailPage() {
                                 <p className="mt-1 text-sm text-gray-500">
                                     Informasi pengiriman dan perjalanan paket
                                 </p>
-                            </div>
-
-                            {order.trackingNumber &&
-                                tracking?.summary?.status && (
-                                    <span
-                                        className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${tracking.summary.status ===
+                            </div>                            {tracking?.summary?.status && (
+                                <span
+                                    className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${
+                                        tracking.summary.status ===
+                                            "DELIVERED" ||
+                                        order.shipmentStatus ===
                                             "DELIVERED"
                                             ? "bg-green-100 text-green-700"
                                             : tracking.summary.status ===
-                                                "ON DELIVERY"
-                                                ? "bg-yellow-100 text-yellow-700"
-                                                : "bg-blue-100 text-blue-700"
-                                            }`}
-                                    >
-                                        {tracking.summary.status}
-                                    </span>
-                                )}
+                                                  "ON DELIVERY" ||
+                                                order.shipmentStatus ===
+                                                    "IN_TRANSIT"
+                                              ? "bg-yellow-100 text-yellow-700"
+                                              : "bg-blue-100 text-blue-700"
+                                    }`}
+                                >
+                                    {order.shippingProvider ===
+                                    "MENGANTAR"
+                                        ? getShipmentStatusLabel(
+                                              order.shipmentStatus
+                                          ) ??
+                                          tracking.summary.status
+                                        : tracking.summary.status}
+                                </span>
+                            )}
                         </div>
 
                         {/* INFO PENGIRIMAN */}
@@ -944,6 +1017,9 @@ export default function OrderDetailPage() {
 
                                 <p className="mt-1 font-semibold uppercase text-gray-900">
                                     {order.shippingCourier ??
+                                        order.providerCourier ??
+                                        tracking?.summary
+                                            ?.courier_name ??
                                         "-"}
                                 </p>
                             </div>
@@ -966,6 +1042,8 @@ export default function OrderDetailPage() {
 
                                 <p className="mt-1 break-all font-semibold text-gray-900">
                                     {order.trackingNumber ??
+                                        tracking?.summary
+                                            ?.waybill_number ??
                                         "Belum tersedia"}
                                 </p>
                             </div>
@@ -976,12 +1054,20 @@ export default function OrderDetailPage() {
                         {!order.trackingNumber && (
                             <div className="mt-6 rounded-2xl bg-gray-50 p-5">
                                 <p className="text-sm font-semibold text-gray-700">
-                                    Nomor resi belum tersedia
+                                    {order.shippingProvider ===
+                                    "MENGANTAR"
+                                        ? getShipmentStatusLabel(
+                                              order.shipmentStatus
+                                          ) ??
+                                          "Nomor resi belum tersedia"
+                                        : "Nomor resi belum tersedia"}
                                 </p>
 
                                 <p className="mt-1 text-sm text-gray-500">
-                                    Admin belum memasukkan nomor resi
-                                    untuk pesanan ini.
+                                    {order.shippingProvider ===
+                                    "MENGANTAR"
+                                        ? "Pengiriman dibuat otomatis oleh sistem. Nomor resi akan tampil setelah kurir menjemput paket."
+                                        : "Admin belum memasukkan nomor resi untuk pesanan ini."}
                                 </p>
                             </div>
                         )}

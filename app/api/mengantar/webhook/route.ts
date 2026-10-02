@@ -72,6 +72,7 @@ export async function POST(request: Request) {
         let payload: {
             cnote_no?: unknown;
             order_id?: unknown;
+            batch_id?: unknown;
             courier?: unknown;
             status_category?: unknown;
         };
@@ -94,6 +95,9 @@ export async function POST(request: Request) {
         const providerShipmentId = String(
             payload.order_id ?? ""
         ).trim();
+        const batchId = String(
+            payload.batch_id ?? ""
+        ).trim();
         const courierName = String(
             payload.courier ?? ""
         ).trim();
@@ -108,35 +112,72 @@ export async function POST(request: Request) {
             });
         }
 
-        const order = await prisma.order.findFirst({
-            where: {
-                shippingProvider: "MENGANTAR",
-                OR: [
-                    ...(trackingNumber
-                        ? [
-                              {
-                                  trackingNumber,
-                              },
-                          ]
-                        : []),
-                    ...(providerShipmentId
-                        ? [
-                              {
-                                  providerShipmentId:
-                                      providerShipmentId,
-                              },
-                          ]
-                        : []),
-                ],
-            },
-            select: {
-                id: true,
-                orderNumber: true,
-                shipmentStatus: true,
-                trackingNumber: true,
-                shippingCourier: true,
-            },
-        });
+        /*
+         * ==========================================
+         * ORDER LOOKUP — AUTHORITATIVE ORDER_ID FIRST
+         * ==========================================
+         *
+         * The provider ORDER_ID (our `providerShipmentId`) is the
+         * authoritative identifier. A resi (`cnote_no`) is only a
+         * fallback, because a resi can collide with a DIFFERENT order
+         * (e.g. a stale shipment from before a self-healing reset).
+         *
+         * COLLISION GUARD: when the order is found by resi but the
+         * payload also carries an ORDER_ID that DISAGREES with that
+         * order's stored providerShipmentId, the event describes a
+         * stale/foreign shipment. Acknowledge it and DO NOT touch any
+         * order — a webhook for an old shipment must never retarget a
+         * different order.
+         */
+        const orderSelect = {
+            id: true,
+            orderNumber: true,
+            shipmentStatus: true,
+            trackingNumber: true,
+            shippingCourier: true,
+            providerShipmentId: true,
+            providerBatchId: true,
+        };
+
+        let order = providerShipmentId
+            ? await prisma.order.findFirst({
+                  where: {
+                      shippingProvider: "MENGANTAR",
+                      providerShipmentId,
+                  },
+                  select: orderSelect,
+              })
+            : null;
+
+        if (!order && trackingNumber) {
+            const byTracking =
+                await prisma.order.findFirst({
+                    where: {
+                        shippingProvider: "MENGANTAR",
+                        trackingNumber,
+                    },
+                    select: orderSelect,
+                });
+
+            if (
+                byTracking &&
+                providerShipmentId &&
+                byTracking.providerShipmentId &&
+                byTracking.providerShipmentId !==
+                    providerShipmentId
+            ) {
+                console.warn(
+                    "MENGANTAR WEBHOOK: ORDER_ID/resi mismatch — ignored"
+                );
+
+                return NextResponse.json({
+                    success: true,
+                    message: "Identifier mismatch ignored.",
+                });
+            }
+
+            order = byTracking;
+        }
 
         if (!order) {
             /*
@@ -188,8 +229,16 @@ export async function POST(request: Request) {
             },
             data: {
                 shipmentStatus: nextStatus,
-                // Backfill tracking/courier if the create flow had not
-                // recorded them yet. NEVER overwrite an existing value.
+                // Backfill provider identifiers / resi / courier the
+                // create flow had not recorded yet. NEVER overwrite an
+                // existing value, and never replace a
+                // providerShipmentId (a rollback is impossible here).
+                ...(order.providerShipmentId || !providerShipmentId
+                    ? {}
+                    : { providerShipmentId }),
+                ...(order.providerBatchId || !batchId
+                    ? {}
+                    : { providerBatchId: batchId }),
                 ...(order.trackingNumber || !trackingNumber
                     ? {}
                     : { trackingNumber }),
