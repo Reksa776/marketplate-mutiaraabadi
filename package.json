@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "prebuild": "prisma generate",
     "start": "next start -p 3002",
     "lint": "eslint",
     "audit:ipaymu": "npx tsx scripts/audit-ipaymu.ts",
