@@ -3,6 +3,10 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import toast from "react-hot-toast";
 import Link from "next/link";
+import {
+    resolveMengantarAdminStatus,
+    type MengantarAdminStatusTone,
+} from "@/lib/mengantar/admin-status";
 
 type OrderItem = {
     id: number;
@@ -39,6 +43,13 @@ type Order = {
     shippingCourier: string | null;
     shippingService: string | null;
     trackingNumber: string | null;
+
+    // ---- Shipment fulfilment provider (Mengantar) ----
+    shippingProvider?: string | null;
+    providerShipmentId?: string | null;
+    shipmentStatus?: string | null;
+    shippingPaymentStatus?: string | null;
+
     createdAt: string;
     user?: OrderUser | null;
     items: OrderItem[];
@@ -98,6 +109,22 @@ function paymentStatusClass(status: string) {
         case "FAILED":
         case "EXPIRED": return "text-red-600";
         default: return "text-gray-500";
+    }
+}
+
+/*
+ * Tone → badge classes for the "Status Mengantar" column. The tone is
+ * resolved by the shared, pure `resolveMengantarAdminStatus` helper so
+ * the list and the detail page can never disagree.
+ */
+function mengantarToneClass(tone: MengantarAdminStatusTone) {
+    switch (tone) {
+        case "info": return "bg-sky-50 text-sky-700 ring-1 ring-inset ring-sky-200";
+        case "progress": return "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200";
+        case "success": return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200";
+        case "warning": return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200";
+        case "danger": return "bg-red-50 text-red-700 ring-1 ring-inset ring-red-200";
+        default: return "bg-gray-50 text-gray-600 ring-1 ring-inset ring-gray-200";
     }
 }
 
@@ -506,6 +533,7 @@ export default function AdminOrdersPage() {
                                 <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Total</th>
                                 <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Status</th>
                                 <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Pembayaran</th>
+                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Status Mengantar</th>
                                 <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Tanggal</th>
                                 <th className="px-5 py-3.5 text-right text-[11px] font-semibold uppercase tracking-wide text-gray-500">Aksi</th>
                             </tr>
@@ -532,6 +560,36 @@ export default function AdminOrdersPage() {
                                     <td className="px-5 py-4">
                                         <p className="text-xs font-medium text-gray-800">{order.paymentMethod}</p>
                                         <p className={`mt-0.5 text-xs font-medium ${paymentStatusClass(order.paymentStatus)}`}>{order.paymentStatus}</p>
+                                    </td>
+                                    <td className="px-5 py-4">
+                                        {(() => {
+                                            const mengantar =
+                                                resolveMengantarAdminStatus(
+                                                    order
+                                                );
+
+                                            return (
+                                                <div className="flex flex-col gap-1">
+                                                    <span
+                                                        className={`inline-flex w-fit whitespace-nowrap rounded-md px-2.5 py-1 text-[11px] font-semibold ${mengantarToneClass(
+                                                            mengantar.tone
+                                                        )}`}
+                                                    >
+                                                        {
+                                                            mengantar.label
+                                                        }
+                                                    </span>
+                                                    {mengantar.trackingNumber && (
+                                                        <span className="whitespace-nowrap text-[11px] text-gray-400">
+                                                            Resi:{" "}
+                                                            {
+                                                                mengantar.trackingNumber
+                                                            }
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
                                     </td>
                                     <td className="px-5 py-4">
                                         <p className="whitespace-nowrap text-xs text-gray-500">{date(order.createdAt)}</p>

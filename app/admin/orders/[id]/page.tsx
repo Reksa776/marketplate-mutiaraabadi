@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { useDialog } from "@/components/ui/Dialog";
+import { resolveMengantarAdminStatus } from "@/lib/mengantar/admin-status";
 
 type Order = {
     id: number;
@@ -143,9 +144,12 @@ const SHIPMENT_STATUS_LABELS: Record<string, string> = {
     DELIVERED: "Terkirim",
     RETURNED: "Dikembalikan (RTS)",
     CANCELLED: "Pengiriman dibatalkan",
-    // Intentional admin deletion (🗑️). Persisted so reconcile/cron
-    // never auto-recreate; the admin can still recreate manually.
-    DELETED: "Dihapus manual",
+    // LOCAL intentional deletion only (admin 🗑️). Persisted so
+    // reconcile/cron never auto-recreate; the admin can still recreate
+    // manually. A provider isDeleted:true is NOT shown as DELETED — it
+    // is an external (recoverable) deletion that reconcile re-queues
+    // back to "Paket disiapkan di gudang" / menunggu recreate.
+    DELETED: "Dihapus manual (terminal)",
 };
 
 const SHIPPING_PAYMENT_LABELS: Record<string, string> = {
@@ -1477,6 +1481,17 @@ export default function AdminOrderDetailPage() {
                                     job?.pickupTime
                                         ? `${job.pickupDate} ${job.pickupTime}`
                                         : null;
+                                // Single source of truth for the admin-facing
+                                // label, so list + detail never disagree.
+                                const mengantarStatus =
+                                    resolveMengantarAdminStatus({
+                                        shippingProvider:
+                                            order.shippingProvider,
+                                        shipmentStatus: status,
+                                        providerShipmentId:
+                                            shipmentId,
+                                        trackingNumber,
+                                    });
 
                                 return (
                                     <div className="mt-5 rounded-xl border border-gray-200 bg-white">
@@ -1514,15 +1529,12 @@ export default function AdminOrderDetailPage() {
 
                                             <div className="flex justify-between gap-3">
                                                 <span className="text-gray-400">
-                                                    Status pengiriman
+                                                    Status Mengantar
                                                 </span>
                                                 <span className="font-medium text-gray-900">
-                                                    {status
-                                                        ? SHIPMENT_STATUS_LABELS[
-                                                              status
-                                                          ] ??
-                                                          status
-                                                        : "Belum dibuat"}
+                                                    {
+                                                        mengantarStatus.label
+                                                    }
                                                 </span>
                                             </div>
 

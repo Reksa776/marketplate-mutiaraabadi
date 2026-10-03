@@ -382,7 +382,7 @@ describe("reconcile after intentional deletion", () => {
         expect(mockedCreateOrder).not.toHaveBeenCalled();
     });
 
-    it("2c. a DELETED order with cleared ids is inconclusive → no-op", async () => {
+    it("2c. a DELETED order is local-terminal → no-op, no provider read", async () => {
         const result = await reconcileMengantarShipment(
             candidate({
                 shipmentStatus: "DELETED",
@@ -391,7 +391,7 @@ describe("reconcile after intentional deletion", () => {
             })
         );
 
-        expect(result.verdict).toBe("uncertain");
+        expect(result.verdict).toBe("local_deleted");
         expect(result.reconciled).toBe(false);
         expect(mockedOrder.updateMany).not.toHaveBeenCalled();
         expect(mockedCreateOrder).not.toHaveBeenCalled();

@@ -169,6 +169,23 @@ export async function GET(
             shippingService:
                 order.shippingService,
 
+            // ---- Shipment fulfilment provider (Mengantar) ----
+            // Exposed read-only so the list can render an accurate
+            // "Status Mengantar" without a second request. These are
+            // internal identifiers (never credentials), matching the
+            // detail route's existing exposure.
+            shippingProvider:
+                order.shippingProvider,
+
+            providerShipmentId:
+                order.providerShipmentId,
+
+            shipmentStatus:
+                order.shipmentStatus,
+
+            shippingPaymentStatus:
+                order.shippingPaymentStatus,
+
             trackingNumber:
                 order.trackingNumber,
 

@@ -688,7 +688,50 @@ describe("create after self-healing reset", () => {
         expect(finalize.data.providerShipmentId).toBe(
             "NEW-ORDER-1"
         );
+        expect(finalize.data.trackingNumber).toBe(
+            "NEW-CNOTE"
+        );
         expect(finalize.data.shipmentStatus).toBe("CREATED");
+    });
+
+    it("11b. external deletion → recreate persists the NEW id + resi", async () => {
+        // 1) reconcile clears the stale provider identifiers.
+        mockedLookup.mockResolvedValue({ isDeleted: true });
+        mockedOrder.updateMany.mockResolvedValue({ count: 1 });
+        mockedJob.updateMany.mockResolvedValue({ count: 1 });
+
+        const reconcile = await reconcileMengantarShipment(
+            createdOrder()
+        );
+
+        expect(reconcile.action).toBe("recreated");
+
+        // 2) the worker then creates a fresh shipment.
+        mockedOrder.findUnique.mockResolvedValue(
+            baseOrder({
+                shipmentStatus: "SHIPMENT_PENDING",
+                providerShipmentId: null,
+            })
+        );
+        mockedCreateOrder.mockResolvedValue({
+            data: [
+                {
+                    ORDER_ID: "FRESH-ORDER-2",
+                    batch_id: "FRESH-BATCH",
+                    cnote_no: "FRESH-CNOTE",
+                    isPaid: true,
+                    error: null,
+                },
+            ],
+            batch_id: "FRESH-BATCH",
+        });
+
+        const created = await createShipmentForOrder(963);
+
+        expect(created.ok).toBe(true);
+        expect(created.shipmentId).toBe("FRESH-ORDER-2");
+        expect(created.trackingNumber).toBe("FRESH-CNOTE");
+        expect(created.shipmentStatus).toBe("CREATED");
     });
 
     it("8b. a losing worker cannot POST a duplicate provider order", async () => {
@@ -1140,8 +1183,8 @@ describe("realtime UI + guards", () => {
  * missing (no flag) → anomaly → reset + re-queue + recreate.
  */
 
-describe("hybrid self-healing — explicit provider deletion", () => {
-    it("1. clears ids + NOT_CREATED, cancels jobs, never POSTs, audits", async () => {
+describe("hybrid self-healing — external deletion (recoverable)", () => {
+    it("1. local CREATED + provider isDeleted → cleared + re-queued (NOT terminal)", async () => {
         mockedLookup.mockResolvedValue({ isDeleted: true });
         mockedOrder.updateMany.mockResolvedValue({ count: 1 });
 
@@ -1150,42 +1193,31 @@ describe("hybrid self-healing — explicit provider deletion", () => {
         );
 
         expect(result.verdict).toBe("deleted");
-        expect(result.action).toBe("deleted");
+        expect(result.action).toBe("recreated");
         expect(result.reconciled).toBe(true);
 
         const call = mockedOrder.updateMany.mock.calls[0][0];
         expect(call.data).toEqual(
             expect.objectContaining({
-                shipmentStatus: "NOT_CREATED",
+                shipmentStatus: "SHIPMENT_PENDING",
                 providerShipmentId: null,
                 providerBatchId: null,
                 trackingNumber: null,
             })
         );
-        // It must NOT take the anomaly reset path.
-        expect(resetCall()).toBeUndefined();
+        // External deletion must NEVER become a local terminal DELETED.
+        expect(call.data.shipmentStatus).not.toBe("DELETED");
 
-        // A queued job is cancelled, NEVER re-queued.
+        // It IS recoverable: a job is re-queued for a fresh create.
         expect(mockedJob.updateMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: expect.objectContaining({
-                    orderId: 963,
-                }),
-                data: expect.objectContaining({
-                    status: "CANCELLED",
-                }),
-            })
-        );
-        expect(mockedJob.updateMany).not.toHaveBeenCalledWith(
             expect.objectContaining({
                 data: expect.objectContaining({
                     status: "PENDING",
                 }),
             })
         );
-        expect(mockedJob.createMany).not.toHaveBeenCalled();
 
-        // NEVER a provider create.
+        // Reconcile itself NEVER POSTs — the worker owns creation.
         expect(mockedCreateOrder).not.toHaveBeenCalled();
 
         // Safe audit record.
@@ -1198,6 +1230,37 @@ describe("hybrid self-healing — explicit provider deletion", () => {
         expect(JSON.stringify(audit)).not.toMatch(
             /api[_-]?key|webhook|secret|token/i
         );
+    });
+
+    it("1-local. local DELETED + provider isDeleted → STOP, never recreate", async () => {
+        mockedLookup.mockResolvedValue({ isDeleted: true });
+
+        const result = await reconcileMengantarShipment(
+            createdOrder({ shipmentStatus: "DELETED" })
+        );
+
+        expect(result.verdict).toBe("local_deleted");
+        expect(result.reconciled).toBe(false);
+        // The provider must not even be queried, and nothing re-queued.
+        expect(mockedLookup).not.toHaveBeenCalled();
+        expect(mockedOrder.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.updateMany).not.toHaveBeenCalled();
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+    });
+
+    it("1-local-missing. local DELETED + provider missing → STOP, never recreate", async () => {
+        mockedLookup.mockResolvedValue(null);
+
+        const result = await reconcileMengantarShipment(
+            createdOrder({ shipmentStatus: "DELETED" })
+        );
+
+        expect(result.verdict).toBe("local_deleted");
+        expect(result.reconciled).toBe(false);
+        expect(mockedLookup).not.toHaveBeenCalled();
+        expect(mockedJob.createMany).not.toHaveBeenCalled();
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
     });
 
     it("1b. a lost CAS clears nothing, audits nothing, touches no job", async () => {
@@ -1220,7 +1283,7 @@ describe("hybrid self-healing — explicit provider deletion", () => {
         // is exactly why a cleared order can never be auto-recreated.
         const second = await reconcileMengantarShipment(
             createdOrder({
-                shipmentStatus: "NOT_CREATED",
+                shipmentStatus: "SHIPMENT_PENDING",
                 providerShipmentId: null,
                 trackingNumber: null,
             })
@@ -1250,7 +1313,7 @@ describe("hybrid self-healing — explicit provider deletion", () => {
         expect(mockedJob.createMany).not.toHaveBeenCalled();
     });
 
-    it("8. two concurrent deletions → one clear, one audit, no duplicate recreate", async () => {
+    it("8. two concurrent external deletions → one reset, one job, no duplicate", async () => {
         mockedLookup.mockResolvedValue({ isDeleted: true });
         mockedOrder.updateMany
             .mockResolvedValueOnce({ count: 1 })
@@ -1443,7 +1506,12 @@ describe("manual recovery + cancelled guard", () => {
         expect(code).toContain(
             "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY"
         );
-        expect(code).toContain('shipmentStatus: "NOT_CREATED"');
+        // External deletion is RECOVERABLE — it resets to the existing
+        // SHIPMENT_PENDING recreate state and must NEVER write DELETED.
+        expect(code).toContain('shipmentStatus: "SHIPMENT_PENDING"');
+        expect(code).not.toContain('shipmentStatus: "DELETED"');
+        // Local DELETED is an explicit terminal early-return.
+        expect(code).toContain("LOCAL_TERMINAL_DELETED");
         // It must not call the provider create endpoint.
         expect(code).not.toContain("createMengantarOrder");
         expect(code).not.toContain("payMengantarUnpaid");
