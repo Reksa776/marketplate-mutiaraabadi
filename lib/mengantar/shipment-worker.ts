@@ -230,6 +230,19 @@ async function processClaimedJob(
         return;
     }
 
+    // ---- Intentional admin deletion (🗑️) — NEVER recreate ----
+    // This is the worker's final state check: even a job that was
+    // already claimed (PROCESSING) when the admin deleted the shipment
+    // aborts here, before any provider call.
+    if (order.shipmentStatus === "DELETED") {
+        await finishJob(
+            jobId,
+            "CANCELLED",
+            "Shipment dihapus manual oleh admin."
+        );
+        return;
+    }
+
     // Already created (e.g. admin manual action won the race).
     if (
         order.shipmentStatus &&
@@ -267,6 +280,22 @@ async function processClaimedJob(
 
         // ---- stage CREATE ----
         const result = await createShipmentForOrder(orderId);
+
+        // A deletion can land between our order read and the provider
+        // claim. `createShipmentForOrder` refuses a DELETED order for
+        // the worker (allowDeleted is admin-only) — abort, never retry.
+        if (
+            !result.ok &&
+            result.shipmentStatus === "DELETED"
+        ) {
+            await finishJob(
+                jobId,
+                "CANCELLED",
+                result.reason ??
+                    "Shipment dihapus manual oleh admin."
+            );
+            return;
+        }
 
         if (!result.ok) {
             await retryJob(

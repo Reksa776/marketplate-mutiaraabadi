@@ -36,6 +36,12 @@ export const MENGANTAR_SHIPMENT_STATUSES = [
     "DELIVERED",
     "RETURNED",
     "CANCELLED",
+    // Intentional admin deletion of the local shipment/tracking. It is
+    // persistent so reconcile/cron and the worker NEVER auto-recreate.
+    // Manual recovery is still possible through the existing create
+    // flow. Stored in the existing free-form `shipmentStatus` String
+    // column → NO migration.
+    "DELETED",
 ] as const;
 
 export type MengantarShipmentStatus =
@@ -49,6 +55,9 @@ const TERMINAL_SHIPMENT_STATUSES = new Set<string>([
     "DELIVERED",
     "RETURNED",
     "CANCELLED",
+    // Intentional deletion is terminal for provider webhooks — a stale
+    // event must never resurrect a deliberately deleted shipment.
+    "DELETED",
 ]);
 
 /**
@@ -69,6 +78,7 @@ const SHIPMENT_STATUS_RANK: Record<string, number> = {
     DELIVERED: 6,
     RETURNED: 7,
     CANCELLED: 8,
+    DELETED: 9,
 };
 
 /**

@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { redactMengantarKey } from "@/lib/mengantar";
-import { createShipmentForOrder } from "@/lib/mengantar/shipment";
+import {
+    createShipmentForOrder,
+    deleteMengantarShipmentForOrder,
+} from "@/lib/mengantar/shipment";
 
 export const dynamic = "force-dynamic";
 
@@ -61,7 +64,14 @@ export async function POST(
             );
         }
 
-        const result = await createShipmentForOrder(orderId);
+        /*
+         * Admin recovery is the ONLY path allowed to recreate an
+         * intentionally DELETED shipment. The automatic worker never
+         * passes `allowDeleted`.
+         */
+        const result = await createShipmentForOrder(orderId, {
+            allowDeleted: true,
+        });
 
         if (!result.ok) {
             return NextResponse.json(
@@ -153,6 +163,99 @@ export async function POST(
                               error.message
                           )
                         : "Gagal membuat shipment.",
+            },
+            { status: 500 }
+        );
+    }
+}
+
+/*
+ * DELETE /api/admin/orders/[id]/shipment
+ *
+ * Admin-only INTENTIONAL deletion of the local shipment/tracking.
+ * Server-authoritative: clears provider ids/resi, sets
+ * `shipmentStatus = "DELETED"` (persisted), invalidates any queued
+ * ShipmentJob, and audits the action. Reconcile/cron and the worker
+ * will NEVER auto-recreate; the admin can still recreate manually via
+ * POST (the existing create flow). Order.paymentStatus is untouched.
+ */
+export async function DELETE(
+    _req: Request,
+    { params }: RouteContext
+) {
+    try {
+        const session = await auth();
+
+        if (!session?.user?.id) {
+            return NextResponse.json(
+                { success: false, message: "Unauthorized." },
+                { status: 401 }
+            );
+        }
+
+        if (session.user.role !== "ADMIN") {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Akses ditolak. Hanya admin yang dapat menghapus shipment.",
+                },
+                { status: 403 }
+            );
+        }
+
+        const { id } = await params;
+        const orderId = Number(id);
+
+        if (!Number.isInteger(orderId) || orderId <= 0) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: "ID pesanan tidak valid.",
+                },
+                { status: 400 }
+            );
+        }
+
+        const result =
+            await deleteMengantarShipmentForOrder(
+                orderId,
+                session.user.id
+            );
+
+        if (!result.ok) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        result.reason ??
+                        "Gagal menghapus shipment.",
+                },
+                { status: 400 }
+            );
+        }
+
+        return NextResponse.json({
+            success: true,
+            data: {
+                changed: result.changed,
+                deleted: result.deleted ?? true,
+                shipmentStatus:
+                    result.shipmentStatus ?? "DELETED",
+            },
+        });
+    } catch (error) {
+        console.error(
+            "ADMIN MENGANTAR SHIPMENT DELETE ERROR:",
+            error instanceof Error
+                ? redactMengantarKey(error.message)
+                : error
+        );
+
+        return NextResponse.json(
+            {
+                success: false,
+                message: "Gagal menghapus shipment.",
             },
             { status: 500 }
         );

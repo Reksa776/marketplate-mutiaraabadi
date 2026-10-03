@@ -4,11 +4,10 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
-    buildTikTokEventId,
-    trackTikTokEvent,
-} from "@/lib/analytics/tiktok";
-import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
-import { buildTikTokOrderProperties } from "@/lib/analytics/tiktok-catalog";
+    whenTikTokReadyForEvents,
+} from "@/lib/analytics/tiktok-identity";
+import { trackAuthoritativeTikTokPurchase } from "@/components/analytics/PurchaseTracker";
+import type { TikTokUserMatchIdentifiers } from "@/lib/analytics/tiktok";
 
 type OrderStatus = {
     id: number;
@@ -16,6 +15,8 @@ type OrderStatus = {
     status: string;
     paymentStatus: string;
     total: number;
+    /** Authoritative SHA-256 digests from GET /api/payment/status. */
+    identity?: TikTokUserMatchIdentifiers | null;
 };
 
 export default function PaymentFinishContent() {
@@ -177,29 +178,25 @@ export default function PaymentFinishContent() {
         }
 
         whenTikTokReadyForEvents(() => {
-            trackTikTokEvent(
-                "CompletePayment",
-                /*
-                 * The status endpoint returns the order total only, so
-                 * this deduplicated copy sends value + currency +
-                 * order_id; the authoritative contents[] travel on the
-                 * server-side copy of the same event_id.
-                 */
-                buildTikTokOrderProperties([], {
-                    value: order.total,
-                    orderId: order.orderNumber,
-                }),
-                {
-                    /*
-                     * Shared dedup id — identical to the server-side
-                     * Events API CompletePayment event_id.
-                     */
-                    eventId: buildTikTokEventId(
-                        "CompletePayment",
-                        order.orderNumber
-                    ),
-                }
-            );
+            /*
+             * Authoritative Advanced Matching + event in one call:
+             * `ttq.identify(<Order → User digests>)` runs BEFORE the
+             * CompletePayment track, so the conversion carries
+             * email / phone even when the session identity store
+             * settles anonymous. event_id stays
+             * `ttq:completepayment:<orderNumber>` for server dedup.
+             *
+             * The status endpoint returns the order total only, so
+             * this copy sends value + currency + order_id; the
+             * authoritative contents[] travel on the server-side copy
+             * of the same event_id.
+             */
+            trackAuthoritativeTikTokPurchase({
+                orderId: order.orderNumber,
+                total: order.total,
+                items: [],
+                identity: order.identity ?? null,
+            });
         });
     }, [isPaid, order]);
 

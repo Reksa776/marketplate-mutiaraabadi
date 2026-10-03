@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
 
 /*
  * ==========================================
@@ -61,6 +62,19 @@ export async function GET(
                     status: true,
                     paymentStatus: true,
                     total: true,
+                    /*
+                     * Advanced Matching source. Hashed below and
+                     * NEVER returned raw — the response carries only
+                     * SHA-256 digests.
+                     */
+                    userId: true,
+                    phone: true,
+                    user: {
+                        select: {
+                            email: true,
+                            phone: true,
+                        },
+                    },
                 },
             });
 
@@ -75,9 +89,30 @@ export async function GET(
             );
         }
 
+        /*
+         * Strip the raw identity columns and hand the client the
+         * authoritative ORDER → USER digests instead. Ownership is
+         * already enforced above (`userId: session.user.id`).
+         */
+        const {
+            user,
+            phone,
+            userId,
+            ...safeOrder
+        } = order;
+
+        const identity = buildTikTokBrowserMatch({
+            email: user?.email,
+            phone: user?.phone ?? phone,
+            externalId: userId,
+        });
+
         return NextResponse.json({
             success: true,
-            data: order,
+            data: {
+                ...safeOrder,
+                identity,
+            },
         });
     } catch (error) {
         console.error(

@@ -841,6 +841,22 @@ describe("Browser/server dedup + anonymous ViewContent", () => {
     });
 
     test("browser CompletePayment callers still share the event id", () => {
+        /*
+         * The event name + the shared dedup id live in ONE helper
+         * (`trackAuthoritativeTikTokPurchase`); every browser
+         * CompletePayment caller routes through it AND still gates on
+         * the shared readiness signal.
+         */
+        const helper = readFile(
+            "components/analytics/PurchaseTracker.tsx"
+        );
+
+        expect(helper).toContain("buildTikTokEventId(");
+        expect(helper).toContain('"CompletePayment"');
+        expect(helper).toContain(
+            "trackAuthoritativeTikTokPurchase"
+        );
+
         for (const file of [
             "app/checkout/payment/[id]/page.tsx",
             "app/checkout/payment-finish/payment-finish-content.tsx",
@@ -848,8 +864,9 @@ describe("Browser/server dedup + anonymous ViewContent", () => {
         ]) {
             const code = readFile(file);
 
-            expect(code).toContain("buildTikTokEventId(");
-            expect(code).toContain('"CompletePayment"');
+            expect(code).toContain(
+                "trackAuthoritativeTikTokPurchase"
+            );
             expect(code).toContain(
                 "whenTikTokReadyForEvents"
             );

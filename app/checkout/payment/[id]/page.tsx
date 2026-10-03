@@ -3,12 +3,8 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-    buildTikTokEventId,
-    trackTikTokEvent,
-} from "@/lib/analytics/tiktok";
 import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
-import { buildTikTokOrderProperties } from "@/lib/analytics/tiktok-catalog";
+import { trackAuthoritativeTikTokPurchase } from "@/components/analytics/PurchaseTracker";
 import type { PaymentView } from "@/lib/payment/order-payment";
 import QrisPanel from "./QrisPanel";
 
@@ -182,32 +178,26 @@ export default function PaymentInstructionPage() {
         completedTracked.current = true;
 
         whenTikTokReadyForEvents(() => {
-            trackTikTokEvent(
-                "CompletePayment",
-                /*
-                 * This page knows the authoritative amount only (the
-                 * product lines are not part of the payment view), so
-                 * the payload carries value + currency + order_id and
-                 * no product identity. The server-side Events API copy,
-                 * fired by the settlement webhook with the SAME
-                 * event_id, carries the full contents[] — and an order
-                 * number is never used as a content_id.
-                 */
-                buildTikTokOrderProperties([], {
-                    value: view.amount,
-                    orderId: view.orderNumber,
-                }),
-                {
-                    /*
-                     * Shared dedup id — identical to the server-side
-                     * Events API CompletePayment event_id.
-                     */
-                    eventId: buildTikTokEventId(
-                        "CompletePayment",
-                        view.orderNumber
-                    ),
-                }
-            );
+            /*
+             * Authoritative Advanced Matching + event in one call:
+             * `ttq.identify(<Order → User digests>)` runs BEFORE the
+             * CompletePayment track, so the conversion carries
+             * email / phone even when the session identity store
+             * settles anonymous. The event_id stays
+             * `ttq:completepayment:<orderNumber>` for server dedup.
+             *
+             * This page knows the authoritative amount only (product
+             * lines are not part of the payment view), so the payload
+             * carries value + currency + order_id and no product
+             * identity — the server-side Events API copy carries the
+             * full contents[] under the SAME event_id.
+             */
+            trackAuthoritativeTikTokPurchase({
+                orderId: view.orderNumber,
+                total: view.amount,
+                items: [],
+                identity: view.identity,
+            });
         });
     }, [view]);
 

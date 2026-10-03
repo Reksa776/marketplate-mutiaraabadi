@@ -24,6 +24,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { rollbackCheckoutOrder } from "@/lib/checkout";
+import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
+import type { TikTokUserMatchIdentifiers } from "@/lib/analytics/tiktok";
 
 import {
     buildPaymentInstruction,
@@ -117,6 +119,14 @@ export type PaymentView = {
     orderNumber: string;
     status: string;
     paymentStatus: string;
+    /**
+     * AUTHORITATIVE Advanced Matching digests (SHA-256) built from
+     * Order → User on the server, so the browser CompletePayment on
+     * this page identifies with real customer keys instead of a
+     * possibly-unhydrated session store. Digest-only — never raw PII.
+     * Empty object when the account has neither email nor phone.
+     */
+    identity: TikTokUserMatchIdentifiers;
     paymentMethod: "COD" | "BANK_TRANSFER" | "E_WALLET" | "QRIS";
     paymentChannel: string | null;
     /** Total charged for this order (server-authoritative). */
@@ -394,6 +404,15 @@ export async function loadPaymentView(
             total: true,
             paidAt: true,
             createdAt: true,
+            /* Advanced Matching source (hashed below, never returned raw). */
+            userId: true,
+            phone: true,
+            user: {
+                select: {
+                    email: true,
+                    phone: true,
+                },
+            },
         },
     });
 
@@ -419,6 +438,12 @@ export async function loadPaymentView(
     const actionUrl =
         order.paymentMethod === "E_WALLET" ? order.paymentUrl : null;
 
+    const identity = buildTikTokBrowserMatch({
+        email: order.user?.email,
+        phone: order.user?.phone ?? order.phone,
+        externalId: order.userId,
+    });
+
     return {
         orderId: order.id,
         orderNumber: order.orderNumber,
@@ -427,6 +452,7 @@ export async function loadPaymentView(
         paymentMethod: order.paymentMethod,
         paymentChannel: order.paymentChannel,
         amount,
+        identity,
         paidAt: order.paidAt ? order.paidAt.toISOString() : null,
         createdAt: order.createdAt.toISOString(),
         expiresAt: expiresAt ? expiresAt.toISOString() : null,

@@ -597,12 +597,27 @@ describe("TikTok PageView — existing events keep identity behaviour", () => {
     ])("%s waits for identity and still fires %p", (file, events) => {
         const code = readFile(file);
 
+        /*
+         * The event name may live in the shared authoritative
+         * CompletePayment helper instead of the caller (all three
+         * browser paths now route through it), so accept either.
+         */
+        const helper = readFile(
+            "components/analytics/PurchaseTracker.tsx"
+        );
+
         expect(code).toContain(
             "whenTikTokReadyForEvents"
         );
 
         for (const event of events as string[]) {
-            expect(code).toContain(`"${event}"`);
+            const direct = code.includes(`"${event}"`);
+            const delegated =
+                code.includes(
+                    "trackAuthoritativeTikTokPurchase"
+                ) && helper.includes(`"${event}"`);
+
+            expect(direct || delegated).toBe(true);
         }
     });
 

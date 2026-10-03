@@ -143,6 +143,9 @@ const SHIPMENT_STATUS_LABELS: Record<string, string> = {
     DELIVERED: "Terkirim",
     RETURNED: "Dikembalikan (RTS)",
     CANCELLED: "Pengiriman dibatalkan",
+    // Intentional admin deletion (🗑️). Persisted so reconcile/cron
+    // never auto-recreate; the admin can still recreate manually.
+    DELETED: "Dihapus manual",
 };
 
 const SHIPPING_PAYMENT_LABELS: Record<string, string> = {
@@ -581,6 +584,58 @@ export default function AdminOrderDetailPage() {
                 error instanceof Error
                     ? error.message
                     : "Gagal memproses pengiriman.";
+            setShipmentError(message);
+            toast.error(message);
+        } finally {
+            setShipmentBusy(false);
+        }
+    }
+
+    /*
+     * Intentional deletion from the shipment panel. Server-authoritative:
+     * the DELETE endpoint persists `shipmentStatus = "DELETED"` and
+     * invalidates queued jobs, so cron/reconcile never recreate it.
+     */
+    async function deleteShipment() {
+        const confirmed = await dialog.confirm({
+            title: "Hapus Shipment",
+            message:
+                "Hapus pelacakan/shipment ini? Shipment tidak akan dibuat ulang otomatis.",
+            variant: "danger",
+            confirmText: "Hapus",
+        });
+
+        if (!confirmed) return;
+
+        try {
+            setShipmentBusy(true);
+            setShipmentError(null);
+
+            const response = await fetch(
+                `/api/admin/orders/${id}/shipment`,
+                { method: "DELETE" }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.message ||
+                        "Gagal menghapus shipment."
+                );
+            }
+
+            toast.success(
+                "Shipment dihapus. Tidak akan dibuat ulang otomatis."
+            );
+
+            await loadOrder();
+            await loadShipment();
+        } catch (error) {
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : "Gagal menghapus shipment.";
             setShipmentError(message);
             toast.error(message);
         } finally {
@@ -1388,12 +1443,24 @@ export default function AdminOrderDetailPage() {
                                 const canCreate =
                                     !shipmentId &&
                                     (status === "FAILED" ||
-                                        (status ===
-                                            "NOT_CREATED" &&
+                                        ((status ===
+                                            "NOT_CREATED" ||
+                                            status === "DELETED") &&
                                             (order.paymentStatus ===
                                                 "PAID" ||
                                                 isCod) &&
                                             !autoJobActive));
+                                // Intentional deletion: only when a
+                                // provider shipment/resi actually exists
+                                // and is not already deleted.
+                                const canDelete =
+                                    !busyLock &&
+                                    status !== "DELETED" &&
+                                    Boolean(
+                                        shipmentId ||
+                                            trackingNumber ||
+                                            batchId
+                                    );
                                 // Only SHIPMENT_PENDING (or an unset state)
                                 // genuinely waits for the automatic queue.
                                 // NOT_CREATED means "no auto job" (e.g.
@@ -1560,6 +1627,25 @@ export default function AdminOrderDetailPage() {
                                                             : "Buat Shipment"}
                                                     </button>
                                                 )}
+
+                                            {/* INTENTIONAL DELETION */}
+
+                                            {canDelete && (
+                                                <button
+                                                    type="button"
+                                                    onClick={
+                                                        deleteShipment
+                                                    }
+                                                    disabled={
+                                                        shipmentBusy
+                                                    }
+                                                    className="h-10 w-full rounded-lg border border-red-200 bg-white px-4 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    {shipmentBusy
+                                                        ? "Memproses..."
+                                                        : "Hapus Shipment"}
+                                                </button>
+                                            )}
 
                                             {busyLock && (
                                                 <div className="border-l-2 border-blue-300 bg-blue-50 px-3 py-2">

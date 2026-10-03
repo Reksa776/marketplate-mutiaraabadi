@@ -4,6 +4,7 @@ import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
 import PurchaseTracker from "@/components/analytics/PurchaseTracker";
 
 export const metadata: Metadata = pageMetadata({
@@ -70,6 +71,18 @@ export default async function CheckoutSuccessPage({
         },
         include: {
             items: true,
+            /*
+             * Authoritative Advanced Matching source: the account
+             * email / phone. Selected (never the whole user row) and
+             * normalized + SHA-256 hashed below before it is handed
+             * to the browser — raw PII never reaches the client.
+             */
+            user: {
+                select: {
+                    email: true,
+                    phone: true,
+                },
+            },
         },
     });
 
@@ -96,6 +109,26 @@ export default async function CheckoutSuccessPage({
         );
     }
 
+    /*
+     * Authoritative Advanced Matching digests, derived from the
+     * ORDER → USER row (not the query string, not a client payload,
+     * not a possibly-unhydrated session). This is what makes the
+     * browser Purchase carry `email` / `phone_number` even when the
+     * session-driven identity lookup loses a timing race on a
+     * post-redirect page load.
+     *
+     * Email and phone numbers are normalized exactly like the
+     * server Events API path (`buildTikTokBrowserMatch`) and each
+     * field is OMITTED when the account does not have it. Only
+     * SHA-256 digests are passed to the client.
+     */
+    const tiktokIdentity = buildTikTokBrowserMatch({
+        email: order.user?.email,
+        /* Account phone first, then the buyer's order contact. */
+        phone: order.user?.phone ?? order.phone,
+        externalId: order.userId,
+    });
+
     const paymentMethodLabel: Record<string, string> = {
         COD: "COD",
         BANK_TRANSFER: "Bank Transfer",
@@ -121,6 +154,7 @@ export default async function CheckoutSuccessPage({
             <PurchaseTracker
                 orderId={order.orderNumber}
                 total={Number(order.total)}
+                identity={tiktokIdentity}
                 items={order.items.map((item) => ({
                     productId: item.productId,
                     variantId: item.variantId,

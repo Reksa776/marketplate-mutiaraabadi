@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { createAuditLog } from "@/lib/admin/audit-log";
 
 import {
     MengantarError,
@@ -165,7 +166,14 @@ function normalizePhone(value: unknown): string | null {
 }
 
 export async function createShipmentForOrder(
-    orderId: number
+    orderId: number,
+    /**
+     * Admin manual recovery may recreate an intentionally DELETED
+     * shipment. The automatic worker must NEVER pass this — an
+     * intentionally deleted shipment stays deleted unless a human
+     * explicitly asks.
+     */
+    options: { allowDeleted?: boolean } = {}
 ): Promise<ShipmentActionResult> {
     const order = await prisma.order.findUnique({
         where: { id: orderId },
@@ -227,6 +235,24 @@ export async function createShipmentForOrder(
             reason:
                 "Pesanan sudah dibatalkan atau dana dikembalikan; shipment tidak dibuat.",
             shipmentStatus: order.shipmentStatus ?? null,
+        };
+    }
+
+    /*
+     * Intentional admin deletion. Only an explicit admin recovery
+     * (`allowDeleted`) may recreate; the automatic worker is refused so
+     * a click on 🗑️ can never be undone by a cron/worker race.
+     */
+    if (
+        order.shipmentStatus === "DELETED" &&
+        !options.allowDeleted
+    ) {
+        return {
+            ok: false,
+            changed: false,
+            reason:
+                "Shipment sudah dihapus manual oleh admin. Buat ulang lewat tombol Buat Shipment bila memang diinginkan.",
+            shipmentStatus: "DELETED",
         };
     }
 
@@ -371,6 +397,15 @@ export async function createShipmentForOrder(
      */
     const staleBefore = new Date(Date.now() - STALE_CLAIM_MS);
 
+    const claimableStatuses = options.allowDeleted
+        ? [
+              "NOT_CREATED",
+              "SHIPMENT_PENDING",
+              "FAILED",
+              "DELETED",
+          ]
+        : ["NOT_CREATED", "SHIPMENT_PENDING", "FAILED"];
+
     const claim = await prisma.order.updateMany({
         where: {
             id: order.id,
@@ -380,11 +415,7 @@ export async function createShipmentForOrder(
                 { shipmentStatus: null },
                 {
                     shipmentStatus: {
-                        in: [
-                            "NOT_CREATED",
-                            "SHIPMENT_PENDING",
-                            "FAILED",
-                        ],
+                        in: claimableStatuses,
                     },
                 },
                 {
@@ -579,6 +610,156 @@ export async function createShipmentForOrder(
             result.batch_id || created.batch_id || null,
         shipmentId: created.ORDER_ID,
         pickupSchedule: schedule.schedule,
+    };
+}
+
+export type DeleteShipmentActionResult = {
+    ok: boolean;
+    changed: boolean;
+    deleted?: boolean;
+    reason?: string;
+    shipmentStatus?: string | null;
+};
+
+/**
+ * ============================================================
+ * ADMIN INTENTIONAL DELETION (🗑️ Pelacak Order)
+ * ============================================================
+ *
+ * Server-authoritative. Clears the local shipment/tracking and marks
+ * the order `shipmentStatus = "DELETED"` so reconcile/cron and the
+ * worker can NEVER auto-recreate it.
+ *
+ * HARD RULES:
+ *   - Only `MENGANTAR` orders.
+ *   - NEVER touches Order.paymentStatus / status / total — the order
+ *     stays PAID and is not cancelled.
+ *   - Atomic CAS pinned to the EXACT state read, so a concurrent
+ *     create/worker claim (which moves `shipmentStatus`) can never be
+ *     clobbered; in that case it asks the admin to retry.
+ *   - Any queued/claimed ShipmentJob is invalidated.
+ *   - Duplicate clicks are idempotent (no second audit, no state churn).
+ *   - Audited with an existing action; no credential is ever stored.
+ *
+ * Manual recovery is still available: the existing admin create route
+ * calls `createShipmentForOrder(orderId, { allowDeleted: true })`.
+ * ============================================================
+ */
+export async function deleteMengantarShipmentForOrder(
+    orderId: number,
+    adminId: string
+): Promise<DeleteShipmentActionResult> {
+    const order = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: {
+            id: true,
+            shippingProvider: true,
+            shipmentStatus: true,
+            providerShipmentId: true,
+            providerBatchId: true,
+            trackingNumber: true,
+        },
+    });
+
+    if (!order) {
+        return { ok: false, changed: false, reason: "Pesanan tidak ditemukan." };
+    }
+
+    if (order.shippingProvider !== "MENGANTAR") {
+        return {
+            ok: false,
+            changed: false,
+            reason:
+                "Pesanan ini tidak menggunakan pengiriman Mengantar.",
+        };
+    }
+
+    // Idempotent: already deleted with nothing left to clear.
+    if (
+        order.shipmentStatus === "DELETED" &&
+        !order.providerShipmentId &&
+        !order.providerBatchId &&
+        !order.trackingNumber
+    ) {
+        return {
+            ok: true,
+            changed: false,
+            deleted: true,
+            shipmentStatus: "DELETED",
+            reason: "Shipment sudah dihapus.",
+        };
+    }
+
+    /*
+     * Atomic CAS on the exact state we just read. A concurrent create
+     * (CREATING) or finalize (CREATED) moves `shipmentStatus`, so the
+     * WHERE no longer matches and we never null out a live shipment.
+     */
+    const cleared = await prisma.order.updateMany({
+        where: {
+            id: order.id,
+            shippingProvider: "MENGANTAR",
+            shipmentStatus: order.shipmentStatus,
+            providerShipmentId: order.providerShipmentId,
+        },
+        data: {
+            shipmentStatus: "DELETED",
+            providerShipmentId: null,
+            providerBatchId: null,
+            trackingNumber: null,
+        },
+    });
+
+    if (cleared.count === 0) {
+        return {
+            ok: false,
+            changed: false,
+            reason:
+                "State shipment sedang berubah. Silakan coba lagi sebentar lagi.",
+        };
+    }
+
+    /*
+     * Invalidate the outbox so the worker cannot recreate. The worker
+     * ALSO has a final `DELETED` state check before any provider call.
+     */
+    await prisma.shipmentJob.updateMany({
+        where: {
+            orderId: order.id,
+            status: { in: ["PENDING", "FAILED", "PROCESSING"] },
+        },
+        data: {
+            status: "CANCELLED",
+            lockedAt: null,
+            lastError: "Shipment dihapus manual oleh admin.",
+        },
+    });
+
+    await createAuditLog({
+        adminId,
+        action: "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY",
+        entityType: "Order",
+        entityId: order.id,
+        description:
+            "Admin menghapus shipment/tracking Mengantar secara manual; tidak akan dibuat ulang otomatis.",
+        metadata: {
+            orderId: order.id,
+            source: "ADMIN_TRACKER",
+            hadProviderShipmentId: Boolean(
+                order.providerShipmentId
+            ),
+            hadTrackingNumber: Boolean(
+                order.trackingNumber
+            ),
+            previousShipmentStatus: order.shipmentStatus,
+        },
+    });
+
+    return {
+        ok: true,
+        changed: true,
+        deleted: true,
+        shipmentStatus: "DELETED",
     };
 }
 

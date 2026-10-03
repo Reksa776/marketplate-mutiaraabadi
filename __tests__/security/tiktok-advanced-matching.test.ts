@@ -1268,18 +1268,26 @@ describe("TikTok Advanced Matching — security invariants", () => {
     });
 
     test("browser CompletePayment callers keep the shared event id", () => {
+        /*
+         * The event name + the shared dedup id live in ONE helper
+         * (`trackAuthoritativeTikTokPurchase`), so they cannot drift
+         * between the browser CompletePayment callers.
+         */
+        const helper = readFile(
+            "components/analytics/PurchaseTracker.tsx"
+        );
+
+        expect(helper).toContain("buildTikTokEventId(");
+        expect(helper).toContain("\"CompletePayment\"");
+
+        /* Every browser CompletePayment caller routes through it. */
         for (const file of [
             "app/checkout/payment/[id]/page.tsx",
             "app/checkout/payment-finish/payment-finish-content.tsx",
             "components/analytics/PurchaseTracker.tsx",
         ]) {
-            const code = readFile(file);
-
-            expect(code).toContain(
-                "buildTikTokEventId("
-            );
-            expect(code).toContain(
-                "\"CompletePayment\""
+            expect(readFile(file)).toContain(
+                "trackAuthoritativeTikTokPurchase"
             );
         }
     });
