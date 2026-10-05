@@ -429,6 +429,7 @@ const migration = readFile(
 );
 const schema = readFile("prisma/schema.prisma");
 const checkoutLib = readFile("lib/checkout.ts");
+const orderPaymentLib = readFile("lib/payment/order-payment.ts");
 
 describe("Settlement trigger (authoritative PAID)", () => {
     it("enqueues the outbox atomically with the settlement CAS", () => {
@@ -601,6 +602,56 @@ describe("COD enqueue at checkout (no settlement event)", () => {
         expect(lf).toContain(
             'input.paymentMethod ===\n                            "COD"\n                                ? "UNPAID"'
         );
+    });
+});
+
+describe("COD auto-processing (no settlement webhook)", () => {
+    it("nudges the worker right after a COD + Mengantar checkout", () => {
+        // Enqueue alone leaves the job PENDING forever: COD has no
+        // settlement webhook, so the checkout itself must schedule the
+        // post-response processing pass.
+        const idx = checkoutLib.indexOf(
+            "await scheduleShipmentProcessing()"
+        );
+        expect(idx).toBeGreaterThan(-1);
+        // Guarded to COD + MENGANTAR only.
+        const guard = checkoutLib.slice(idx - 220, idx);
+        expect(guard).toContain('shippingProvider === "MENGANTAR"');
+        expect(guard).toContain('input.paymentMethod === "COD"');
+    });
+
+    it("keeps exactly one COD schedule call site (webhooks own NON-COD)", () => {
+        expect(
+            checkoutLib
+                .split("await scheduleShipmentProcessing()")
+                .length - 1
+        ).toBe(1);
+        for (const webhook of [ipaymuWebhook, midtransWebhook]) {
+            expect(webhook).toContain("scheduleShipmentProcessing");
+        }
+    });
+
+    it("never nudges processing for a NON-Mengantar COD order", () => {
+        const idx = checkoutLib.indexOf(
+            "await scheduleShipmentProcessing()"
+        );
+        const guard = checkoutLib.slice(idx - 220, idx);
+        expect(guard).toContain('shippingProvider === "MENGANTAR"');
+    });
+});
+
+describe("COD survives the unpaid-order expiry/cleanup", () => {
+    it("never expires/cancels a COD order through the online-payment lifecycle", () => {
+        expect(orderPaymentLib).toContain('order.paymentMethod === "COD"');
+        expect(orderPaymentLib).toContain('return "NOT_CANCELLABLE"');
+    });
+
+    it("keeps the automatic rollback COD-safe unless explicitly opted in", () => {
+        expect(checkoutLib).toContain(
+            "options?.allowCodCancellation ?? false"
+        );
+        // Raw CAS guard: automatic (0) rollback can never cancel COD.
+        expect(checkoutLib).toContain("allowCodCancellation ? 1 : 0");
     });
 });
 

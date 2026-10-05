@@ -25,7 +25,10 @@ import {
 import {
     verifyMengantarShippingCost,
 } from "./mengantar/shipping";
-import { enqueueShipmentJobTx } from "./mengantar/shipment-worker";
+import {
+    enqueueShipmentJobTx,
+    scheduleShipmentProcessing,
+} from "./mengantar/shipment-worker";
 import {
     calculateSpinRewardDiscount,
 } from "./spin-wheel";
@@ -1131,7 +1134,7 @@ export async function createCheckoutOrder(
      * ==========================================
      */
 
-    return prisma.$transaction(
+    const result = await prisma.$transaction(
         async (tx) => {
             let checkoutItems:
                 CheckoutItem[] = [];
@@ -2456,6 +2459,33 @@ export async function createCheckoutOrder(
             maxWait: 10000,
         }
     );
+
+    /*
+     * ==========================================
+     * COD POST-RESPONSE SHIPMENT PROCESSING
+     * ==========================================
+     *
+     * COD has NO online-payment settlement webhook, so the NON-COD
+     * settlement trigger (which calls scheduleShipmentProcessing())
+     * never fires for it. The ShipmentJob was enqueued inside the
+     * transaction above; nudge the worker HERE, in the same request,
+     * so the shipment is created right after this response is sent —
+     * without waiting for an external cron sweep.
+     *
+     * scheduleShipmentProcessing() registers post-response work via
+     * after(), so this checkout response is never blocked on a
+     * Mengantar API call. Any failure is swallowed and the durable
+     * PENDING job is retried by the existing sweeper. NON-COD orders
+     * keep using their settlement webhook unchanged.
+     */
+    if (
+        shippingProvider === "MENGANTAR" &&
+        input.paymentMethod === "COD"
+    ) {
+        await scheduleShipmentProcessing();
+    }
+
+    return result;
 }
 
 /*
