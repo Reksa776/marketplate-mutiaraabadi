@@ -129,6 +129,25 @@ export default async function CheckoutSuccessPage({
         externalId: order.userId,
     });
 
+    /*
+     * F3: the browser CompletePayment may only fire for a genuinely
+     * completed order. This page is reachable by URL for ANY order the
+     * session owns, so without this guard an unpaid (PENDING /
+     * PROCESSING / FAILED / EXPIRED) order would emit a conversion with
+     * the SAME deterministic event_id as the authoritative server
+     * event — a false conversion that TikTok's dedup window could then
+     * use to suppress the real one.
+     *
+     * COD is the deliberate exception: its paymentStatus stays UNPAID
+     * and it has no payment webhook, so the placed order itself is the
+     * conversion. A refunded or cancelled COD order must never fire.
+     */
+    const canTrackBrowserCompletePayment =
+        order.paymentStatus === "PAID" ||
+        (order.paymentMethod === "COD" &&
+            order.paymentStatus !== "REFUNDED" &&
+            order.status !== "CANCELLED");
+
     const paymentMethodLabel: Record<string, string> = {
         COD: "COD",
         BANK_TRANSFER: "Bank Transfer",
@@ -150,20 +169,26 @@ export default async function CheckoutSuccessPage({
             {/*
              * Authoritative order lines straight from the database:
              * each item contributes its own catalog content_id.
+             *
+             * Rendered ONLY when the order is eligible (F3): PAID, or a
+             * still-live COD order. An unpaid/refunded/cancelled order
+             * sends no browser CompletePayment.
              */}
-            <PurchaseTracker
-                orderId={order.orderNumber}
-                total={Number(order.total)}
-                identity={tiktokIdentity}
-                items={order.items.map((item) => ({
-                    productId: item.productId,
-                    variantId: item.variantId,
-                    productName: item.productName,
-                    variantName: item.variantName,
-                    quantity: item.quantity,
-                    price: Number(item.price),
-                }))}
-            />
+            {canTrackBrowserCompletePayment && (
+                <PurchaseTracker
+                    orderId={order.orderNumber}
+                    total={Number(order.total)}
+                    identity={tiktokIdentity}
+                    items={order.items.map((item) => ({
+                        productId: item.productId,
+                        variantId: item.variantId,
+                        productName: item.productName,
+                        variantName: item.variantName,
+                        quantity: item.quantity,
+                        price: Number(item.price),
+                    }))}
+                />
+            )}
             <div className="mx-auto max-w-3xl">
                 <div className="rounded-2xl bg-white p-6 shadow-sm md:p-8">
                     {/* SUCCESS */}
