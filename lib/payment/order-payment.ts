@@ -509,12 +509,26 @@ export async function expireUnpaidOrderIfExpired(
             id: true,
             status: true,
             paymentStatus: true,
+            paymentMethod: true,
             paymentExpiresAt: true,
         },
     });
 
     // Not owned / does not exist → indistinguishable to the caller.
     if (!order) return "NOT_FOUND";
+
+    /*
+     * COD is NEVER settled by the online-payment expiry lifecycle.
+     *
+     * A COD order deliberately keeps `paymentStatus = UNPAID` until the
+     * courier collects the cash on delivery, so its unpaid state must
+     * never be read as an abandoned online payment. Cancelling it here
+     * would make the shipment worker cancel the order's ShipmentJob and
+     * strand a live COD order.
+     */
+    if (order.paymentMethod === "COD") {
+        return "NOT_CANCELLABLE";
+    }
 
     if (
         order.status !== "PENDING" ||

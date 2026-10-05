@@ -2476,10 +2476,22 @@ export async function rollbackCheckoutOrder(
     orderId: number,
     options?: {
         restoreCart?: boolean;
+
+        /*
+         * COD orders legitimately stay PENDING/UNPAID until the courier
+         * collects the cash on delivery, so the AUTOMATIC expiry/cleanup
+         * rollback must NEVER cancel one. Cancelling it here makes the
+         * shipment worker cancel the order's ShipmentJob and strands a
+         * live COD order. Only an EXPLICIT cancellation opts in.
+         */
+        allowCodCancellation?: boolean;
     }
 ) {
     const restoreCart =
         options?.restoreCart ?? true;
+
+    const allowCodCancellation =
+        options?.allowCodCancellation ?? false;
 
     return prisma.$transaction(
         async (tx) => {            /*
@@ -2501,6 +2513,7 @@ export async function rollbackCheckoutOrder(
                     paymentStatus = 'FAILED'
                 WHERE id = ${orderId}
                   AND status IN ('PENDING', 'PROCESSING')
+                  AND (${allowCodCancellation} = 1 OR paymentMethod <> 'COD')
             `;
 
             if (affectedRows === 0) {
@@ -2994,6 +3007,8 @@ export async function cancelOwnPendingOrder(
      */
     await rollbackCheckoutOrder(order.id, {
         restoreCart: false,
+        // An explicit customer cancellation may cancel a COD order.
+        allowCodCancellation: true,
     });
 
     return { ok: true };
