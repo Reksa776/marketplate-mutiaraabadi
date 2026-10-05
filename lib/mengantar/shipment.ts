@@ -4,13 +4,13 @@ import { createAuditLog } from "@/lib/admin/audit-log";
 import {
     MengantarError,
     createMengantarOrder,
-    estimateMengantarShipping,
     payMengantarUnpaid,
     toInternalCourier,
     toMengantarCourier,
     type MengantarCourier,
 } from "@/lib/mengantar";
 import {
+    buildMengantarShippingOptions,
     getMengantarOriginConfig,
     resolveMengantarDestinationAreaId,
 } from "@/lib/mengantar/shipping";
@@ -99,6 +99,7 @@ function toKilograms(grams: number): number {
  * weight=Σ qty×weight invariant only needs the aggregate weight.
  */
 async function loadOrderWeight(orderId: number): Promise<{
+    weightGrams: number;
     weightKg: number;
     quantity: number;
     parcelContent: string;
@@ -148,6 +149,7 @@ async function loadOrderWeight(orderId: number): Promise<{
         .slice(0, 200);
 
     return {
+        weightGrams: grams,
         weightKg: toKilograms(grams),
         quantity: Math.max(1, quantity),
         parcelContent,
@@ -324,48 +326,70 @@ export async function createShipmentForOrder(
         };
     }
 
-    const { weightKg, quantity, parcelContent } =
+    const { weightGrams, weightKg, quantity, parcelContent } =
         await loadOrderWeight(order.id);
 
     const isCod = order.paymentMethod === "COD";
 
-    // ---- COD eligibility (per courier + destination) ----
+    /*
+     * ---- COD courier resolution (per courier + destination) ----
+     *
+     * Mengantar reports COD capability per courier in the SAME
+     * estimate that reports destination availability:
+     *   unsupported: true       → courier does not serve the area
+     *   unsupported_cod: false  → courier accepts COD for it
+     *
+     * `buildMengantarShippingOptions` is the project's single
+     * normalizer for exactly those two provider flags (it drops
+     * unsupported entries and exposes `supportsCod`), so it is the
+     * source of truth for "which couriers can carry this COD parcel".
+     *
+     * The customer may have chosen a courier that serves the
+     * destination only for PREPAID. For COD we keep their choice when
+     * it genuinely supports COD; otherwise we resolve to another
+     * available COD courier (cheapest first — the UI's default
+     * ordering) and use it for the provider POST AND the persisted
+     * courier state, so the UI/admin never shows a different courier
+     * from the one actually sent. Only when NO courier supports COD
+     * do we fail — and we never POST in that case.
+     *
+     * COD only: the NON-COD branch below is untouched.
+     */
+    let resolvedCourier = courier;
+
     if (isCod) {
-        const rates = await estimateMengantarShipping({
-            originAreaId: pickup.originAreaId,
-            destinationAreaId,
-            weightKg,
-            courier,
-            codAmount: order.codAmount
-                ? Number(order.codAmount)
-                : undefined,
-        });
+        const codOptions = (
+            await buildMengantarShippingOptions({
+                address: {
+                    province: order.province,
+                    city: order.city,
+                    district: order.district,
+                    postalCode: order.postalCode,
+                    mengantarDestinationAreaId: destinationAreaId,
+                },
+                weightGrams,
+                codAmount: order.codAmount
+                    ? Number(order.codAmount)
+                    : undefined,
+            })
+        ).filter((option) => option.supportsCod);
 
-        const entry =
-            rates[courier] ??
-            rates[
-                Object.keys(rates).find(
-                    (k) =>
-                        k.toLowerCase() ===
-                        courier.toLowerCase()
-                ) ?? ""
-            ];
+        const chosen =
+            codOptions.find(
+                (option) => option.courier === courier
+            ) ?? codOptions[0];
 
-        if (!entry || entry.unsupported === true) {
+        if (!chosen) {
             return {
                 ok: false,
+                changed: false,
                 reason:
                     "Kurir tidak melayani tujuan ini untuk COD.",
+                shipmentStatus: order.shipmentStatus ?? null,
             };
         }
 
-        if (entry.unsupported_cod !== false) {
-            return {
-                ok: false,
-                reason:
-                    "COD tidak didukung kurir ini untuk tujuan tersebut.",
-            };
-        }
+        resolvedCourier = chosen.courier;
     }
 
     const goodsValue = Math.max(
@@ -424,7 +448,22 @@ export async function createShipmentForOrder(
                 },
             ],
         },
-        data: { shipmentStatus: "CREATING" },
+        data: {
+            shipmentStatus: "CREATING",
+            /*
+             * COD courier re-resolution: persist the courier we are
+             * about to POST so the UI/admin (and any notification)
+             * shows the SAME courier the provider receives. NON-COD
+             * never takes this branch (resolvedCourier === courier).
+             */
+            ...(isCod && resolvedCourier !== courier
+                ? {
+                      providerCourier: resolvedCourier,
+                      shippingCourier:
+                          toInternalCourier(resolvedCourier),
+                  }
+                : {}),
+        },
     });
 
     if (claim.count === 0) {
@@ -481,7 +520,7 @@ export async function createShipmentForOrder(
 
     try {
         result = await createMengantarOrder({
-            courier,
+            courier: resolvedCourier,
             pickup:
                 schedule.type === "scheduledPickup"
                     ? {
@@ -569,7 +608,7 @@ export async function createShipmentForOrder(
         providerShipmentId: created.ORDER_ID,
         providerBatchId:
             result.batch_id || created.batch_id || null,
-        providerCourier: courier,
+        providerCourier: resolvedCourier,
         trackingNumber: created.cnote_no ?? null,
         shipmentStatus,
         shippingPaymentStatus,

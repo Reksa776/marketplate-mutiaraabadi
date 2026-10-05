@@ -51,16 +51,15 @@ jest.mock("@/lib/mengantar", () => ({
 }));
 
 jest.mock("@/lib/mengantar/shipping", () => ({
+    buildMengantarShippingOptions: jest.fn(),
     getMengantarOriginConfig: jest.fn(),
     resolveMengantarDestinationAreaId: jest.fn(),
 }));
 
 import { prisma } from "@/lib/prisma";
+import { createMengantarOrder } from "@/lib/mengantar";
 import {
-    createMengantarOrder,
-    estimateMengantarShipping,
-} from "@/lib/mengantar";
-import {
+    buildMengantarShippingOptions,
     getMengantarOriginConfig,
     resolveMengantarDestinationAreaId,
 } from "@/lib/mengantar/shipping";
@@ -73,8 +72,8 @@ const mockPrisma = prisma as unknown as {
 
 const mockedCreateOrder =
     createMengantarOrder as unknown as jest.Mock;
-const mockedEstimate =
-    estimateMengantarShipping as unknown as jest.Mock;
+const mockedBuildOptions =
+    buildMengantarShippingOptions as unknown as jest.Mock;
 const mockedOrigin =
     getMengantarOriginConfig as unknown as jest.Mock;
 const mockedResolveDestination =
@@ -417,9 +416,9 @@ describe("createShipmentForOrder — provider truth", () => {
             })
         );
 
-        mockedEstimate.mockResolvedValue({
-            JNE: { unsupported: false, unsupported_cod: false },
-        });
+        mockedBuildOptions.mockResolvedValue([
+            { courier: "JNE", supportsCod: true, cost: 11000 },
+        ]);
 
         mockedCreateOrder.mockResolvedValue({
             data: [providerItem()],

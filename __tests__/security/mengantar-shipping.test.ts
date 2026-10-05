@@ -414,10 +414,16 @@ describe("Shipment lifecycle (create + pay unpaid)", () => {
         );
     });
 
-    it("checks COD eligibility per courier/destination, not by name", () => {
-        expect(shipmentLib).toContain("unsupported_cod");
+    it("resolves COD eligibility per courier/destination, not by name", () => {
+        // COD-capable couriers come from the provider estimate via the
+        // shared options builder; a courier that does not support COD
+        // is resolved to an alternative BEFORE any provider POST.
         expect(shipmentLib).toContain(
-            "COD tidak didukung kurir ini"
+            "buildMengantarShippingOptions"
+        );
+        expect(shipmentLib).toContain("supportsCod");
+        expect(shipmentLib).toContain(
+            "Kurir tidak melayani tujuan ini untuk COD."
         );
     });
 

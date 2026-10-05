@@ -217,6 +217,7 @@ jest.mock("@/lib/mengantar", () => ({
 }));
 
 jest.mock("@/lib/mengantar/shipping", () => ({
+    buildMengantarShippingOptions: jest.fn(),
     getMengantarOriginConfig: jest.fn(),
     resolveMengantarDestinationAreaId: jest.fn(),
 }));
@@ -224,10 +225,10 @@ jest.mock("@/lib/mengantar/shipping", () => ({
 import { prisma } from "@/lib/prisma";
 import {
     createMengantarOrder,
-    estimateMengantarShipping,
     payMengantarUnpaid,
 } from "@/lib/mengantar";
 import {
+    buildMengantarShippingOptions,
     getMengantarOriginConfig,
     resolveMengantarDestinationAreaId,
 } from "@/lib/mengantar/shipping";
@@ -247,8 +248,8 @@ const mockPrisma = prisma as unknown as {
 
 const mockedCreateOrder =
     createMengantarOrder as unknown as jest.Mock;
-const mockedEstimate =
-    estimateMengantarShipping as unknown as jest.Mock;
+const mockedBuildOptions =
+    buildMengantarShippingOptions as unknown as jest.Mock;
 const mockedPayUnpaid =
     payMengantarUnpaid as unknown as jest.Mock;
 const mockedOrigin =
@@ -429,9 +430,9 @@ describe("createShipmentForOrder (mocked provider)", () => {
                 codAmount: 110000,
             })
         );
-        mockedEstimate.mockResolvedValue({
-            JNE: { unsupported: false, unsupported_cod: false },
-        });
+        mockedBuildOptions.mockResolvedValue([
+            { courier: "JNE", supportsCod: true, cost: 11000 },
+        ]);
         mockedCreateOrder.mockResolvedValue({
             data: [
                 {
@@ -458,13 +459,18 @@ describe("createShipmentForOrder (mocked provider)", () => {
                 codAmount: 110000,
             })
         );
-        mockedEstimate.mockResolvedValue({
-            JNE: { unsupported: false, unsupported_cod: true },
-        });
+        // The customer's courier serves the area but does NOT support
+        // COD, and no other courier does either → fail before any POST.
+        mockedBuildOptions.mockResolvedValue([
+            { courier: "JNE", supportsCod: false, cost: 11000 },
+        ]);
 
         const result = await createShipmentForOrder(10);
 
         expect(result.ok).toBe(false);
+        expect(result.reason).toBe(
+            "Kurir tidak melayani tujuan ini untuk COD."
+        );
         expect(mockedCreateOrder).not.toHaveBeenCalled();
     });
 
@@ -810,7 +816,13 @@ describe("Regressions guarded", () => {
     });
 
     it("COD semantics are gated behind the estimate, not courier name", () => {
-        expect(shipmentLib).toContain("unsupported_cod");
+        // COD capability comes from the provider estimate, normalized
+        // by the shared options builder (`supportsCod`) — never from a
+        // hardcoded courier name.
+        expect(shipmentLib).toContain(
+            "buildMengantarShippingOptions"
+        );
+        expect(shipmentLib).toContain("supportsCod");
         expect(shipmentLib).not.toContain('=== "spx"');
     });
 
