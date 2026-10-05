@@ -30,8 +30,10 @@ import {
  *     CANCELLED and never creates a shipment. This worker NEVER
  *     writes Order.paymentStatus and NEVER touches the refund state
  *     machine.
- *   - Non-COD only: auto-shipping is disabled for COD until the COD
- *     contract is fully verified (COD jobs are cancelled).
+ *   - COD + MENGANTAR is supported: COD has no online-payment
+ *     settlement, so its ShipmentJob is enqueued at order creation
+ *     (see lib/checkout.ts). A COD order is then created exactly like
+ *     a NON-COD one; the customer's paymentStatus stays UNPAID.
  *
  * No credential is ever stored on the job; `lastError` is redacted.
  * ============================================================
@@ -220,15 +222,18 @@ async function processClaimedJob(
         return;
     }
 
-    // ---- Non-COD only (COD frozen until contract verified) ----
-    if (order.paymentMethod === "COD") {
-        await finishJob(
-            jobId,
-            "CANCELLED",
-            "Auto-shipping COD belum diaktifkan."
-        );
-        return;
-    }
+    /*
+     * ---- COD is processed like any other Mengantar order ----
+     *
+     * COD has no online-payment settlement event, so its ShipmentJob is
+     * enqueued at order creation (see lib/checkout.ts) instead of at the
+     * payment webhook. The provider check above already guarantees
+     * MENGANTAR, so a COD job MUST proceed to createShipmentForOrder and
+     * must NOT be cancelled. The customer's paymentStatus stays UNPAID —
+     * createShipmentForOrder never writes paymentStatus.
+     *
+     * (NON-COD orders keep the exact same path as before.)
+     */
 
     // ---- Intentional admin deletion (🗑️) — NEVER recreate ----
     // This is the worker's final state check: even a job that was

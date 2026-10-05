@@ -45,6 +45,11 @@ const mockTx = {
     order: {
         create: jest.fn(),
     },
+    // COD + Mengantar checkout enqueues the shipment outbox inside the
+    // same transaction (lib/checkout.ts).
+    shipmentJob: {
+        createMany: jest.fn(),
+    },
     cartItem: {
         deleteMany: jest.fn(),
     },

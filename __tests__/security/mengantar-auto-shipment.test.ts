@@ -8,7 +8,7 @@
  * Covers:
  *  - Pure pickup-schedule math (90-min rule, WIB, mm-dd-yyyy)
  *  - Durable outbox worker: claim / done / waiting-balance / retry /
- *    permanent failure / refund-cancel / non-COD guard
+ *    permanent failure / refund-cancel / non-Mengantar guard / COD
  *  - Wiring: settlement enqueue, non-blocking process, admin retry
  *  - Source guarantees: no secret exposure, paymentStatus untouched,
  *    schedule never reused
@@ -325,9 +325,33 @@ describe("processShipmentJobs — outbox worker", () => {
         );
     });
 
-    it("never auto-creates a COD shipment", async () => {
+    it("processes a COD + Mengantar job instead of cancelling it", async () => {
         mockPrisma.order.findUnique.mockResolvedValue(
             order({ paymentMethod: "COD" })
+        );
+        mockedCreate.mockResolvedValue({
+            ok: true,
+            changed: true,
+            shipmentStatus: "CREATED",
+            shippingPaymentStatus: "NOT_APPLICABLE",
+            trackingNumber: "CN-COD",
+        });
+
+        await processShipmentJobs();
+
+        // COD reaches the existing create path...
+        expect(mockedCreate).toHaveBeenCalledWith(10);
+        // ...and is NEVER cancelled because of its payment method.
+        const cancelled =
+            mockPrisma.shipmentJob.updateMany.mock.calls.find(
+                (c) => c[0]?.data?.status === "CANCELLED"
+            );
+        expect(cancelled).toBeFalsy();
+    });
+
+    it("still cancels a job whose provider is not Mengantar", async () => {
+        mockPrisma.order.findUnique.mockResolvedValue(
+            order({ shippingProvider: "RAJAONGKIR" })
         );
 
         await processShipmentJobs();
@@ -404,6 +428,7 @@ const migration = readFile(
     "prisma/migrations/20261002000000_add_shipment_job/migration.sql"
 );
 const schema = readFile("prisma/schema.prisma");
+const checkoutLib = readFile("lib/checkout.ts");
 
 describe("Settlement trigger (authoritative PAID)", () => {
     it("enqueues the outbox atomically with the settlement CAS", () => {
@@ -416,7 +441,7 @@ describe("Settlement trigger (authoritative PAID)", () => {
         }
     });
 
-    it("only enqueues for non-COD Mengantar orders", () => {
+    it("only enqueues for non-COD Mengantar orders (settlement path)", () => {
         for (const webhook of [ipaymuWebhook, midtransWebhook]) {
             expect(webhook).toContain(
                 'existingOrder.shippingProvider ==='
@@ -538,6 +563,74 @@ describe("Database migration", () => {
     it("adds SHIPMENT_PENDING to the status machine", () => {
         const status = readFile("lib/mengantar/status.ts");
         expect(status).toContain('"SHIPMENT_PENDING"');
+    });
+});
+
+describe("COD enqueue at checkout (no settlement event)", () => {
+    it("enqueues a ShipmentJob for COD + Mengantar inside the create tx", () => {
+        expect(checkoutLib).toContain(
+            "enqueueShipmentJobTx(tx, order.id)"
+        );
+        const idx = checkoutLib.indexOf(
+            "enqueueShipmentJobTx(tx, order.id)"
+        );
+        expect(idx).toBeGreaterThan(-1);
+        // The enqueue is explicitly guarded to COD + MENGANTAR.
+        const guard = checkoutLib.slice(idx - 320, idx);
+        expect(guard).toContain('shippingProvider === "MENGANTAR"');
+        expect(guard).toContain('input.paymentMethod === "COD"');
+    });
+
+    it("has exactly one COD enqueue call site (no non-Mengantar enqueue)", () => {
+        expect(
+            checkoutLib
+                .split("enqueueShipmentJobTx(tx, order.id)")
+                .length - 1
+        ).toBe(1);
+    });
+
+    it("enqueues idempotently (createMany + skipDuplicates + unique orderId)", () => {
+        expect(worker).toContain("skipDuplicates: true");
+        expect(schema).toContain(
+            "orderId         Int      @unique"
+        );
+    });
+
+    it("keeps the COD customer payment UNPAID at order creation", () => {
+        const lf = checkoutLib.replace(/\r\n/g, "\n");
+        expect(lf).toContain(
+            'input.paymentMethod ===\n                            "COD"\n                                ? "UNPAID"'
+        );
+    });
+});
+
+describe("COD shipment status (never an unrecoverable state)", () => {
+    it("maps a COD ORDER_ID to CREATED, not WAITING_SHIPPING_PAYMENT", () => {
+        expect(shipmentLib).toContain("const shipmentStatus = isCod");
+        expect(shipmentLib).toContain('? "CREATED"');
+    });
+
+    it("keeps COD seller shipping payment NOT_APPLICABLE", () => {
+        expect(shipmentLib).toContain('isCod ? "NOT_APPLICABLE"');
+    });
+
+    it("keeps NON-COD insufficient balance → WAITING_SHIPPING_PAYMENT", () => {
+        expect(shipmentLib).toContain(
+            '"WAITING_SHIPPING_PAYMENT"'
+        );
+        // Still gated on `paid` for NON-COD.
+        expect(shipmentLib).toContain(": paid");
+    });
+
+    it("persists the provider ORDER_ID as providerShipmentId", () => {
+        expect(shipmentLib).toContain(
+            "providerShipmentId: created.ORDER_ID"
+        );
+    });
+
+    it("never writes the customer paymentStatus from the shipment flow", () => {
+        expect(shipmentLib).not.toContain('paymentStatus: "PAID"');
+        expect(worker).not.toContain('paymentStatus: "');
     });
 });
 

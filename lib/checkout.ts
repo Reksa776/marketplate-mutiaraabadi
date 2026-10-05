@@ -25,6 +25,7 @@ import {
 import {
     verifyMengantarShippingCost,
 } from "./mengantar/shipping";
+import { enqueueShipmentJobTx } from "./mengantar/shipment-worker";
 import {
     calculateSpinRewardDiscount,
 } from "./spin-wheel";
@@ -2139,7 +2140,36 @@ export async function createCheckoutOrder(
                     include: {
                         items: true,
                     },
-                });            /*
+                });
+
+            /*
+             * ==========================================
+             * COD AUTO-SHIPMENT ENQUEUE
+             * ==========================================
+             *
+             * COD has NO online-payment settlement event, so the
+             * NON-COD settlement webhook (which enqueues the outbox)
+             * never fires for it. Enqueue here, inside the SAME
+             * transaction as the order create, so a COD + Mengantar
+             * order always gets exactly one ShipmentJob.
+             *
+             * The customer paymentStatus is NOT touched: it stays
+             * UNPAID for COD. Creating a shipment is never a customer
+             * payment settlement.
+             *
+             * enqueueShipmentJobTx uses createMany + skipDuplicates
+             * against the unique ShipmentJob.orderId, so a retried or
+             * double-submitted checkout can never create two jobs.
+             * Scoped to COD only - the NON-COD settlement trigger in
+             * the payment webhooks is unchanged.
+             */
+            if (
+                shippingProvider === "MENGANTAR" &&
+                input.paymentMethod === "COD"
+            ) {
+                await enqueueShipmentJobTx(tx, order.id);
+            }
+            /*
              * ==========================================
              * RESERVE STOCK
              * ==========================================

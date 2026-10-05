@@ -544,9 +544,23 @@ export async function createShipmentForOrder(
      * but unpaid and WITHOUT a tracking number. It must NOT be treated
      * as shipped.
      */
-    const shipmentStatus = paid
+    /*
+     * COD scope: Mengantar bills the RECIPIENT on delivery, so a COD
+     * order has NO seller-balance shipping payment step.
+     * `payUnpaidShipmentForOrder` refuses COD and reconcile excludes
+     * COD, which makes WAITING_SHIPPING_PAYMENT an UNRECOVERABLE state
+     * for COD. A returned ORDER_ID is therefore the authoritative
+     * success signal for COD and maps directly to CREATED (the
+     * "menunggu penjemputan" state).
+     *
+     * NON-COD semantics are unchanged: insufficient balance still
+     * yields WAITING_SHIPPING_PAYMENT / UNPAID.
+     */
+    const shipmentStatus = isCod
         ? "CREATED"
-        : "WAITING_SHIPPING_PAYMENT";
+        : paid
+          ? "CREATED"
+          : "WAITING_SHIPPING_PAYMENT";
 
     const shippingPaymentStatus =
         isCod ? "NOT_APPLICABLE" : paid ? "PAID" : "UNPAID";
