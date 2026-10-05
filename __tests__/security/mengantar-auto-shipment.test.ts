@@ -41,7 +41,7 @@ describe("computeNextMengantarPickupSlot (WIB, 90-min rule)", () => {
             new Date("2026-10-01T00:00:00.000Z")
         );
         expect(slot.date).toBe("10-01-2026");
-        expect(slot.time).toBe("9:00");
+        expect(slot.time).toBe("09:00");
     });
 
     it("respects the exact 90-minute boundary", () => {
@@ -49,7 +49,7 @@ describe("computeNextMengantarPickupSlot (WIB, 90-min rule)", () => {
         const slot = computeNextMengantarPickupSlot(
             new Date("2026-10-01T00:30:00.000Z")
         );
-        expect(slot.time).toBe("9:00");
+        expect(slot.time).toBe("09:00");
     });
 
     it("rolls to the next day when today's slots are exhausted", () => {
@@ -58,7 +58,7 @@ describe("computeNextMengantarPickupSlot (WIB, 90-min rule)", () => {
             new Date("2026-10-01T10:30:00.000Z")
         );
         expect(slot.date).toBe("10-02-2026");
-        expect(slot.time).toBe("9:00");
+        expect(slot.time).toBe("09:00");
     });
 
     it("uses the documented 90-minute lead", () => {

@@ -133,7 +133,7 @@ export function computeNextMengantarPickupSlot(
                     date: `${pad2(day.month + 1)}-${pad2(
                         day.day
                     )}-${day.year}`,
-                    time: `${hour}:00`,
+                    time: `${pad2(hour)}:00`,
                     epochMs: slotEpoch,
                 };
             }
