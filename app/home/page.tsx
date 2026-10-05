@@ -4,6 +4,7 @@ import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
+import { resolvePriceDisplay } from "@/lib/price-display";
 import {
     FiArrowRight,
     FiShoppingBag,
@@ -35,6 +36,8 @@ type ProductWithVariant = {
         id: number;
         name: string;
         price: number;
+        /** DISPLAY-ONLY "Harga Coret" (never charged). */
+        comparePrice: number | null;
         effectivePrice: number;
         discount: number;
         hasDiscount: boolean;
@@ -48,27 +51,27 @@ function formatRupiah(value: number) {
     return `Rp ${value.toLocaleString("id-ID")}`;
 }
 
-function getProductPrice(product: ProductWithVariant) {
-    if (!product.variants.length) {
-        return 0;
-    }
-
-    return Math.min(
-        ...product.variants.map((variant) =>
-            variant.effectivePrice
-        )
-    );
-}
-
-function getProductOriginalPrice(product: ProductWithVariant) {
-    if (!product.variants.length) {
-        return 0;
-    }
-
-    return Math.min(
-        ...product.variants.map((variant) =>
-            variant.price
-        )
+/*
+ * Resolve ONE display per variant using the SAME shared rule the
+ * catalog card (/products) uses (lib/price-display), so /home never
+ * diverges and never shows a strikethrough that isn't on the menu.
+ *
+ * Main price stays the authoritative effective price; the struck
+ * price is either the display-only comparePrice ("Harga Coret") when
+ * it is higher, or the marketing original as the existing fallback.
+ */
+function getProductDisplays(product: ProductWithVariant) {
+    return product.variants.map((variant) =>
+        resolvePriceDisplay({
+            effectivePrice: Number(
+                variant.effectivePrice ?? variant.price
+            ),
+            originalPrice: Number(variant.price),
+            comparePrice:
+                variant.comparePrice == null
+                    ? null
+                    : Number(variant.comparePrice),
+        })
     );
 }
 
@@ -215,9 +218,36 @@ function ProductCard({
     product: ProductWithVariant;
 }) {
     const image = getProductImage(product);
-    const price = getProductPrice(product);
-    const originalPrice = getProductOriginalPrice(product);
-    const hasDiscount = price < originalPrice;
+    const displays = getProductDisplays(product);
+
+    const prices = displays
+        .map((display) => display.price)
+        .filter((value) => Number.isFinite(value));
+
+    const price =
+        prices.length > 0
+            ? Math.min(...prices)
+            : 0;
+
+    /*
+     * At most ONE struck price per variant, coming from the shared
+     * rule: comparePrice wins when higher, otherwise the marketing
+     * original. Filter to finite values so a null/0 never renders.
+     */
+    const strikethroughs = displays
+        .map((display) => display.strikethrough)
+        .filter(
+            (value): value is number =>
+                value != null && Number.isFinite(value)
+        );
+
+    const originalPrice =
+        strikethroughs.length > 0
+            ? Math.min(...strikethroughs)
+            : 0;
+
+    const hasDiscount =
+        strikethroughs.length > 0;
 
     /*
      * Discount percentage — calculated from
