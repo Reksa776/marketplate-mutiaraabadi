@@ -2513,7 +2513,7 @@ export async function rollbackCheckoutOrder(
                     paymentStatus = 'FAILED'
                 WHERE id = ${orderId}
                   AND status IN ('PENDING', 'PROCESSING')
-                  AND (${allowCodCancellation} = 1 OR paymentMethod <> 'COD')
+                  AND (${allowCodCancellation ? 1 : 0} = 1 OR paymentMethod <> 'COD')
             `;
 
             if (affectedRows === 0) {
