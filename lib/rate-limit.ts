@@ -402,6 +402,25 @@ export const rateLimiters = {
     guestOrderLookup: (key: string) =>
         checkRateLimit(`glookup:${key}`, 10, 15 * 60 * 1000), // 10 per 15 min
 
+    /*
+     * Guest order access that AUTHORIZED with this order's own token.
+     *
+     * Kept separate from guestOrderLookup because the two measure
+     * opposite things: `guestOrderLookup` bounds the ENUMERATION surface
+     * (no token / forged token / unknown id), while this bucket only
+     * bounds sustained volume from a caller who already holds a 256-bit
+     * token bound to one order — i.e. the buyer themselves.
+     *
+     * The customer payment page polls its status every 3 seconds while
+     * payment is pending (~300 requests per 15 min for a page left
+     * open), and a buyer may refresh the order detail repeatedly. Both
+     * must stay well inside this ceiling, so it is set at 600 per
+     * 15 min (~40/min) — 2x the polling rate, while still capping a
+     * client that hammers the endpoint.
+     */
+    guestOrderAccessAuthorized: (key: string) =>
+        checkRateLimit(`gaccess:${key}`, 600, 15 * 60 * 1000), // 600 per 15 min
+
     guestOrderLookupIdentity: (key: string) =>
         checkRateLimit(`glookup-id:${key}`, 20, 60 * 60 * 1000), // 20 per hour
 

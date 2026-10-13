@@ -112,12 +112,25 @@ export default function PaymentInstructionPage() {
         }
     }, [orderId, router]);
 
+    const expiresAt = view?.expiresAt ? new Date(view.expiresAt).getTime() : null;
+    const remainingMs = expiresAt ? expiresAt - now : null;
+    const isFinal =
+        !!view && FINAL_PAYMENT_STATUSES.includes(view.paymentStatus);
+
     /* ==========================================
      * POLLING (UX ONLY)
      * ========================================== */
 
     useEffect(() => {
         if (!orderId) return;
+
+        /*
+         * A final status never changes again, so polling then is pure
+         * load: it kept hitting `/payment-status` (a token-authorized
+         * order read) every 3 seconds until the buyer navigated away,
+         * for an answer that was already settled.
+         */
+        if (isFinal) return;
 
         let cancelled = false;
 
@@ -133,7 +146,7 @@ export default function PaymentInstructionPage() {
             cancelled = true;
             clearInterval(interval);
         };
-    }, [orderId, poll]);
+    }, [orderId, poll, isFinal]);
 
     /* ==========================================
      * COUNTDOWN
@@ -143,11 +156,6 @@ export default function PaymentInstructionPage() {
         const timer = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(timer);
     }, []);
-
-    const expiresAt = view?.expiresAt ? new Date(view.expiresAt).getTime() : null;
-    const remainingMs = expiresAt ? expiresAt - now : null;
-    const isFinal =
-        !!view && FINAL_PAYMENT_STATUSES.includes(view.paymentStatus);
 
     /* ==========================================
      * EXPIRY SETTLEMENT

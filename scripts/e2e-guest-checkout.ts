@@ -32,11 +32,14 @@
  *  E2E_SERVER_LOG     dev server stdout log, scanned for token leaks
  *  E2E_SERVER_ERR_LOG dev server stderr log, scanned for token leaks
  *
- * NOTE — the guest order-access limiter is IN-MEMORY per server
- * process (`guestOrderLookup`: 10 requests / 15 minutes per IP, shared
- * by the order detail, tracking and payment-status routes). Run this
- * harness against a freshly started dev server, otherwise repeated
- * runs exhaust that budget and report 429 instead of the real result.
+ * NOTE — order-access limiting is IN-MEMORY per server process and is
+ * split by outcome: calls that do NOT authorize (no cookie / forged /
+ * cross-order) draw on the strict enumeration budget (10 requests /
+ * 15 minutes per IP), while calls that DO authorize use a much larger
+ * ceiling. This harness deliberately makes several UNAUTHORIZED calls,
+ * so consecutive runs exhaust the strict budget and start reporting 429
+ * instead of the real result — run it against a freshly started dev
+ * server (a token-authorized buyer is no longer affected).
  */
 
 import crypto from "crypto";
@@ -1293,6 +1296,42 @@ async function scenarioIpaymu() {
     );
 
     /*
+     * ==========================================
+     * PAYMENT-PAGE POLLING (3s cadence) MUST NOT BE THROTTLED
+     * ==========================================
+     *
+     * The customer payment page polls /payment-status every 3 seconds
+     * while payment is pending, and that route shares its limiter with
+     * the order detail and tracking routes. Charging those polls to the
+     * strict enumeration budget returned 429 after ~30 seconds, after
+     * which the page silently stops updating and never flips to PAID.
+     *
+     * 40 consecutive polls here = 2 minutes of the real cadence, and is
+     * 4x the old strict budget.
+     */
+    const POLL_ATTEMPTS = 40;
+    const pollStatuses: number[] = [];
+
+    for (let poll = 1; poll <= POLL_ATTEMPTS; poll += 1) {
+        const response = await browser.request(
+            `/api/orders/${orderId}/payment-status`
+        );
+
+        pollStatuses.push(response.status);
+    }
+
+    const countStatus = (status: number) =>
+        pollStatuses.filter((code) => code === status).length;
+
+    check(
+        scenario,
+        `polling payment-status ${POLL_ATTEMPTS}x tidak pernah 429`,
+        countStatus(200) === POLL_ATTEMPTS &&
+            countStatus(429) === 0,
+        `200=${countStatus(200)} 429=${countStatus(429)}`
+    );
+
+    /*
      * No shipment may be enqueued before settlement; a PENDING job here
      * would mean the harness risked a provider call.
      */
@@ -1673,10 +1712,20 @@ async function main() {
 
     const failed = checks.filter((entry) => !entry.ok);
 
-    if (checks.some((entry) => entry.detail.includes("429"))) {
+    /*
+     * Only a FAILED check that was actually throttled counts as a
+     * limiter artifact — a passing check may legitimately mention
+     * "429=0" in its detail.
+     */
+    const throttled = checks.some(
+        (entry) =>
+            !entry.ok && entry.detail.includes("status=429")
+    );
+
+    if (throttled) {
         console.log(
-            "\nCATATAN: ada respons 429 — limiter akses order guest bersifat in-memory " +
-                "(10 permintaan / 15 menit per IP). Jalankan harness ini pada dev server yang baru dijalankan."
+            "\nCATATAN: ada respons 429 — budget enumerasi akses order guest bersifat in-memory " +
+                "(10 permintaan tanpa otorisasi / 15 menit per IP). Jalankan harness ini pada dev server yang baru dijalankan."
         );
     }
 

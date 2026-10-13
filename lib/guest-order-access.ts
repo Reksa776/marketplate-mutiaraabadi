@@ -425,11 +425,14 @@ const EXPIRED_ACCESS_MESSAGE =
  * Everything else returns 404 (never 403) so a sequential order id
  * cannot be used as an existence oracle.
  *
- * Guest calls are additionally rate limited per IP. On success the
- * route receives `userId` — the SESSION id when present, or null for a
- * token-authorized guest, which is what the downstream helpers use to
- * skip user-scoped filtering. Ownership has ALREADY been proven here,
- * so a null userId is never "unowned".
+ * Guest calls are additionally rate limited per IP, on TWO buckets:
+ * the strict enumeration budget for anything that did NOT authorize, and
+ * a much larger ceiling for a caller who presented this order's own
+ * token (see the comment inside). On success the route receives
+ * `userId` — the SESSION id when present, or null for a token-authorized
+ * guest, which is what the downstream helpers use to skip user-scoped
+ * filtering. Ownership has ALREADY been proven here, so a null userId is
+ * never "unowned".
  */
 export async function authorizeOrderRequest(
     request: Request,
@@ -440,14 +443,59 @@ export async function authorizeOrderRequest(
     const sessionUserId =
         session?.user?.id ?? null;
 
+    const decision = await resolveOrderAccess({
+        orderId,
+        sessionUserId,
+    });
+
+    /*
+     * ==========================================
+     * GUEST RATE LIMITING — TWO BUCKETS
+     * ==========================================
+     *
+     * The ENUMERATION surface is a request that does NOT authorize: no
+     * cookie, a forged or other-order token, an id that does not exist.
+     * Those keep the strict `guestOrderLookup` budget (10 / 15 min / IP),
+     * so guessing ids or grinding tokens stays capped.
+     *
+     * A request that DID authorize is not enumeration at all — the token
+     * is 256 bits, bound to this one order, and the read is a single
+     * indexed lookup — so it is charged to a much larger ceiling
+     * instead. Charging authorized reads to the strict budget locked
+     * legitimate buyers out of their own order: the customer payment
+     * page polls `/payment-status` every 3 seconds, which exhausts
+     * 10 requests in about 30 seconds. The same budget is shared by the
+     * order detail, tracking and payment-status routes, so a buyer who
+     * simply refreshes their order a few times could be denied too.
+     *
+     * This is evaluated AFTER resolution on purpose: the resolution is
+     * what tells a buyer apart from an attacker, and an unauthorized
+     * caller is still capped at the strict budget, so the amount of work
+     * a guesser can force stays bounded.
+     *
+     * An EXPIRED token also counts as a genuine buyer: the hash matched,
+     * so the caller really holds this order's secret and is being sent to
+     * the OTP recovery flow rather than being treated as enumeration.
+     */
     if (!sessionUserId) {
         const ip = getClientIp(request);
 
-        const allowed = rateLimiters.guestOrderLookup(
-            guestIpKey({ ip, scope: "order-access" })
-        ).allowed;
+        const bucketKey = guestIpKey({
+            ip,
+            scope: "order-access",
+        });
 
-        if (!allowed) {
+        const genuineBuyer =
+            decision.ok ||
+            decision.reason === "EXPIRED";
+
+        const limit = genuineBuyer
+            ? rateLimiters.guestOrderAccessAuthorized(
+                  bucketKey
+              )
+            : rateLimiters.guestOrderLookup(bucketKey);
+
+        if (!limit.allowed) {
             return {
                 ok: false,
                 status: 429,
@@ -456,11 +504,6 @@ export async function authorizeOrderRequest(
             };
         }
     }
-
-    const decision = await resolveOrderAccess({
-        orderId,
-        sessionUserId,
-    });
 
     if (!decision.ok) {
         if (decision.reason === "EXPIRED") {

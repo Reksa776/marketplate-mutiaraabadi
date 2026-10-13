@@ -20,6 +20,13 @@
 process.env.AUTH_SECRET =
     process.env.AUTH_SECRET || "guest-order-access-test-secret";
 
+/*
+ * A trusted proxy lets each test below use its OWN client IP. The order
+ * access limiters are real (in-memory), so without a per-test bucket the
+ * strict budget consumed by one test would leak into the next.
+ */
+process.env.TRUSTED_PROXY = "1";
+
 const mockCookieJar = {
     values: {} as Record<string, string>,
     throwOnRead: false,
@@ -110,6 +117,7 @@ import {
     buildGuestIdentityKey,
 } from "@/lib/guest-identity";
 import { POST as recoverPOST } from "@/app/api/orders/recover/route";
+import { rateLimiters } from "@/lib/rate-limit";
 
 const mockedAuth = auth as unknown as jest.Mock;
 const mockedOrder = prisma.order as unknown as {
@@ -689,7 +697,6 @@ describe("POST /api/orders/recover", () => {
     });
 
     test("recovery is rate limited per IP", async () => {
-        const { rateLimiters } = require("@/lib/rate-limit");
         const spy = jest
             .spyOn(rateLimiters, "guestRecoveryRequest")
             .mockReturnValue({
@@ -706,6 +713,170 @@ describe("POST /api/orders/recover", () => {
 
         expect(response.status).toBe(429);
         expect(mockedOrder.findUnique).not.toHaveBeenCalled();
+
+        spy.mockRestore();
+    });
+});
+
+/* ==========================================
+ * ORDER ACCESS RATE LIMITING (TWO BUCKETS)
+ * ==========================================
+ *
+ * The order detail, tracking and payment-status routes all call
+ * `authorizeOrderRequest`, which shares one per-IP budget. The customer
+ * payment page polls `/payment-status` every 3 seconds while payment is
+ * pending, so a single budget for everything throttled REAL BUYERS out
+ * of their own order about 30 seconds into that page (HTTP 429, and the
+ * page then stops updating and never flips to PAID).
+ *
+ * The budget is therefore split by OUTCOME:
+ *   - anything that does NOT authorize → strict enumeration budget;
+ *   - a caller presenting THIS order's own token → a large ceiling.
+ */
+
+describe("Guest order access limiter", () => {
+    const TOKEN_ORDER_ID = 42;
+
+    /**
+     * A request from one IP, with a cookie that either matches the
+     * stored hash (authorized) or is a hostile forgery for the same
+     * order id (never authorized).
+     */
+    function accessAttempt(
+        ip: string,
+        authorized: boolean
+    ): Request {
+        mockCookieJar.values[
+            `${GUEST_ORDER_COOKIE_PREFIX}${TOKEN_ORDER_ID}`
+        ] = authorized
+            ? `${TOKEN_ORDER_ID}.${RAW_TOKEN}`
+            : `${TOKEN_ORDER_ID}.${"A".repeat(43)}`;
+
+        mockedOrder.findUnique.mockResolvedValue({
+            id: TOKEN_ORDER_ID,
+            userId: null,
+            guestAccessTokenHash:
+                hashGuestAccessToken(RAW_TOKEN),
+            guestAccessTokenExpiresAt: guestAccessTokenExpiry(),
+        });
+
+        return new Request(
+            `http://test/api/orders/${TOKEN_ORDER_ID}`,
+            { headers: { "x-forwarded-for": ip } }
+        );
+    }
+
+    test("a buyer holding this order's token is not throttled by the strict budget", async () => {
+        /*
+         * 20 requests: twice the strict 10/15 min budget. Before the
+         * split this failed with 429 on request 11 — the exact failure a
+         * buyer would hit while the payment page polls.
+         */
+        const ip = "198.51.100.10";
+
+        for (let attempt = 1; attempt <= 20; attempt += 1) {
+            const result = await authorizeOrderRequest(
+                accessAttempt(ip, true),
+                TOKEN_ORDER_ID
+            );
+
+            expect(result).toEqual({
+                ok: true,
+                userId: null,
+                via: "TOKEN",
+            });
+        }
+    });
+
+    test("a forged token keeps the strict enumeration budget", async () => {
+        const ip = "198.51.100.11";
+
+        for (let attempt = 1; attempt <= 10; attempt += 1) {
+            const result = await authorizeOrderRequest(
+                accessAttempt(ip, false),
+                TOKEN_ORDER_ID
+            );
+
+            expect(result).toMatchObject({
+                ok: false,
+                status: 404,
+            });
+        }
+
+        const eleventh = await authorizeOrderRequest(
+            accessAttempt(ip, false),
+            TOKEN_ORDER_ID
+        );
+
+        expect(eleventh).toMatchObject({
+            ok: false,
+            status: 429,
+        });
+    });
+
+    test("a request with no cookie at all is charged to the strict budget", async () => {
+        const ip = "198.51.100.12";
+
+        mockedOrder.findUnique.mockResolvedValue({
+            id: TOKEN_ORDER_ID,
+            userId: null,
+            guestAccessTokenHash:
+                hashGuestAccessToken(RAW_TOKEN),
+            guestAccessTokenExpiresAt: guestAccessTokenExpiry(),
+        });
+
+        const anonymousAttempt = () => {
+            mockCookieJar.values = {};
+
+            return new Request(
+                `http://test/api/orders/${TOKEN_ORDER_ID}`,
+                { headers: { "x-forwarded-for": ip } }
+            );
+        };
+
+        for (let attempt = 1; attempt <= 10; attempt += 1) {
+            expect(
+                await authorizeOrderRequest(
+                    anonymousAttempt(),
+                    TOKEN_ORDER_ID
+                )
+            ).toMatchObject({ ok: false, status: 404 });
+        }
+
+        expect(
+            await authorizeOrderRequest(
+                anonymousAttempt(),
+                TOKEN_ORDER_ID
+            )
+        ).toMatchObject({ ok: false, status: 429 });
+    });
+
+    test("an authorized buyer is still bounded by a ceiling", async () => {
+        /*
+         * The generous bucket is not unlimited: track how much of it a
+         * buyer holding a valid token consumes, so sustained abuse from
+         * a leaked cookie is still capped.
+         */
+        const spy = jest
+            .spyOn(
+                rateLimiters,
+                "guestOrderAccessAuthorized"
+            )
+            .mockReturnValue({
+                allowed: false,
+                remaining: 0,
+                retryAfterMs: 1000,
+            } as never);
+
+        const result = await authorizeOrderRequest(
+            accessAttempt("198.51.100.13", true),
+            TOKEN_ORDER_ID
+        );
+
+        expect(result).toMatchObject({
+            ok: false,
+            status: 429,
+        });
 
         spy.mockRestore();
     });
