@@ -21,10 +21,7 @@ import {
     rateLimiters,
 } from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
-import {
-    buildGuestIdentityKey,
-    generateGuestAccessToken,
-} from "@/lib/guest-identity";
+import { buildGuestIdentityKey } from "@/lib/guest-identity";
 import {
     issueGuestOrderAccessCookie,
     listGuestAccessibleOrderIds,
@@ -334,18 +331,6 @@ export async function POST(
               )
             : null;
 
-        /*
-         * ==========================================
-         * GUEST ORDER ACCESS TOKEN (pre-generated)
-         * ==========================================
-         *
-         * Generated here so the raw value can be returned EXACTLY ONCE
-         * (httpOnly cookie). It is never logged.
-         */
-        const guestToken = userId
-            ? null
-            : generateGuestAccessToken();
-
         const result =
             await createCheckoutOrder(
                 {
@@ -444,16 +429,21 @@ export async function POST(
          * Bind the guest order to this browser with an httpOnly cookie
          * so it can be tracked later without exposing the token.
          *
-         * NOT on a replay: the stored hash is the ORIGINAL token's, so
-         * issuing a fresh one here would overwrite the buyer's working
-         * cookie with a value that no longer matches the order — locking
-         * them out of their own order.
+         * The cookie MUST carry the same token whose hash the order
+         * persisted (``result.guestAccessToken``). Minting a separate
+         * token here would set a cookie that no longer matches the
+         * stored hash — locking the buyer out of the order they just
+         * placed, which is exactly what the detail page then reports as
+         * "Pesanan tidak ditemukan".
+         *
+         * Also NOT on a replay: the stored hash is the ORIGINAL token's,
+         * so overwriting the cookie there would break a working cookie.
          */
-        if (guestToken && !result.duplicate) {
+        if (result.guestAccessToken && !result.duplicate) {
             issueGuestOrderAccessCookie(
                 response,
                 result.order.id,
-                guestToken
+                result.guestAccessToken
             );
         }
 

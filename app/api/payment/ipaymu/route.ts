@@ -16,10 +16,7 @@ import {
     rateLimiters,
 } from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
-import {
-    buildGuestIdentityKey,
-    generateGuestAccessToken,
-} from "@/lib/guest-identity";
+import { buildGuestIdentityKey } from "@/lib/guest-identity";
 import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
 import {
     hashCartToken,
@@ -364,11 +361,6 @@ export async function POST(request: Request) {
               )
             : null;
 
-        /* Guest order access token — returned once, via cookie only. */
-        const guestToken = userId
-            ? null
-            : generateGuestAccessToken();
-
         const result = await createCheckoutOrder({
             userId,
 
@@ -677,14 +669,19 @@ export async function POST(request: Request) {
          * tracking can be opened without ever exposing the token in a
          * response body or URL.
          *
+         * The cookie MUST carry exactly the token whose hash the order
+         * persisted (``result.guestAccessToken``); a separately minted
+         * token would not match the stored hash and would lock the buyer
+         * out of the order they just placed.
+         *
          * Skipped for an idempotent REPLAY — a new token would not match
          * the stored hash and would clobber the buyer's valid cookie.
          */
-        if (guestToken && !result.duplicate) {
+        if (result.guestAccessToken && !result.duplicate) {
             issueGuestOrderAccessCookie(
                 response,
                 result.order.id,
-                guestToken
+                result.guestAccessToken
             );
         }
 

@@ -17,10 +17,7 @@ import {
     rateLimiters,
 } from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
-import {
-    buildGuestIdentityKey,
-    generateGuestAccessToken,
-} from "@/lib/guest-identity";
+import { buildGuestIdentityKey } from "@/lib/guest-identity";
 import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
 import {
     readIdempotencyKey,
@@ -705,11 +702,6 @@ export async function POST(
               )
             : null;
 
-        /* Guest order access token — returned once, via cookie only. */
-        const guestToken = userId
-            ? null
-            : generateGuestAccessToken();
-
         const result =
             await createCheckoutOrder({
                 userId,
@@ -761,15 +753,20 @@ export async function POST(
         );
 
         /*
+         * The cookie MUST carry the same token whose hash the order
+         * persisted (``result.guestAccessToken``); a separately minted
+         * token would not match the stored hash and would lock the buyer
+         * out of the order they just placed.
+         *
          * Never re-issue the cookie for an idempotent REPLAY: the stored
          * hash belongs to the original token, so overwriting it here
          * would invalidate the buyer's working cookie.
          */
-        if (guestToken && !result.duplicate) {
+        if (result.guestAccessToken && !result.duplicate) {
             issueGuestOrderAccessCookie(
                 response,
                 result.order.id,
-                guestToken
+                result.guestAccessToken
             );
         }
 

@@ -446,9 +446,39 @@ describe("Idempotent replay must not clobber the access cookie", () => {
          * no longer matches, locking them out of their own order.
          */
         expect(code).toMatch(
-            /if \(guestToken && !result\.duplicate\)/
+            /if \(result\.guestAccessToken && !result\.duplicate\)/
         );
     });
+
+    test.each([
+        "app/api/orders/route.ts",
+        "app/api/buy-now/route.ts",
+        "app/api/buy-now/ipaymu/route.ts",
+        "app/api/payment/ipaymu/route.ts",
+    ])(
+        "%s writes the CHECKOUT's own token into the cookie",
+        (file) => {
+            const code = readFileSync(
+                resolve(process.cwd(), file),
+                "utf-8"
+            );
+
+            /*
+             * The cookie MUST carry the token whose hash the order
+             * persisted. Minting a separate token here produces a cookie
+             * that resolves to NOT_FOUND — the buyer is then locked out
+             * of the order they just placed and sees "Pesanan tidak
+             * ditemukan" on the confirmation page.
+             */
+            expect(
+                code
+            ).not.toMatch(/generateGuestAccessToken/);
+
+            expect(code).toMatch(
+                /issueGuestOrderAccessCookie\(\s*response,\s*result\.order\.id,\s*result\.guestAccessToken\s*\)/
+            );
+        }
+    );
 });
 
 /* ==========================================
