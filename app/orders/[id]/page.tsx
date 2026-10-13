@@ -8,6 +8,7 @@ import {
 } from "react";
 import toast from "react-hot-toast";
 import { useDialog } from "@/components/ui/Dialog";
+import WhatsAppConfirmButton from "@/components/orders/WhatsAppConfirmButton";
 type OrderItem = {
     id: number;
     productId: number;
@@ -750,6 +751,20 @@ export default function OrderDetailPage() {
                                 ✕ Batalkan Pesanan
                             </button>
                         )}
+
+                        {/*
+                         * KONFIRMASI VIA WHATSAPP ADMIN
+                         *
+                         * Read-only hand-off: the link (destination
+                         * number + draft message) is built by
+                         * /api/orders/[id]/whatsapp-confirm, which
+                         * re-checks ownership. Nothing is sent for the
+                         * customer and the order is never mutated.
+                         */}
+                        <WhatsAppConfirmButton
+                            orderId={order.id}
+                            className="w-full sm:w-auto"
+                        />
                     </div>
                 </div>
 

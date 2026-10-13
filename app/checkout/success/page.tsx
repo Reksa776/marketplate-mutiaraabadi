@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOrderAccess } from "@/lib/guest-order-access";
 import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
 import PurchaseTracker from "@/components/analytics/PurchaseTracker";
+import WhatsAppConfirmButton from "@/components/orders/WhatsAppConfirmButton";
 
 export const metadata: Metadata = pageMetadata({
     title: "Pembayaran Berhasil",
@@ -373,6 +374,35 @@ export default async function CheckoutSuccessPage({
                                 {order.postalCode}
                             </div>
                         </div>
+                    </div>
+
+                    {/*
+                     * KONFIRMASI VIA WHATSAPP ADMIN
+                     *
+                     * Available ONLY once the order row exists (this
+                     * page has already loaded it) and the browser holds
+                     * order access. The link is built server-side from
+                     * the order row + the WhatsApp session connected by
+                     * QR in the admin dashboard; the customer chooses
+                     * when to open WhatsApp, nothing is sent for them.
+                     */}
+                    <div className="mt-8 rounded-xl border border-green-100 bg-green-50/60 p-5">
+                        <h2 className="text-lg font-semibold">
+                            Konfirmasi Pesanan
+                        </h2>
+
+                        <p className="mt-1 text-sm text-gray-600">
+                            Kabari admin lewat WhatsApp bahwa
+                            pesanan ini sudah dibuat. Pesan
+                            sudah terisi otomatis, kamu
+                            tinggal menekan Kirim di aplikasi
+                            WhatsApp.
+                        </p>
+
+                        <WhatsAppConfirmButton
+                            orderId={order.id}
+                            className="mt-4"
+                        />
                     </div>
 
                     {/* BUTTON */}
