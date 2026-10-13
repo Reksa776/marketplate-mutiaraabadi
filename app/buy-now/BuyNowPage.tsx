@@ -59,6 +59,7 @@ type AddressForm = {
 
     recipientName: string;
     phone: string;
+    email: string;
     address: string;
 
     province: string;
@@ -127,6 +128,12 @@ type BuyNowData = {
 
     addresses: Address[];
 
+    /**
+     * false for a guest: the inline address is then kept locally
+     * instead of being written to the (session-only) address book.
+     */
+    authenticated: boolean;
+
     store: {
         id: number;
 
@@ -190,6 +197,7 @@ const emptyAddressForm: AddressForm = {
 
     recipientName: "",
     phone: "",
+    email: "",
     address: "",
 
     province: "",
@@ -213,6 +221,79 @@ const emptyAddressForm: AddressForm = {
 
     isDefault: false,
 };
+
+/*
+ * =========================================================
+ * GUEST ADDRESS — LOCAL, NEVER PERSISTED
+ * =========================================================
+ *
+ * A guest has no account and therefore no address book, so the address
+ * typed here is held in component state and sent INLINE with the
+ * shipping quote and the order creation request.
+ *
+ * Nothing here is trusted: the server re-validates every field
+ * (lib/guest-address.ts), canonicalizes the region labels from the
+ * stored hierarchy and resolves the shipping destination itself.
+ */
+
+type GuestAddress = {
+    recipientName: string;
+    phone: string;
+    email: string;
+    address: string;
+    province: string;
+    city: string;
+    district: string;
+    subdistrict: string;
+    postalCode: string;
+    provinceId: number | null;
+    regencyId: number | null;
+    districtId: number | null;
+    villageId: number | null;
+    rajaOngkirDestinationId: number | null;
+    latitude: number | null;
+    longitude: number | null;
+};
+
+function toPositiveIntOrNull(
+    value: string | null
+): number | null {
+    const parsed = Number(value);
+
+    return Number.isInteger(parsed) && parsed > 0
+        ? parsed
+        : null;
+}
+
+function toGuestAddress(
+    form: AddressForm
+): GuestAddress {
+    return {
+        recipientName: form.recipientName.trim(),
+        phone: form.phone.trim(),
+        email: form.email.trim(),
+        address: form.address.trim(),
+        province: form.province,
+        city: form.city,
+        district: form.district,
+        subdistrict: form.subdistrict,
+        postalCode: form.postalCode.trim(),
+        provinceId: toPositiveIntOrNull(form.provinceId),
+        regencyId: toPositiveIntOrNull(form.cityId),
+        districtId: toPositiveIntOrNull(form.districtId),
+        villageId: toPositiveIntOrNull(
+            form.subdistrictId
+        ),
+        rajaOngkirDestinationId:
+            form.rajaOngkirDestinationId,
+        latitude: form.latitude
+            ? Number(form.latitude)
+            : null,
+        longitude: form.longitude
+            ? Number(form.longitude)
+            : null,
+    };
+}
 
 /*
  * =========================================================
@@ -533,6 +614,13 @@ export default function BuyNowPage({
 
     const [showAddressForm, setShowAddressForm] =
         useState(false);
+
+    /*
+     * The guest's inline shipping address (null for a logged-in buyer
+     * using the saved-address book).
+     */
+    const [guestAddress, setGuestAddress] =
+        useState<GuestAddress | null>(null);
 
     const [savingAddress, setSavingAddress] =
         useState(false);
@@ -1421,6 +1509,15 @@ export default function BuyNowPage({
                 setSelectedAddress(
                     ""
                 );
+
+                /*
+                 * Guest with no saved address: open the inline form
+                 * immediately, so buy-now never dead-ends on an empty
+                 * address list (and never asks for a login).
+                 */
+                if (!checkoutData.authenticated) {
+                    setShowAddressForm(true);
+                }
             }
         } catch (error) {
             console.error(
@@ -1629,6 +1726,42 @@ export default function BuyNowPage({
             return;
         }
 
+        /*
+         * A guest has no account, so there is no address book to write
+         * to (and POST /api/addresses would answer 401). The address is
+         * kept LOCALLY instead and sent inline downstream; the server
+         * validates and resolves it (lib/guest-address.ts).
+         */
+        if (!data?.authenticated) {
+            if (!addressForm.email.trim()) {
+                toast.error(
+                    "Email wajib diisi untuk konfirmasi pesanan."
+                );
+
+                return;
+            }
+
+            setGuestAddress(
+                toGuestAddress(addressForm)
+            );
+
+            setSelectedAddress("");
+
+            setShowAddressForm(
+                false
+            );
+
+            setAddressForm({
+                ...emptyAddressForm,
+            });
+
+            toast.success(
+                "Alamat pengiriman siap digunakan."
+            );
+
+            return;
+        }
+
         try {
             setSavingAddress(
                 true
@@ -1810,30 +1943,24 @@ export default function BuyNowPage({
             return;
         }
 
-        if (
-            !selectedAddress
-        ) {
-            setShippingOptions(
-                []
-            );
-
-            setSelectedShipping(
-                null
-            );
-
-            return;
-        }
-
-        const address =
+        /*
+         * Logged-in buyer → a saved address the buyer owns.
+         * Guest            → the local inline address.
+         *
+         * The client only says WHICH address; the destination area is
+         * always resolved SERVER-SIDE inside the API route.
+         */
+        const savedAddress =
             data.addresses.find(
-                (
-                    item
-                ) =>
+                (item) =>
                     item.id ===
                     selectedAddress
             );
 
-        if (!address) {
+        const shippingAddress =
+            savedAddress ?? guestAddress;
+
+        if (!shippingAddress) {
             setShippingOptions(
                 []
             );
@@ -1844,6 +1971,13 @@ export default function BuyNowPage({
 
             return;
         }
+
+        const addressPayload: Record<
+            string,
+            unknown
+        > = savedAddress
+            ? { addressId: savedAddress.id }
+            : { guestAddress };
 
         /*
          * Mengantar is the PRIMARY shipping provider; origin/destination
@@ -1859,7 +1993,7 @@ export default function BuyNowPage({
 
         const destination =
             Number(
-                address.rajaOngkirDestinationId
+                shippingAddress.rajaOngkirDestinationId
             );
 
         const weight =
@@ -1906,8 +2040,7 @@ export default function BuyNowPage({
                                     body:
                                         JSON.stringify(
                                             {
-                                                addressId:
-                                                    address.id,
+                                                ...addressPayload,
 
                                                 weight,
                                             }
@@ -2090,6 +2223,7 @@ export default function BuyNowPage({
     }, [
         data,
         selectedAddress,
+        guestAddress,
     ]);
 
     /*
@@ -2266,11 +2400,9 @@ export default function BuyNowPage({
             return;
         }
 
-        if (
-            !selectedAddress
-        ) {
+        if (!selectedAddress && !guestAddress) {
             toast.error(
-                "Pilih alamat pengiriman."
+                "Lengkapi alamat pengiriman."
             );
 
             return;
@@ -2317,8 +2449,7 @@ export default function BuyNowPage({
                                 quantity:
                                     numericQuantity,
 
-                                addressId:
-                                    selectedAddress,
+                                ...addressPayload,
 
                                 shipping:
                                     selectedShipping,
@@ -2402,11 +2533,9 @@ export default function BuyNowPage({
             return;
         }
 
-        if (
-            !selectedAddress
-        ) {
+        if (!selectedAddress && !guestAddress) {
             toast.error(
-                "Pilih alamat pengiriman."
+                "Lengkapi alamat pengiriman."
             );
 
             return;
@@ -2473,9 +2602,10 @@ export default function BuyNowPage({
                                 quantity:
                                     numericQuantity,
 
-                                addressId:
-                                    selectedAddress,                                    shipping:
-                                        selectedShipping,
+                                ...addressPayload,
+
+                                shipping:
+                                    selectedShipping,
 
                                     paymentMethod:
                                         paymentMethod,
@@ -2615,11 +2745,9 @@ export default function BuyNowPage({
             return;
         }
 
-        if (
-            !selectedAddress
-        ) {
+        if (!selectedAddress && !guestAddress) {
             toast.error(
-                "Pilih alamat pengiriman."
+                "Lengkapi alamat pengiriman."
             );
 
             return;
@@ -2703,6 +2831,24 @@ export default function BuyNowPage({
         ) || null;
 
     /*
+     * Logged-in buyer → their saved address id.
+     * Guest            → the inline address, re-validated and
+     *                    re-resolved by the server on every route.
+     */
+    const addressPayload = selectedAddress
+        ? { addressId: selectedAddress }
+        : { guestAddress };
+
+    /*
+     * A guest's address lives in local state, so "an address has been
+     * chosen" is true for either the saved selection or the inline
+     * guest entry.
+     */
+    const hasShippingAddress = Boolean(
+        selectedAddress || guestAddress
+    );
+
+    /*
      * =====================================================
      * PAYMENT BUTTON STATE
      * =====================================================
@@ -2710,7 +2856,7 @@ export default function BuyNowPage({
 
     const paymentButtonDisabled =
         creatingOrder ||
-        !address ||
+        !hasShippingAddress ||
         !selectedShipping;
 
     /*
@@ -2956,12 +3102,15 @@ export default function BuyNowPage({
                                     }}
                                     className="text-sm font-semibold text-rose-600 hover:text-rose-700"
                                 >
-                                    + Tambah Alamat
+                                    {guestAddress
+                                        ? "Ubah Alamat"
+                                        : "+ Tambah Alamat"}
                                 </button>
                             </div>
 
                             {data.addresses.length ===
-                                0 ? (
+                                0 &&
+                            !guestAddress ? (
                                 <div className="mt-5 rounded-2xl border border-dashed border-gray-300 p-6 text-center">
                                     <p className="font-medium">
                                         Belum ada alamat
@@ -2990,6 +3139,84 @@ export default function BuyNowPage({
                                 </div>
                             ) : (
                                 <div className="mt-5 space-y-3">
+                                    {guestAddress && (
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setSelectedAddress(
+                                                    ""
+                                                );
+
+                                                setSelectedShipping(
+                                                    null
+                                                );
+
+                                                setShippingOptions(
+                                                    []
+                                                );
+                                            }}
+                                            className={`w-full rounded-2xl border p-4 text-left transition ${!selectedAddress
+                                                ? "border-rose-500 bg-rose-50"
+                                                : "border-gray-200 hover:border-gray-300"
+                                                }`}
+                                        >
+                                            <div className="flex items-start justify-between gap-4">
+                                                <div>
+                                                    <div className="flex flex-wrap items-center gap-2 font-semibold">
+                                                        {
+                                                            guestAddress.recipientName
+                                                        }
+
+                                                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-normal text-gray-600">
+                                                            Tamu
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="mt-1 text-sm text-gray-500">
+                                                        {
+                                                            guestAddress.phone
+                                                        }
+                                                    </div>
+
+                                                    <div className="mt-3 text-sm leading-6 text-gray-700">
+                                                        {
+                                                            guestAddress.address
+                                                        }
+
+                                                        <br />
+
+                                                        {
+                                                            guestAddress.subdistrict
+                                                        }
+                                                        ,{" "}
+                                                        {
+                                                            guestAddress.district
+                                                        }
+                                                        ,{" "}
+                                                        {
+                                                            guestAddress.city
+                                                        }
+                                                        ,{" "}
+                                                        {
+                                                            guestAddress.province
+                                                        }
+
+                                                        {guestAddress.postalCode &&
+                                                            ` ${guestAddress.postalCode}`}
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex shrink-0 flex-col items-end gap-2">
+                                                    {!selectedAddress && (
+                                                        <span className="text-xs font-semibold text-rose-600">
+                                                            ✓ Dipilih
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </button>
+                                    )}
+
                                     {data.addresses.map(
                                         (
                                             item
@@ -3205,6 +3432,45 @@ export default function BuyNowPage({
                                                 placeholder="08xxxxxxxxxx"
                                                 className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm outline-none focus:border-rose-500"
                                             />
+                                        </div>
+
+                                        {/* EMAIL */}
+
+                                        <div>
+                                            <label className="text-sm font-medium">
+                                                Email
+                                                {!data.authenticated &&
+                                                    " *"}
+                                            </label>
+
+                                            <input
+                                                type="email"
+                                                value={
+                                                    addressForm.email
+                                                }
+                                                onChange={(
+                                                    e
+                                                ) =>
+                                                    setAddressForm(
+                                                        (
+                                                            prev
+                                                        ) => ({
+                                                            ...prev,
+                                                            email:
+                                                                e
+                                                                    .target
+                                                                    .value,
+                                                        })
+                                                    )
+                                                }
+                                                placeholder="nama@email.com"
+                                                className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm outline-none focus:border-rose-500"
+                                            />
+
+                                            <p className="mt-1 text-xs text-gray-500">
+                                                Untuk konfirmasi &
+                                                resi pesanan.
+                                            </p>
                                         </div>
 
                                         {/* ADDRESS */}
@@ -3576,7 +3842,9 @@ export default function BuyNowPage({
                                                 ? "Menyimpan..."
                                                 : loadingDestination
                                                     ? "Mencari lokasi..."
-                                                    : "Simpan Alamat"}
+                                                    : data.authenticated
+                                                        ? "Simpan Alamat"
+                                                        : "Gunakan Alamat Ini"}
                                         </button>
                                     </div>
                                 </div>
@@ -3609,15 +3877,14 @@ export default function BuyNowPage({
                                 )}
                             </div>
 
-                            {!selectedAddress && (
+                            {!hasShippingAddress && (
                                 <div className="mt-5 rounded-2xl bg-gray-50 p-5 text-sm text-gray-500">
-                                    Pilih alamat
-                                    pengiriman terlebih
-                                    dahulu.
+                                    Isi alamat pengiriman
+                                    terlebih dahulu.
                                 </div>
                             )}
 
-                            {selectedAddress &&
+                            {hasShippingAddress &&
                                 !loadingShipping &&
                                 shippingOptions.length ===
                                 0 && (

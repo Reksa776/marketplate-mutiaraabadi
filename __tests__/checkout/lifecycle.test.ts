@@ -13,6 +13,13 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
+import {
+    flat,
+    functionBody,
+    hasFlat,
+    hasSql,
+} from "../helpers/source-invariants";
+
 function readFile(
     relativePath: string
 ): string {
@@ -21,6 +28,63 @@ function readFile(
         "utf-8"
     );
 }
+
+/*
+ * True when a route actually reaches the shared limiter.
+ *
+ * The import became MULTI-LINE when the guest limiters were added, so
+ * matching one exact `import { rateLimiters } from ...` line is a locator
+ * lie; match the module + at least one limiter call instead.
+ */
+function usesRateLimiters(code: string): boolean {
+    return (
+        code.includes('from "@/lib/rate-limit"') &&
+        /rateLimiters\.[A-Za-z]+\(/.test(code)
+    );
+}
+
+/**
+ * The AUTHENTICATED branch's order-creation limiter. The variable was
+ * renamed `user.id` → `userId` when the guest path was added, so accept
+ * the current name (and the legacy one) instead of pinning one literal.
+ */
+function limitsAuthedOrderCreation(code: string): boolean {
+    return (
+        code.includes("rateLimiters.orderCreation(userId)") ||
+        code.includes("rateLimiters.orderCreation(user.id)") ||
+        code.includes("rateLimiters.orderCreation(user.id!)")
+    );
+}
+
+/**
+ * The GUEST branch must be limited too: a device/IP bucket AND an
+ * identity bucket (hashed email/phone), so neither one client nor one
+ * person rotating IPs can spam order creation.
+ */
+function limitsGuestCheckout(code: string): boolean {
+    return (
+        code.includes("rateLimiters.guestCheckoutDevice(") &&
+        (code.includes("rateLimiters.guestCheckoutIdentity(") ||
+            code.includes("rateLimiters.guestCodIdentity("))
+    );
+}
+
+/*
+ * The shared stock/voucher release primitive. The webhook routes delegate
+ * to it, so an invariant about release behaviour belongs to THIS module
+ * plus a check that each webhook actually calls it.
+ */
+const orderStockCode = readFile("lib/order-stock.ts");
+
+/*
+ * The rollback primitive: rollbackCheckoutOrder() delegates to
+ * cancelOrderForReservations(), which owns the CAS. Scoping assertions to
+ * the primitive keeps them working when the wrapper changes.
+ */
+const cancelReservationsBody = functionBody(
+    readFile("lib/checkout.ts"),
+    "export async function cancelOrderForReservations"
+);
 
 function assert(
     condition: boolean,
@@ -250,8 +314,9 @@ test("Flash sale uses atomic $executeRaw", () => {
         checkoutCode.includes(
             "$executeRaw"
         ) &&
-            checkoutCode.includes(
-                "UPDATE FlashSale"
+            hasSql(
+                checkoutCode,
+                "UPDATE flashsale"
             ),
         "Missing atomic flash sale reservation"
     );
@@ -284,10 +349,20 @@ test("Voucher increment is atomic", () => {
         voucherCode.includes(
             "$executeRaw"
         ) &&
-            voucherCode.includes(
-                "UPDATE Voucher"
+            hasSql(
+                voucherCode,
+                "UPDATE voucher"
             ),
         "Voucher increment not atomic"
+    );
+
+    /*
+     * The increment must carry its own quota guard: without it two
+     * concurrent checkouts could both consume the last remaining slot.
+     */
+    assert(
+        hasSql(voucherCode, "usedCount < quota"),
+        "Voucher increment missing quota guard"
     );
 });
 
@@ -358,11 +433,24 @@ test("Rollback CAS only transitions PENDING/PROCESSING", () => {
 });
 
 test("Rollback restores flash sale stock atomically", () => {
+    /*
+     * The release moved into cancelOrderForReservations() (the shared
+     * primitive rollbackCheckoutOrder() now delegates to), so scope the
+     * assertion to THAT function instead of to a positional slice.
+     */
     assert(
-        checkoutCode.includes("FLASH SALE ITEM") &&
-        checkoutCode.includes("UPDATE FlashSale") &&
-        checkoutCode.includes("soldCount >="),
+        hasSql(
+            cancelReservationsBody,
+            "UPDATE flashsale"
+        ),
         "Rollback doesn't restore flash sale stock atomically"
+    );
+    assert(
+        hasSql(
+            cancelReservationsBody,
+            "soldCount >="
+        ),
+        "Rollback flash sale restore missing soldCount guard"
     );
 });
 
@@ -379,14 +467,20 @@ test("Rollback restores regular stock", () => {
 });
 
 test("Rollback restores voucher usage", () => {
+    /*
+     * Scoped to the primitive and located by the calls that perform the
+     * restore (not by a comment banner), including the guest-aware
+     * per-identity bucket.
+     */
     assert(
-        checkoutCode.includes(
-            "RESTORE VOUCHER"
-        ) &&
-            checkoutCode.includes(
-                "decrement: 1"
-            ),
-        "Rollback doesn't restore voucher"
+        cancelReservationsBody.includes("voucher.updateMany") &&
+            cancelReservationsBody.includes("decrement: 1"),
+        "Rollback doesn't restore the voucher quota"
+    );
+    assert(
+        cancelReservationsBody.includes("voucherUserUsage.update") &&
+            cancelReservationsBody.includes("voucherId_ownerKey"),
+        "Rollback doesn't restore the per-identity voucher usage bucket"
     );
 });
 
@@ -723,24 +817,29 @@ test("Pending webhook cannot revert PAID order (CAS guard)", () => {
 });
 
 test("Webhook has flash-sale aware stock release (via shared module)", () => {
-    // Stock release was extracted to lib/order-stock.ts
-    const orderStockCode = readFile("lib/order-stock.ts");
     assert(
         orderStockCode.includes('flashSale.findFirst'),
         "order-stock.ts missing flash sale lookup"
     );
     assert(
-        orderStockCode.includes('UPDATE FlashSale'),
+        hasSql(orderStockCode, "UPDATE flashsale"),
         "order-stock.ts missing flash sale stock restore"
     );
     assert(
-        orderStockCode.includes('soldCount >='),
+        hasSql(orderStockCode, "soldCount >="),
         "order-stock.ts missing soldCount guard for flash sale restore"
     );
-    // Webhook imports the shared module
+    // BOTH webhook implementations (iPaymu is live, Midtrans legacy)
+    // must release through the shared module, never with their own copy.
     assert(
         webhookCode.includes('releaseStockAndVoucherForOrder'),
-        "Webhook missing releaseStockAndVoucherForOrder import/usage"
+        "iPaymu webhook missing releaseStockAndVoucherForOrder usage"
+    );
+    assert(
+        readFile(
+            "app/api/payment/midtrans/notification/route.ts"
+        ).includes("releaseStockAndVoucherForOrder"),
+        "Midtrans webhook missing releaseStockAndVoucherForOrder usage"
     );
 });
 
@@ -754,16 +853,53 @@ test("Stock release is conditional (flash sale vs regular)", () => {
 });
 
 test("Webhook verifies payment signature", () => {
+    /*
+     * The route must verify the provider signature, and the comparison
+     * itself must be timing-safe. iPaymu signs the raw body with the VA
+     * (HMAC-SHA256); the helper is the only place that implements it.
+     */
     assert(
-        webhookCode.includes('timingSafeEqual') || webhookCode.includes('signature'),
-        "Webhook missing signature verification"
+        webhookCode.includes("verifyWebhookSignature("),
+        "iPaymu webhook doesn't verify the X-Signature"
+    );
+    assert(
+        readFile("lib/payment/ipaymu.ts").includes(
+            "timingSafeEqual"
+        ),
+        "Signature comparison is not timing-safe"
     );
 });
 
 test("Webhook validates order amount", () => {
+    /*
+     * iPaymu names the amount field differently (sub_total / amount /
+     * total) than Midtrans (gross_amount); the shared helper is the only
+     * place that interprets it, and the route must call it on the
+     * SETTLEMENT path, BEFORE the CAS update. A missing/mismatched amount
+     * therefore fails closed and can never settle an order.
+     */
     assert(
-        webhookCode.includes('gross_amount') || webhookCode.includes('grossAmount'),
-        "Webhook missing amount validation"
+        webhookCode.includes("verifyNotificationAmount("),
+        "iPaymu webhook doesn't validate the notified amount"
+    );
+
+    const settleIdx = flat(webhookCode).indexOf(
+        'statusClass === "success"'
+    );
+    const amountIdx = flat(webhookCode).indexOf(
+        "verifyNotificationAmount("
+    );
+    const casIdx = flat(webhookCode).indexOf(
+        "AND paymentStatus NOT IN ('PAID', 'REFUNDED')"
+    );
+
+    assert(
+        settleIdx >= 0 && amountIdx > settleIdx,
+        "Amount validation is not on the settlement path"
+    );
+    assert(
+        casIdx >= 0 && amountIdx < casIdx,
+        "Amount must be verified BEFORE the settlement CAS"
     );
 });
 
@@ -799,11 +935,20 @@ test("Stock release checks usageCount > 0 before decrementing VoucherUserUsage",
     );
 });
 
-test("Stock release uses voucherId_userId composite key for VoucherUserUsage", () => {
-    const orderStockCode = readFile("lib/order-stock.ts");
+test("Stock release scopes VoucherUserUsage by ownerKey (guest-aware)", () => {
+    /*
+     * The per-identity usage bucket moved from `voucherId_userId` to
+     * `voucherId_ownerKey`, so a GUEST (userId = NULL) and a logged-in
+     * buyer each release exactly the bucket they consumed. The scope must
+     * be derived from the ORDER, never from the (untrusted) caller.
+     */
     assert(
-        orderStockCode.includes('voucherId_userId'),
-        "order-stock.ts not using voucherId_userId composite key"
+        orderStockCode.includes('voucherId_ownerKey'),
+        "order-stock.ts not using the voucherId_ownerKey composite key"
+    );
+    assert(
+        orderStockCode.includes("orderOwnerKey(order)"),
+        "Release scope must be derived from the order, not the caller"
     );
 });
 
@@ -846,10 +991,14 @@ test("Product.sold uses GREATEST guard in stock release (shared module)", () => 
 
 test("Flash sale stock uses transaction client (tx)", () => {
     assert(
-        (checkoutCode.includes('tx.$executeRaw') ||
-         (checkoutCode.includes('await tx') && checkoutCode.includes('.$executeRaw'))) &&
-        checkoutCode.includes('UPDATE FlashSale'),
-        "Flash sale stock not using transaction client"
+        hasSql(checkoutCode, "UPDATE flashsale") &&
+            checkoutCode.includes("tx.$executeRaw"),
+        "Checkout flash sale stock reservation not using transaction client"
+    );
+    assert(
+        orderStockCode.includes("tx.$executeRaw") &&
+            hasSql(orderStockCode, "UPDATE flashsale"),
+        "Shared release flash sale restore not using transaction client"
     );
 });
 
@@ -1114,9 +1263,28 @@ test("verifyShippingCost validates weight is positive", () => {
 });
 
 test("Address lookup uses both id and userId (IDOR protection)", () => {
+    /*
+     * A saved address is fetched with findFirst({ where: { id, userId } }),
+     * so another customer's addressId can never be used (it resolves to no
+     * row → 404). Guests have no address row at all: their inline address
+     * is validated + resolved server-side by resolveGuestAddress().
+     */
     assert(
-        checkoutCode.includes("addressId:") && checkoutCode.includes("userId:"),
+        hasFlat(
+            checkoutCode,
+            "id: input.addressId, userId: input.userId"
+        ),
         "Address lookup missing userId constraint"
+    );
+    assert(
+        checkoutCode.includes(
+            "input.userId && input.addressId"
+        ),
+        "Saved-address lookup must be gated on an authenticated userId"
+    );
+    assert(
+        checkoutCode.includes("resolveGuestAddress("),
+        "Guest address path missing server-side validation"
     );
 });
 
@@ -1170,28 +1338,58 @@ test("RollbackCheckoutOrder uses $executeRaw for CAS (not findUnique-then-update
 });
 
 test("Webhook expired: CAS comes before stock release", () => {
-    const expiredIfIdx = webhookCode.indexOf('if (\n            isExpired');
-    const failedIfIdx = webhookCode.indexOf('if (\n            isFailed');
-    assert(expiredIfIdx >= 0 && failedIfIdx > expiredIfIdx, "Cannot locate isExpired handler");
-    const expiredSection = webhookCode.substring(expiredIfIdx, failedIfIdx);
-    const casIdx = expiredSection.indexOf("$executeRaw");
-    const releaseIdx = expiredSection.indexOf("releaseStockAndVoucherForOrder");
+    /*
+     * Expiry is handled by the shared FAILED/EXPIRED branch
+     * (`isFailed || statusClass === "failed"`), so locate that branch in
+     * the flattened source and assert ordering INSIDE it.
+     */
+    const branch = flat(webhookCode);
+    const branchIdx = branch.indexOf(
+        'if (isFailed || statusClass === "failed")'
+    );
+    const releaseIdx = branch.indexOf(
+        "releaseStockAndVoucherForOrder("
+    );
+    /*
+     * Search for the CAS guard INSIDE the branch: the pending branch
+     * earlier in the file carries the same `paymentStatus != 'PAID'`
+     * text, so a plain indexOf would compare against the wrong handler.
+     */
+    const casIdx = branch.indexOf(
+        "paymentStatus != 'PAID'",
+        branchIdx
+    );
+
     assert(
-        casIdx >= 0 && releaseIdx >= 0 && casIdx < releaseIdx,
+        branchIdx >= 0 && releaseIdx > branchIdx,
+        "Cannot locate the expired/failed handler"
+    );
+    assert(
+        casIdx > branchIdx && casIdx < releaseIdx,
         "CAS must come before stock release in expired handler"
     );
 });
 
 test("Webhook failed: CAS comes before stock release", () => {
-    const failedIfIdx = webhookCode.indexOf('if (\n            isFailed');
-    const refundedIfIdx = webhookCode.indexOf('if (\n            isRefunded');
-    assert(failedIfIdx >= 0 && refundedIfIdx > failedIfIdx, "Cannot locate isFailed handler");
-    const failedSection = webhookCode.substring(failedIfIdx, refundedIfIdx);
-    const casIdx = failedSection.indexOf("$executeRaw");
-    const releaseIdx = failedSection.indexOf("releaseStockAndVoucherForOrder");
+    const branch = flat(webhookCode);
+    const branchIdx = branch.indexOf(
+        'if (isFailed || statusClass === "failed")'
+    );
+    const releaseIdx = branch.indexOf(
+        "releaseStockAndVoucherForOrder("
+    );
+    const earlyReturnIdx = branch.indexOf(
+        "affectedRows === 0",
+        branchIdx
+    );
+
     assert(
-        casIdx >= 0 && releaseIdx >= 0 && casIdx < releaseIdx,
-        "CAS must come before stock release in failed handler"
+        branchIdx >= 0 && releaseIdx > branchIdx,
+        "Cannot locate the failed handler"
+    );
+    assert(
+        earlyReturnIdx > branchIdx && earlyReturnIdx < releaseIdx,
+        "Failed handler must skip the release when the CAS matched no row"
     );
 });
 
@@ -1328,7 +1526,7 @@ test("rateLimiters.orderCreation limit is 10 per minute", () => {
 
 test("POST /api/orders imports rateLimiters", () => {
     assert(
-        ordersRouteRL.includes('import { rateLimiters } from "@/lib/rate-limit"'),
+        usesRateLimiters(ordersRouteRL),
         "/api/orders POST doesn't import rateLimiters"
     );
 });
@@ -1359,7 +1557,7 @@ test("POST /api/orders rate limit check is before createCheckoutOrder", () => {
 
 test("POST /api/payment/ipaymu imports rateLimiters", () => {
     assert(
-        ipaymuCartRouteRL.includes('import { rateLimiters } from "@/lib/rate-limit"'),
+        usesRateLimiters(ipaymuCartRouteRL),
         "/api/payment/ipaymu POST doesn't import rateLimiters"
     );
 });
@@ -1389,17 +1587,44 @@ test("POST /api/payment/ipaymu rate limit check is before createCheckoutOrder", 
 
 test("POST /api/buy-now/ipaymu imports rateLimiters", () => {
     assert(
-        buyNowIpaymuRouteRL.includes('import { rateLimiters } from "@/lib/rate-limit"'),
+        usesRateLimiters(buyNowIpaymuRouteRL),
         "/api/buy-now/ipaymu POST doesn't import rateLimiters"
     );
 });
 
-test("POST /api/buy-now/ipaymu calls rateLimiters.orderCreation with user.id", () => {
+test("POST /api/buy-now/ipaymu calls rateLimiters.orderCreation with userId", () => {
     assert(
-        buyNowIpaymuRouteRL.includes("rateLimiters.orderCreation(user.id!)") ||
-        buyNowIpaymuRouteRL.includes("rateLimiters.orderCreation(user.id)"),
+        limitsAuthedOrderCreation(buyNowIpaymuRouteRL),
         "/api/buy-now/ipaymu POST doesn't call rateLimiters.orderCreation"
     );
+});
+
+test("All four order-creation routes limit the AUTHENTICATED branch", () => {
+    for (const [name, code] of [
+        ["/api/orders", ordersRouteRL],
+        ["/api/buy-now", buyNowRouteRL],
+        ["/api/payment/ipaymu", ipaymuCartRouteRL],
+        ["/api/buy-now/ipaymu", buyNowIpaymuRouteRL],
+    ] as const) {
+        assert(
+            limitsAuthedOrderCreation(code),
+            `${name} lost its per-user order-creation limiter`
+        );
+    }
+});
+
+test("All four order-creation routes limit the GUEST branch", () => {
+    for (const [name, code] of [
+        ["/api/orders", ordersRouteRL],
+        ["/api/buy-now", buyNowRouteRL],
+        ["/api/payment/ipaymu", ipaymuCartRouteRL],
+        ["/api/buy-now/ipaymu", buyNowIpaymuRouteRL],
+    ] as const) {
+        assert(
+            limitsGuestCheckout(code),
+            `${name} lost its guest (device/identity) limiter`
+        );
+    }
 });
 
 test("POST /api/buy-now/ipaymu returns 429 when rate limited", () => {
@@ -1420,8 +1645,7 @@ test("POST /api/buy-now/ipaymu rate limit check is before createCheckoutOrder", 
 
 test("Existing POST /api/buy-now rate limiting still works", () => {
     assert(
-        buyNowRouteRL.includes("rateLimiters.orderCreation(user.id!)") ||
-        buyNowRouteRL.includes("rateLimiters.orderCreation(user.id)"),
+        limitsAuthedOrderCreation(buyNowRouteRL),
         "/api/buy-now POST lost its rate limiting"
     );
 });
@@ -1682,30 +1906,39 @@ test("rollbackCheckoutOrder deletes FlashSalePurchase after restoring flash sale
     );
 });
 
-test("rollbackCheckoutOrder FlashSalePurchase cleanup uses flashSaleId and userId", () => {
+test("rollbackCheckoutOrder FlashSalePurchase cleanup uses flashSaleId and the order scope", () => {
+    /*
+     * Purchase rows are keyed by (flashSaleId, ownerKey). Filtering by
+     * userId would, for a guest order (userId = NULL), delete EVERY
+     * guest's row for that sale — so the cleanup must use ownerKey.
+     */
     assert(
-        rollbackFn.includes("flashSaleId: flashSale.id") && rollbackFn.includes("userId: order.userId"),
-        "rollbackCheckoutOrder FlashSalePurchase cleanup missing flashSaleId or userId"
+        rollbackFn.includes("flashSaleId: flashSale.id") &&
+            rollbackFn.includes("ownerKey: flashSaleScope"),
+        "rollbackCheckoutOrder FlashSalePurchase cleanup missing flashSaleId or ownerKey scope"
     );
 });
 
 test("rollbackCheckoutOrder FlashSalePurchase cleanup is inside flash sale block (not regular item block)", () => {
-    // The deleteMany should be between the flash sale UPDATE and the else block
-    const flashSaleUpdateIdx = rollbackFn.indexOf("UPDATE FlashSale");
-    const deleteManyIdx = rollbackFn.indexOf("flashSalePurchase.deleteMany");
-    const elseIdx = rollbackFn.indexOf("} else {", flashSaleUpdateIdx);
+    /*
+     * Scope to the shared primitive that owns the release now, and match
+     * quoting/case-agnostically: the cleanup must sit between the
+     * flash-sale UPDATE and the regular-item `else` branch.
+     */
+    const lower = flat(cancelReservationsBody).toLowerCase();
+    const flashSaleUpdateIdx = lower.indexOf("update flashsale");
+    const deleteManyIdx = lower.indexOf(
+        "flashsalepurchase.deletemany"
+    );
+    const elseIdx = lower.indexOf("} else {", flashSaleUpdateIdx);
+
     assert(
-        flashSaleUpdateIdx > 0 && deleteManyIdx > flashSaleUpdateIdx && deleteManyIdx < elseIdx,
+        flashSaleUpdateIdx > 0 &&
+            deleteManyIdx > flashSaleUpdateIdx &&
+            deleteManyIdx < elseIdx,
         "FlashSalePurchase cleanup is not inside the flash sale block"
     );
 });
-
-// Extract webhook releaseReservedStock section
-const releaseFnStart = webhookCodeT1.indexOf("async function releaseReservedStock(");
-const releaseFnEnd = webhookCodeT1.indexOf("export async function POST(");
-const releaseFn = webhookCodeT1.substring(releaseFnStart, releaseFnEnd);
-
-const orderStockCode = readFile("lib/order-stock.ts");
 
 test("Stock release deletes FlashSalePurchase after restoring flash sale stock", () => {
     assert(
@@ -1714,18 +1947,24 @@ test("Stock release deletes FlashSalePurchase after restoring flash sale stock",
     );
 });
 
-test("Stock release FlashSalePurchase cleanup uses variantId and userId", () => {
+test("Stock release FlashSalePurchase cleanup uses variantId and the order scope", () => {
     assert(
-        orderStockCode.includes("flashSale: { variantId:") && orderStockCode.includes("userId: order.userId"),
-        "order-stock.ts FlashSalePurchase cleanup missing variantId or userId"
+        orderStockCode.includes("flashSale: { variantId:") &&
+            orderStockCode.includes("ownerKey: orderScope"),
+        "order-stock.ts FlashSalePurchase cleanup missing variantId or ownerKey scope"
     );
 });
 
 test("Stock release FlashSalePurchase cleanup is inside flash sale block", () => {
-    const flashSaleUpdateIdx = orderStockCode.indexOf("UPDATE FlashSale");
-    const deleteManyIdx = orderStockCode.indexOf("flashSalePurchase.deleteMany");
+    const lower = flat(orderStockCode).toLowerCase();
+    const flashSaleUpdateIdx = lower.indexOf("update flashsale");
+    const deleteManyIdx = lower.indexOf(
+        "flashsalepurchase.deletemany"
+    );
+
     assert(
-        flashSaleUpdateIdx > 0 && deleteManyIdx > flashSaleUpdateIdx,
+        flashSaleUpdateIdx > 0 &&
+            deleteManyIdx > flashSaleUpdateIdx,
         "FlashSalePurchase cleanup should come after flash sale stock restore"
     );
 });
@@ -1803,22 +2042,52 @@ console.log("\n22. Payment / Webhook Integrity:");
 
 const webhookCodeT2 = readFile("app/api/payment/ipaymu/notification/route.ts");
 
+/*
+ * The guard assertions below are scoped to the CURRENT handler branches:
+ *   - pending: `if (isPending || statusClass === "pending")`
+ *   - failed/expired: `if (isFailed || statusClass === "failed")`
+ *   - refund: `if (isRefunded)`
+ * The old `isExpired` branch no longer exists (iPaymu reports expiry as a
+ * failed status), so the previous slices captured nothing and the checks
+ * "passed" only by accident of substring position.
+ */
+const ipaymuWebhook = flat(webhookCodeT2);
+const pendingBranchIdx = ipaymuWebhook.indexOf(
+    'if (isPending || statusClass === "pending")'
+);
+const failedBranchIdx = ipaymuWebhook.indexOf(
+    'if (isFailed || statusClass === "failed")'
+);
+const refundBranchIdx = ipaymuWebhook.indexOf("const isRefunded =");
+const settlementBranchIdx = ipaymuWebhook.indexOf(
+    'if (isSuccess || statusClass === "success")'
+);
+
+function branch(startIdx: number, endIdx: number): string {
+    if (startIdx < 0) return "";
+    return ipaymuWebhook.substring(
+        startIdx,
+        endIdx > startIdx ? endIdx : undefined
+    );
+}
+
 test("Pending webhook has status IN ('PENDING', 'PROCESSING') guard", () => {
-    // The pending webhook CAS must also check status, not just paymentStatus
-    const pendingSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isPending'),
-        webhookCodeT2.indexOf('if (\n            isExpired')
+    const pendingSection = branch(
+        pendingBranchIdx,
+        failedBranchIdx
     );
     assert(
-        pendingSection.includes("status IN ('PENDING', 'PROCESSING')"),
+        pendingSection.includes(
+            "status IN ('PENDING', 'PROCESSING')"
+        ),
         "Pending webhook missing status IN guard — could revert CANCELLED order to PENDING"
     );
 });
 
 test("Pending webhook still has paymentStatus != 'PAID' guard", () => {
-    const pendingSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isPending'),
-        webhookCodeT2.indexOf('if (\n            isExpired')
+    const pendingSection = branch(
+        pendingBranchIdx,
+        failedBranchIdx
     );
     assert(
         pendingSection.includes("paymentStatus != 'PAID'"),
@@ -1827,78 +2096,141 @@ test("Pending webhook still has paymentStatus != 'PAID' guard", () => {
 });
 
 test("Expired webhook has both status IN and paymentStatus != PAID guards", () => {
-    const expiredSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isExpired'),
-        webhookCodeT2.indexOf('if (\n            isFailed')
+    const expiredSection = branch(
+        failedBranchIdx,
+        refundBranchIdx
     );
     assert(
-        expiredSection.includes("status IN ('PENDING', 'PROCESSING')") &&
-        expiredSection.includes("paymentStatus != 'PAID'"),
+        expiredSection.includes(
+            "status IN ('PENDING', 'PROCESSING')"
+        ) &&
+            expiredSection.includes("paymentStatus != 'PAID'"),
         "Expired webhook missing CAS guards"
     );
 });
 
 test("Failed webhook has both status IN and paymentStatus != PAID guards", () => {
-    const failedSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isFailed'),
-        webhookCodeT2.indexOf('if (\n            isRefunded')
+    const failedSection = branch(
+        failedBranchIdx,
+        refundBranchIdx
     );
     assert(
-        failedSection.includes("status IN ('PENDING', 'PROCESSING')") &&
-        failedSection.includes("paymentStatus != 'PAID'"),
+        failedSection.includes(
+            "status IN ('PENDING', 'PROCESSING')"
+        ) &&
+            failedSection.includes("paymentStatus != 'PAID'"),
         "Failed webhook missing CAS guards"
     );
 });
 
 test("Refund webhook uses CAS with paymentStatus = 'PAID' guard", () => {
-    const refundSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isRefunded'),
-        webhookCodeT2.indexOf('Status lain')
+    /*
+     * The refund transition + completion moved into lib/refund.ts
+     * (transitionRefundForWebhook / executeRefundCompletion), which is
+     * where the CAS and the `paymentStatus = 'PAID'` guard live. The route
+     * must delegate to them and must NOT re-implement its own update.
+     */
+    const refundLib = readFile("lib/refund.ts");
+    assert(
+        branch(refundBranchIdx, settlementBranchIdx).includes(
+            "transitionRefundForWebhook("
+        ) &&
+            branch(refundBranchIdx, settlementBranchIdx).includes(
+                "executeRefundCompletion("
+            ),
+        "Refund webhook must delegate to the shared refund pipeline"
     );
     assert(
-        refundSection.includes("paymentStatus = 'PAID'"),
-        "Refund webhook missing CAS paymentStatus PAID guard — could affect CANCELLED orders"
+        hasSql(refundLib, "AND paymentStatus = 'PAID'"),
+        "Refund pipeline missing CAS paymentStatus = 'PAID' guard"
+    );
+    assert(
+        refundLib.includes("affectedRows === 0"),
+        "Refund pipeline missing CAS affectedRows check"
     );
 });
 
 test("Refund webhook is idempotent (CAS prevents double-processing)", () => {
-    // CAS UPDATE with paymentStatus = 'PAID' means second call affects 0 rows
-    const refundSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isRefunded'),
-        webhookCodeT2.indexOf('Status lain')
+    /*
+     * There is no `refundSettled` column any more: idempotency is the CAS
+     * itself. The first caller completes the refund; every later webhook
+     * gets shouldComplete === false (or a 0-row CAS) and is a no-op.
+     */
+    const refundLib = readFile("lib/refund.ts");
+    const refundSection = branch(
+        refundBranchIdx,
+        settlementBranchIdx
+    );
+
+    assert(
+        refundSection.includes("transition.shouldComplete"),
+        "Refund webhook doesn't gate completion on the CAS transition"
     );
     assert(
-        refundSection.includes('refundSettled'),
-        "Refund webhook missing refundSettled idempotency flag"
+        refundLib.includes("export async function transitionRefundForWebhook") &&
+            refundLib.includes("affectedRows === 0"),
+        "Refund transition is not CAS-guarded"
     );
 });
 
 test("Settlement webhook is idempotent (CAS prevents resurrection)", () => {
-    const settlementSection = webhookCodeT2.substring(
-        webhookCodeT2.indexOf('if (\n            isSuccess'),
-        webhookCodeT2.indexOf('if (\n            isPending')
+    const settlementSection = branch(
+        settlementBranchIdx,
+        pendingBranchIdx
     );
+
     assert(
-        settlementSection.includes('settled'),
-        "Settlement webhook missing settled idempotency flag"
-    );
-    assert(
-        settlementSection.includes('affectedRows'),
+        settlementSection.includes("affectedRows === 0"),
         "Settlement webhook missing CAS affectedRows check"
+    );
+    assert(
+        settlementSection.includes("status IN ('PENDING', 'PROCESSING')"),
+        "Settlement CAS must only transition PENDING/PROCESSING"
+    );
+    assert(
+        settlementSection.includes(
+            "paymentStatus NOT IN ('PAID', 'REFUNDED')"
+        ),
+        "Settlement CAS must never resurrect PAID/REFUNDED orders"
     );
 });
 
 test("Webhook verifies payment signature with timing-safe comparison", () => {
     assert(
-        webhookCodeT2.includes('timingSafeEqual'),
+        webhookCodeT2.includes("verifyWebhookSignature("),
+        "iPaymu webhook doesn't verify the webhook signature"
+    );
+    assert(
+        readFile("lib/payment/ipaymu.ts").includes(
+            "timingSafeEqual"
+        ),
         "Webhook missing timingSafeEqual for signature verification"
     );
 });
 
-test("Webhook validates gross_amount matches order total", () => {
+test("Webhook validates the notified amount against the order total", () => {
+    /*
+     * iPaymu reports the amount as sub_total/amount/total (not Midtrans'
+     * gross_amount). verifyNotificationAmount() is the single interpreter
+     * and must be called on the settlement path before the CAS.
+     */
+    const settlementSection = branch(
+        settlementBranchIdx,
+        pendingBranchIdx
+    );
+
     assert(
-        webhookCodeT2.includes('MIDTRANS GROSS AMOUNT MISMATCH'),
-        "Webhook missing gross_amount validation"
+        settlementSection.includes("verifyNotificationAmount("),
+        "Webhook missing amount validation"
+    );
+    assert(
+        settlementSection.includes("existingOrder.total"),
+        "Amount must be compared against the server-authoritative order total"
+    );
+    assert(
+        settlementSection.indexOf("verifyNotificationAmount(") <
+            settlementSection.indexOf("affectedRows === 0"),
+        "Amount must be verified BEFORE the settlement CAS"
     );
 });
 
@@ -1934,7 +2266,7 @@ test("Webhook does NOT restore stock on settlement (PAID)", () => {
         "Settlement handler should NOT call releaseStockAndVoucherForOrder"
     );
     assert(
-        !settlementSection.includes('UPDATE FlashSale'),
+        !hasSql(settlementSection, "UPDATE flashsale"),
         "Settlement handler should NOT restore flash sale stock"
     );
 });

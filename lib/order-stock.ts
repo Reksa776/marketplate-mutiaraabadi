@@ -47,6 +47,15 @@ export async function releaseStockAndVoucherForOrder(
 
     if (!order) return;
 
+    /*
+     * The scope that consumed this order's limited resources: userId for
+     * a logged-in buyer, hashed guest identity for a guest order. Every
+     * per-scope release below MUST use it — filtering by `userId` alone
+     * would, for a guest order (userId = NULL), match EVERY guest's
+     * bucket instead of only the order's own.
+     */
+    const orderScope = orderOwnerKey(order);
+
     // ==========================================
     // RESTORE STOCK
     // ==========================================
@@ -66,13 +75,22 @@ export async function releaseStockAndVoucherForOrder(
                   AND soldCount >= ${item.quantity}
             `;
 
-            // Cleanup purchase record so user can re-attempt
-            await tx.flashSalePurchase.deleteMany({
-                where: {
-                    flashSale: { variantId: item.variantId },
-                    userId: order.userId,
-                },
-            });
+            /*
+             * Cleanup purchase record so the buyer can re-attempt.
+             *
+             * Scoped by ownerKey (not userId) so a guest order releases
+             * its OWN reservation: a guest purchase row has userId = NULL,
+             * so filtering by userId would delete every guest's row for
+             * this sale and reset their purchase caps.
+             */
+            if (orderScope) {
+                await tx.flashSalePurchase.deleteMany({
+                    where: {
+                        flashSale: { variantId: item.variantId },
+                        ownerKey: orderScope,
+                    },
+                });
+            }
         } else {
             // Regular item: restore ProductVariant stock
             await tx.productVariant.update({
@@ -112,14 +130,12 @@ export async function releaseStockAndVoucherForOrder(
          * buyer, hashed guest identity for a guest order), so release is
          * always applied to the same bucket that consumed it.
          */
-        const voucherScope = orderOwnerKey(order);
-
-        const userUsage = voucherScope
+        const userUsage = orderScope
             ? await tx.voucherUserUsage.findUnique({
                   where: {
                       voucherId_ownerKey: {
                           voucherId: order.voucherId,
-                          ownerKey: voucherScope,
+                          ownerKey: orderScope,
                       },
                   },
               })

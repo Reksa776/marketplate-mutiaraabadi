@@ -412,6 +412,13 @@ export async function GET(request: NextRequest) {
 
                 addresses,
 
+                /*
+                 * The UI uses this to decide whether "save address"
+                 * writes to the address book or keeps the entry as a
+                 * local guest address for this checkout only.
+                 */
+                authenticated: Boolean(userId),
+
                 store: {
                     id: store.id,
 

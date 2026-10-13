@@ -15,6 +15,10 @@ import {
     buildMengantarShippingOptions,
     getMengantarOriginConfig,
 } from "@/lib/mengantar/shipping";
+import {
+    GuestAddressError,
+    resolveGuestAddress,
+} from "@/lib/guest-address";
 
 export const dynamic = "force-dynamic";
 
@@ -26,12 +30,14 @@ export const dynamic = "force-dynamic";
  * Server-side Mengantar shipping estimate.
  *
  * SECURITY:
- *   - Authenticated only (also enforced by the proxy).
+ *   - PUBLIC by design (guests check out without an account), so the
+ *     destination is resolved SERVER-SIDE in both branches:
+ *       · logged-in buyer → their OWN saved UserAddress (id + userId)
+ *       · guest           → the inline address, validated and
+ *                           canonicalized by lib/guest-address.ts
  *   - The Mengantar API key NEVER leaves the server; the client only
  *     ever receives normalized ShippingOption[].
- *   - The client sends an addressId + weight. Origin/destination areas
- *     are resolved server-side from the DB — the client can never
- *     choose the origin or inject a provider destination id.
+ *   - The client NEVER sends an origin, a Mengantar area id or a price.
  *   - The response cost is authoritative and re-verified at order
  *     creation, so a tampered client quote cannot create an order.
  * ============================================================
@@ -39,20 +45,22 @@ export const dynamic = "force-dynamic";
 
 const MAX_WEIGHT_GRAMS = 30000;
 
+type ResolvedShippingAddress = {
+    id?: string;
+    recipientName?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    province?: string | null;
+    city?: string | null;
+    district?: string | null;
+    subdistrict?: string | null;
+    postalCode?: string | null;
+    mengantarDestinationAreaId?: string | null;
+};
+
 export async function POST(request: Request) {
     try {
         const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "Silakan login terlebih dahulu.",
-                },
-                { status: 401 }
-            );
-        }
 
         const rate = rateLimiters.shippingCost(
             getClientIp(request)
@@ -93,6 +101,7 @@ export async function POST(request: Request) {
             addressId?: unknown;
             weight?: unknown;
             codAmount?: unknown;
+            guestAddress?: unknown;
         };
 
         try {
@@ -108,18 +117,92 @@ export async function POST(request: Request) {
             );
         }
 
-        const addressId = String(
-            body.addressId ?? ""
-        );
+        /*
+         * ==========================================
+         * DESTINATION ADDRESS — RESOLVED SERVER-SIDE
+         * ==========================================
+         * The client only says WHICH address (a saved id it owns) or
+         * supplies the GUEST fields. Neither the origin nor a Mengantar
+         * area id ever comes from the browser.
+         */
 
-        if (!addressId) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Alamat wajib dipilih.",
-                },
-                { status: 400 }
+        let address: ResolvedShippingAddress | null = null;
+
+        if (session?.user?.id) {
+            const addressId = String(
+                body.addressId ?? ""
             );
+
+            if (!addressId) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message: "Alamat wajib dipilih.",
+                    },
+                    { status: 400 }
+                );
+            }
+
+            // Ownership: only the customer's own address is used.
+            address = await prisma.userAddress.findFirst({
+                where: {
+                    id: addressId,
+                    userId: session.user.id,
+                },
+            });
+
+            if (!address) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message: "Alamat tidak ditemukan.",
+                    },
+                    { status: 404 }
+                );
+            }
+        } else {
+            /*
+             * GUEST: no address book. The inline address is untrusted
+             * input, so it is validated and its region/destination
+             * labels are canonicalized from the stored hierarchy.
+             */
+            const guestAddress =
+                body.guestAddress &&
+                typeof body.guestAddress === "object"
+                    ? (body.guestAddress as Record<
+                          string,
+                          unknown
+                      >)
+                    : null;
+
+            if (!guestAddress) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message:
+                            "Alamat pengiriman wajib diisi.",
+                    },
+                    { status: 400 }
+                );
+            }
+
+            try {
+                address = await resolveGuestAddress(
+                    guestAddress
+                );
+            } catch (error) {
+                if (error instanceof GuestAddressError) {
+                    return NextResponse.json(
+                        {
+                            success: false,
+                            message: error.message,
+                        },
+                        { status: error.status }
+                    );
+                }
+
+                throw error;
+            }
         }
 
         const weight = Number(body.weight);
@@ -142,24 +225,6 @@ export async function POST(request: Request) {
             body.codAmount === undefined
                 ? undefined
                 : Number(body.codAmount);
-
-        // Ownership: only the customer's own address is used.
-        const address = await prisma.userAddress.findFirst({
-            where: {
-                id: addressId,
-                userId: session.user.id,
-            },
-        });
-
-        if (!address) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Alamat tidak ditemukan.",
-                },
-                { status: 404 }
-            );
-        }
 
         const origin = await getMengantarOriginConfig();
 

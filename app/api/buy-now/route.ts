@@ -411,6 +411,13 @@ export async function GET(
 
             totalWeight,
 
+            /*
+             * The UI uses this to decide whether "save address" writes
+             * to the address book or keeps the entry as a local guest
+             * address for this buy-now flow only.
+             */
+            authenticated: Boolean(user?.id),
+
             addresses:
                 addresses.map(
                     (address) => ({

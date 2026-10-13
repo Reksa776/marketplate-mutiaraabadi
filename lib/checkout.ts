@@ -3401,12 +3401,26 @@ export async function cancelOrderForReservations(
                          * from buying this flash sale (purchaseLimit
                          * already consumed).
                          */
-                        await tx.flashSalePurchase.deleteMany({
-                            where: {
-                                flashSaleId: flashSale.id,
-                                userId: order.userId,
-                            },
-                        });
+                        /*
+                         * GUEST-SAFE SCOPE (audit fix):
+                         * purchase rows are keyed by (flashSaleId,
+                         * ownerKey). A guest row has userId = NULL but a
+                         * hashed guest ownerKey, so filtering by userId
+                         * alone would delete EVERY guest's row for this
+                         * sale and reset their purchase caps. Release the
+                         * exact scope that consumed the reservation.
+                         */
+                        const flashSaleScope =
+                            orderOwnerKey(order);
+
+                        if (flashSaleScope) {
+                            await tx.flashSalePurchase.deleteMany({
+                                where: {
+                                    flashSaleId: flashSale.id,
+                                    ownerKey: flashSaleScope,
+                                },
+                            });
+                        }
                     } else {
                         /*
                          * REGULAR ITEM or FLASH SALE DELETED:
