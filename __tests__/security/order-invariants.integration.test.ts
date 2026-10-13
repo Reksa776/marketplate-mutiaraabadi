@@ -243,7 +243,24 @@ function routeRequest(
 const createdUserIds: string[] = [];
 const createdDestinationIds: number[] = [];
 
+/*
+ * Orders created through the REAL checkout (not seeded by hand) get an
+ * application-generated orderNumber, so SUFFIX matching alone would
+ * leave them behind. Track their ids explicitly.
+ */
+const createdOrderIds: number[] = [];
+
 async function cleanup() {
+    if (createdOrderIds.length > 0) {
+        await prisma.orderItem.deleteMany({
+            where: { orderId: { in: createdOrderIds } },
+        });
+
+        await prisma.order.deleteMany({
+            where: { id: { in: createdOrderIds } },
+        });
+    }
+
     await prisma.order.deleteMany({
         where: {
             OR: [
@@ -1140,6 +1157,8 @@ describe("iPaymu webhook settlement and stock release (real DB)", () => {
             },
             paymentMethod: "BANK_TRANSFER",
         } as any);
+
+        createdOrderIds.push(result.order.id);
 
         const order = await prisma.order.findUnique({
             where: { id: result.order.id },
