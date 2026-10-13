@@ -150,6 +150,33 @@ export async function GET(
                   }
                 : null,
 
+            /*
+             * GUEST ORDER CONTACT.
+             *
+             * Guest orders have no User row, so the email captured at
+             * checkout (Order.customerEmail) is the only buyer contact
+             * the admin can use. The server-side hashed identity
+             * (`guestIdentityKey`) is deliberately NOT exposed.
+             */
+            customerEmail:
+                order.customerEmail ?? null,
+
+            isGuestOrder: !order.user,
+
+            /*
+             * COD REVIEW STATE — the decision gate that holds a
+             * high-risk COD shipment until an admin acts.
+             */
+            requiresCodReview:
+                order.requiresCodReview,
+
+            codReviewStatus:
+                order.codReviewStatus ?? null,
+
+            codReviewedAt:
+                order.codReviewedAt?.toISOString() ??
+                null,
+
             recipientName:
                 order.recipientName,
 

@@ -196,11 +196,39 @@ async function processClaimedJob(
             shippingProvider: true,
             shipmentStatus: true,
             shippingPaymentStatus: true,
+            requiresCodReview: true,
+            codReviewStatus: true,
         },
     });
 
     if (!order) {
         await finishJob(jobId, "CANCELLED", "Pesanan tidak ditemukan.");
+        return;
+    }
+
+    /*
+     * ---- COD REVIEW GATE (worker) ----
+     *
+     * A high-risk COD order is HELD until an admin approves it, and the
+     * hold is enforced HERE as well as at order creation, because a
+     * ShipmentJob can be (re)introduced after a rejection by an admin
+     * retry, a manual sweep or a reconcile re-queue.
+     *
+     * Without this check the sweeper would ship a REJECTED order —
+     * silently defeating the review decision. The job is CANCELLED (not
+     * retried) with a durable reason; approving the review resets it to
+     * PENDING, so an approval after this point still ships normally.
+     */
+    if (
+        order.paymentMethod === "COD" &&
+        order.requiresCodReview &&
+        order.codReviewStatus !== "APPROVED"
+    ) {
+        await finishJob(
+            jobId,
+            "CANCELLED",
+            "COD menunggu tinjauan admin (belum disetujui)."
+        );
         return;
     }
 
@@ -419,6 +447,35 @@ export async function processShipmentJobs({
 export async function runShipmentJobForOrder(
     orderId: number
 ): Promise<{ ok: boolean; reason?: string }> {
+    /*
+     * COD REVIEW GATE (admin retry path).
+     *
+     * An admin retry must not bypass a recorded COD review decision:
+     * a REJECTED order (or one still awaiting review) may only be
+     * shipped through the review endpoint itself, which keeps the
+     * audit trail ("who approved this and when") intact.
+     */
+    const gate = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: {
+            paymentMethod: true,
+            requiresCodReview: true,
+            codReviewStatus: true,
+        },
+    });
+
+    if (
+        gate?.paymentMethod === "COD" &&
+        gate.requiresCodReview &&
+        gate.codReviewStatus !== "APPROVED"
+    ) {
+        return {
+            ok: false,
+            reason:
+                "COD menunggu tinjauan admin. Setujui tinjauan COD terlebih dahulu.",
+        };
+    }
+
     const job = await prisma.shipmentJob.upsert({
         where: { orderId },
         create: { orderId },

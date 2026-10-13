@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import {
+    orderOwnerKey,
+    requireUsageScope,
+} from "@/lib/guest-identity";
+import {
     recordFlashSalePurchase,
 } from "./marketing/flash-sale";
 
@@ -134,7 +138,8 @@ async function reReserveStockForOrder(
                     tx,
                     flashSale.id,
                     order.userId,
-                    item.quantity
+                    item.quantity,
+                    orderOwnerKey(order)
                 );
             } catch (error) {
                 const { FlashSalePurchaseLimitError } =
@@ -209,12 +214,14 @@ async function reReserveStockForOrder(
             select: { id: true, maxUsagePerUser: true },
         });
 
-        if (voucher?.maxUsagePerUser) {
+        const voucherScope = orderOwnerKey(order);
+
+        if (voucher?.maxUsagePerUser && voucherScope) {
             const usageRow = await tx.voucherUserUsage.findUnique({
                 where: {
-                    voucherId_userId: {
+                    voucherId_ownerKey: {
                         voucherId: order.voucherId,
-                        userId: order.userId,
+                        ownerKey: voucherScope,
                     },
                 },
             });
@@ -235,16 +242,28 @@ async function reReserveStockForOrder(
             );
         }
 
+        /*
+         * Fail-closed: the re-reservation must land on the exact same
+         * scope that the original checkout consumed, otherwise the
+         * per-identity cap would drift on repayment.
+         */
         await tx.voucherUserUsage.upsert({
             where: {
-                voucherId_userId: {
+                voucherId_ownerKey: {
                     voucherId: order.voucherId,
-                    userId: order.userId,
+                    ownerKey: requireUsageScope({
+                        ownerKey: voucherScope,
+                        userId: order.userId,
+                    }),
                 },
             },
             create: {
                 voucherId: order.voucherId,
-                userId: order.userId,
+                ownerKey: requireUsageScope({
+                    ownerKey: voucherScope,
+                    userId: order.userId,
+                }),
+                userId: order.userId ?? undefined,
                 usageCount: 1,
             },
             update: { usageCount: { increment: 1 } },
@@ -263,7 +282,10 @@ async function reReserveStockForOrder(
         spinRecord = await tx.spinWheelSpin.findFirst({
             where: {
                 id: order.originalSpinWheelSpinId,
-                userId: order.userId,
+                ownerKey: requireUsageScope({
+                    ownerKey: orderOwnerKey(order),
+                    userId: order.userId,
+                }),
                 status: "AVAILABLE",
                 orderId: null,
             },
@@ -325,7 +347,13 @@ export type RepayOrderResult =
     | { ok: false; reason: string };
 
 export async function processRepayment(
-    userId: string,
+    /**
+     * Session user id, or NULL for a GUEST whose ownership of this order
+     * was already proven with a guest access token by the calling route
+     * (authorizeOrderRequest). NULL is therefore "already authorized",
+     * never "anyone".
+     */
+    userId: string | null,
     orderId: number,
     paymentMethod: string,
     expected?: {
@@ -352,10 +380,9 @@ export async function processRepayment(
             // ==========================================
 
             const order = await tx.order.findFirst({
-                where: {
-                    id: orderId,
-                    userId,
-                },
+                where: userId
+                    ? { id: orderId, userId }
+                    : { id: orderId },
                 select: {
                     id: true,
                     orderNumber: true,
@@ -455,7 +482,12 @@ export async function processRepayment(
                     "@/lib/admin/audit-log"
                 );
                 await createAuditLog({
-                    adminId: userId,
+                    /*
+                     * Audit attribution: a guest repayment (no user id)
+                     * is recorded as GUEST. Ownership was verified by the
+                     * route before this function ran.
+                     */
+                    adminId: userId ?? "GUEST",
                     action: "REPAYMENT_INITIATED",
                     entityType: "Order",
                     entityId: orderId,

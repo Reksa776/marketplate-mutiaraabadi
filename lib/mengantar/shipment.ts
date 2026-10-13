@@ -87,6 +87,13 @@ export type ShipmentActionResult = {
     shipmentId?: string | null;
     /** Resolved pickup schedule (persisted by the worker on the job). */
     pickupSchedule?: { date: string; time: string } | null;
+    /**
+     * True when the call was refused by the COD REVIEW gate: a COD order
+     * that is still PENDING review (or was REJECTED) may not be shipped
+     * by ANY caller — the admin route answers 409 for it instead of
+     * pretending the shipment failed for some other reason.
+     */
+    reviewBlocked?: boolean;
 };
 
 function toKilograms(grams: number): number {
@@ -192,6 +199,8 @@ export async function createShipmentForOrder(
             postalCode: true,
             paymentMethod: true,
             paymentStatus: true,
+            requiresCodReview: true,
+            codReviewStatus: true,
             shippingProvider: true,
             providerCourier: true,
             providerShipmentId: true,
@@ -214,6 +223,37 @@ export async function createShipmentForOrder(
             ok: false,
             reason:
                 "Pesanan ini tidak menggunakan pengiriman Mengantar.",
+        };
+    }
+
+    /*
+     * ---- COD REVIEW gate (server-authoritative) ----
+     *
+     * A high-risk COD order is HELD until an admin approves it. The hold
+     * is enforced HERE, at the single choke point every caller goes
+     * through (the shipment worker, the admin retry, the reconcile
+     * sweep and the MANUAL "Buat Shipment" button), so no code path can
+     * ship an order whose review has not been approved — including an
+     * order that was explicitly REJECTED.
+     *
+     * Approving the review is what unblocks it (see the cod-review
+     * endpoint), which keeps the "who approved this, and when" audit
+     * trail authoritative.
+     */
+    if (
+        order.paymentMethod === "COD" &&
+        order.requiresCodReview &&
+        order.codReviewStatus !== "APPROVED"
+    ) {
+        return {
+            ok: false,
+            changed: false,
+            reviewBlocked: true,
+            reason:
+                order.codReviewStatus === "REJECTED"
+                    ? "Tinjauan COD ditolak. Pesanan ini tidak dapat dikirim."
+                    : "COD menunggu tinjauan admin. Setujui tinjauan COD terlebih dahulu.",
+            shipmentStatus: order.shipmentStatus ?? null,
         };
     }
 

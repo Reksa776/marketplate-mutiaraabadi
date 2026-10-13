@@ -81,12 +81,17 @@ export default function PaymentInstructionPage() {
                 { cache: "no-store" }
             );
 
-            if (response.status === 401) {
-                router.push("/login");
-                return;
-            }
-
-            if (response.status === 404) {
+            /*
+             * 401/404: this browser is not allowed to read the order
+             * (missing/rotated guest access token, or a rate-limit
+             * denial). There is no customer login to send the buyer
+             * to, so surface the same not-found state — the order
+             * page offers the recovery flow instead.
+             */
+            if (
+                response.status === 401 ||
+                response.status === 404
+            ) {
                 setNotFound(true);
                 setLoading(false);
                 return;

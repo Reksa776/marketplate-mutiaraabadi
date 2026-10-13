@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 import { processRepayment } from "@/lib/repay";
 import { rateLimiters } from "@/lib/rate-limit";
 
@@ -53,18 +53,18 @@ export async function POST(
 ) {
     try {
         // ==========================================
-        // AUTH
+        // OWNERSHIP (session OR guest access token)
         // ==========================================
 
-        const session = await auth();
+        const access = await authorizeOrderRequest(
+            req,
+            Number((await context.params).id)
+        );
 
-        if (!session?.user?.id) {
+        if (!access.ok) {
             return NextResponse.json(
-                {
-                    success: false,
-                    message: "Unauthorized.",
-                },
-                { status: 401 }
+                { success: false, message: access.message },
+                { status: access.status }
             );
         }
 
@@ -72,15 +72,19 @@ export async function POST(
         // RATE LIMIT
         // ==========================================
 
-        const rateLimit = rateLimiters.repayment(session.user.id);
-        if (!rateLimit.allowed) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Terlalu banyak permintaan. Coba lagi nanti.",
-                },
-                { status: 429 }
+        if (access.userId) {
+            const rateLimit = rateLimiters.repayment(
+                access.userId
             );
+            if (!rateLimit.allowed) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message: "Terlalu banyak permintaan. Coba lagi nanti.",
+                    },
+                    { status: 429 }
+                );
+            }
         }
 
         // ==========================================
@@ -171,7 +175,7 @@ export async function POST(
         // from a missing one.
 
         const snapshot = await prisma.order.findFirst({
-            where: { id: orderId, userId: session.user.id },
+            where: { id: orderId },
             select: {
                 id: true,
                 total: true,
@@ -228,7 +232,7 @@ export async function POST(
         // ==========================================
 
         const result = await processRepayment(
-            session.user.id,
+            access.userId,
             orderId,
             paymentMethod,
             {
@@ -333,7 +337,13 @@ export async function POST(
                 orderId: order.id,
                 orderNumber: order.orderNumber,
                 buyerName: (order.recipientName || "").substring(0, 50),
-                buyerEmail: session.user.email ?? "",
+                /*
+                 * buyerEmail comes from the ORDER (guest checkout has no
+                 * session email), falling back to the session for a
+                 * legacy logged-in customer.
+                 */
+                buyerEmail:
+                    order.customerEmail ?? "" ,
                 buyerPhone: (order.phone || "").substring(0, 20),
                 amount: Number(order.total),
                 paymentMethod,

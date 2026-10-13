@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { getAvailableBalance } from "@/lib/affiliate/commission";
+import { buildChartData } from "@/lib/affiliate/chart";
 import { Prisma } from "@prisma/client";
 
 /* ==========================================
@@ -733,80 +734,12 @@ export async function GET(request: Request) {
     }
 }
 
-/* ==========================================
- * CHART DATA BUILDER
- * ==========================================
- *
- * Takes raw SQL results (grouped by day)
- * and fills in missing dates with zeros.
+/*
+ * The per-day chart is built by the shared, date-safe
+ * `buildChartData` in lib/affiliate/chart.ts — one implementation for
+ * both reports, so a `DATE()` shape change can never fix one dashboard
+ * and silently zero the other.
  */
-
-function buildChartData(
-    clicksRows: Array<{
-        date: Date | string;
-        count: bigint | number;
-    }>,
-    conversionRows: Array<{
-        date: Date | string;
-        count: bigint | number;
-        sales: bigint | number | string;
-        commission: bigint | number | string;
-    }>,
-    days: number
-) {
-    const map = new Map<
-        string,
-        {
-            clicks: number;
-            conversions: number;
-            sales: number;
-            commission: number;
-        }
-    >();
-
-    // Initialize all dates
-    const now = new Date();
-    for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().split("T")[0];
-        map.set(key, {
-            clicks: 0,
-            conversions: 0,
-            sales: 0,
-            commission: 0,
-        });
-    }
-
-    // Fill clicks (raw SQL returns date as string)
-    for (const row of clicksRows) {
-        const key = String(row.date).split("T")[0];
-        const existing = map.get(key);
-        if (existing) {
-            existing.clicks = Number(row.count);
-        }
-    }
-
-    // Fill conversions
-    for (const row of conversionRows) {
-        const key = String(row.date).split("T")[0];
-        const existing = map.get(key);
-        if (existing) {
-            existing.conversions = Number(row.count);
-            existing.sales = Number(row.sales ?? 0);
-            existing.commission = Number(
-                row.commission ?? 0
-            );
-        }
-    }
-
-    return Array.from(map.entries()).map(
-        ([date, data]) => ({
-            date,
-            ...data,
-        })
-    );
-}
 
 /* ==========================================
  * TREND CALCULATOR

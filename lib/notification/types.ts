@@ -14,7 +14,14 @@ export type NotificationChannel =
     | "push";
 
 export type NotificationType =
-    | "ORDER_STATUS_CHANGED";
+    | "ORDER_STATUS_CHANGED"
+    /**
+     * Guest order recovery OTP. Carries a RAW, purpose-built message
+     * (the code) instead of an order-status template, and is delivered
+     * SYNCHRONOUSLY so the caller can fail closed when the provider
+     * refuses the message.
+     */
+    | "GUEST_RECOVERY_OTP";
 
 export type NotificationStatus =
     | "QUEUED"
@@ -73,6 +80,48 @@ export type SendNotificationPayload = {
 };
 
 /**
+ * ==========================================
+ * RAW MESSAGE NOTIFICATION
+ * ==========================================
+ *
+ * A notification whose body is supplied by the caller instead of the
+ * order-status template (today: the guest recovery OTP).
+ *
+ * SECURITY: `rawMessage` may contain a one-time code, so it is used
+ * ONLY in memory for the provider call. It is never written to the
+ * Notification row, never logged and never returned in a response.
+ */
+export type RawMessageNotificationPayload = {
+    notificationId: number;
+    channel: NotificationChannel;
+    notificationType: NotificationType;
+    recipient: string;
+    orderId: number;
+    orderNumber: string;
+    rawMessage: string;
+};
+
+/**
+ * Every payload a NotificationProvider can be asked to send.
+ */
+export type NotificationPayload =
+    | SendNotificationPayload
+    | RawMessageNotificationPayload;
+
+/**
+ * Discriminate a raw-message payload from an order-status payload.
+ */
+export function isRawMessagePayload(
+    payload: NotificationPayload
+): payload is RawMessageNotificationPayload {
+    return (
+        typeof (
+            payload as RawMessageNotificationPayload
+        ).rawMessage === "string"
+    );
+}
+
+/**
  * Response dari NotificationProvider
  * setelah mengirim notification.
  */
@@ -81,6 +130,12 @@ export type SendNotificationResult = {
     providerMessageId?: string;
     errorCode?: string;
     errorMessage?: string;
+    /**
+     * Notification row id, when the caller needs it for an audit trail
+     * (the guest recovery challenge records which message carried the
+     * OTP). Never contains the message body.
+     */
+    notificationId?: number;
 };
 
 /**

@@ -27,8 +27,10 @@ export default function ReferralTracker() {
 
         if (!refCode) return;
 
-        // Set a JS-readable cookie for register/login forms
-        // This is a backup — the HTTP-only cookie is the source of truth
+        // JS-readable mirror of the referral code (used by the
+        // affiliate dashboard/analytics surfaces only — there is no
+        // customer register/login form anymore). The HTTP-only cookie
+        // set by /api/affiliate/referral is the source of truth.
         try {
             const maxAge = 60 * 60 * 24 * 30; // 30 days
             const isSecure = window.location.protocol === "https:";

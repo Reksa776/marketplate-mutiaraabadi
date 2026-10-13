@@ -7,10 +7,13 @@ import { prisma } from "@/lib/prisma";
  * ==========================================
  *
  * Query params:
- *   page   — page number (default 1)
- *   limit  — items per page (default 20, max 100)
- *   status — optional order status filter
- *   search — optional search by orderNumber/recipientName
+ *   page      — page number (default 1)
+ *   limit     — items per page (default 20, max 100)
+ *   status    — optional order status filter
+ *   search    — optional search by orderNumber/recipientName
+ *   codReview — optional COD review filter:
+ *                 "pending"  → the admin review queue
+ *                 "approved" | "rejected" | "none"
  */
 
 export async function GET(
@@ -106,6 +109,31 @@ export async function GET(
             where.status = statusParam;
         }
 
+        /*
+         * COD REVIEW QUEUE FILTER
+         *
+         * Flagged COD orders wait for an admin decision before any
+         * shipment is created, so the dashboard needs to be able to
+         * list exactly those.
+         */
+        const codReviewParam =
+            searchParams
+                .get("codReview")
+                ?.trim()
+                .toLowerCase();
+
+        if (codReviewParam === "pending") {
+            where.codReviewStatus = "PENDING";
+        } else if (
+            codReviewParam === "approved" ||
+            codReviewParam === "rejected"
+        ) {
+            where.codReviewStatus =
+                codReviewParam.toUpperCase();
+        } else if (codReviewParam === "none") {
+            where.codReviewStatus = null;
+        }
+
         // ==========================================
         // FETCH WITH PAGINATION
         // ==========================================
@@ -190,6 +218,31 @@ export async function GET(
                 order.trackingNumber,
 
             trackingUrl: order.trackingUrl,
+
+            /*
+             * COD REVIEW STATE (read-only).
+             *
+             * Only the decision state is exposed — never the
+             * hashed guest identity (`guestIdentityKey`), which is a
+             * server-side abuse-control scope and must not reach any
+             * browser payload.
+             */
+            requiresCodReview:
+                order.requiresCodReview,
+
+            codReviewStatus:
+                order.codReviewStatus ?? null,
+
+            codReviewedAt:
+                order.codReviewedAt?.toISOString() ??
+                null,
+
+            /* Guest orders have no User row; the email captured at
+             * checkout is the buyer contact for those. */
+            customerEmail:
+                order.customerEmail ?? null,
+
+            isGuestOrder: !order.user,
 
             createdAt:
                 order.createdAt.toISOString(),

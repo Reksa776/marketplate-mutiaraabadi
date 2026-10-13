@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 
 import Image from "next/image";
 import Link from "next/link";
-import { FiLogIn, FiShoppingBag } from "react-icons/fi";
+import {
+    FiShoppingBag,
+    FiPackage,
+} from "react-icons/fi";
 import ReferralTracker from "./ReferralTracker";
 import {
     SITE_DEFAULT_TITLE,
@@ -85,34 +88,33 @@ export default function HomePage() {
               serta nyaman untuk memenuhi kebutuhan Anda.
             </p>
 
-            {/* Button */}
+            {/*
+              * Guest-first CTAs: orders are placed without an account,
+              * so there is no Login/Register entry point here. Buyers
+              * can still find an order they already placed through
+              * "Lacak Pesanan" (order number + checkout contact).
+              */}
             <div className="mt-8 flex w-full gap-4">
               <Link
-                href="/login"
+                href="/products"
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-rose-600 px-6 py-4 font-semibold text-white shadow-lg transition-all duration-300 hover:-translate-y-1 hover:bg-rose-700"
               >
-                <FiLogIn size={20} />
-                Login
+                <FiShoppingBag size={20} />
+                Mulai Belanja
               </Link>
 
               <Link
-                href="/products"
+                href="/orders"
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl border-2 border-rose-600 px-6 py-4 font-semibold text-rose-600 transition-all duration-300 hover:bg-rose-50"
               >
-                <FiShoppingBag size={20} />
-                Lihat Produk
+                <FiPackage size={20} />
+                Lacak Pesanan
               </Link>
             </div>
 
-            {/* Register */}
             <p className="mt-8 text-gray-600">
-              Belum punya akun?{" "}
-              <Link
-                href="/register"
-                className="font-semibold text-rose-600 hover:underline"
-              >
-                Buat Akun
-              </Link>
+              Tidak perlu membuat akun. Cukup isi alamat
+              pengiriman saat checkout.
             </p>
           </div>
         </div>

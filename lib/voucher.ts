@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import {
+    requireUsageScope,
+    resolveUsageScope,
+} from "@/lib/guest-identity";
 
 type ValidateVoucherResult =
     | {
@@ -233,9 +237,16 @@ export type EnhancedValidateVoucherResult =
  * @param code - Voucher code (normalized to uppercase)
  * @param subtotal - Cart subtotal (from server-computed values)
  * @param items - Cart items (from DATABASE, not client)
- * @param userId - User ID (for per-user limit check)
+ * @param userId - Legacy logged-in user id. Guests pass null and use
+ *                 `ownerKey` instead.
  * @param campaignId - Active campaign ID (for campaign restriction)
  * @param client - Prisma client or transaction client
+ * @param ownerKey - Authoritative per-identity limit scope for the
+ *                   voucher (`maxUsagePerUser` and the NEW_USER /
+ *                   RETURNING_USER eligibility). For a guest this is
+ *                   `guest:<hashed email/phone>`; for a logged-in
+ *                   buyer it defaults to `user:<userId>`. The raw
+ *                   contact value is never used or exposed here.
  */
 export async function validateAndCalculateVoucherEnhanced(
     code: string,
@@ -243,8 +254,13 @@ export async function validateAndCalculateVoucherEnhanced(
     items: VoucherValidationItem[],
     userId: string | null,
     campaignId: number | null,
-    client: Prisma.TransactionClient | typeof prisma = prisma
+    client: Prisma.TransactionClient | typeof prisma = prisma,
+    ownerKey?: string | null
 ): Promise<EnhancedValidateVoucherResult> {
+    const usageScope = resolveUsageScope({
+        ownerKey,
+        userId,
+    });
     const trimmedCode = code.trim().toUpperCase();
 
     if (!trimmedCode) {
@@ -322,12 +338,12 @@ export async function validateAndCalculateVoucherEnhanced(
     // 4. PER-USER USAGE LIMIT
     // ==========================================
 
-    if (userId && voucher.maxUsagePerUser) {
+    if (usageScope && voucher.maxUsagePerUser) {
         const userUsage = await client.voucherUserUsage.findUnique({
             where: {
-                voucherId_userId: {
+                voucherId_ownerKey: {
                     voucherId: voucher.id,
-                    userId,
+                    ownerKey: usageScope,
                 },
             },
         });
@@ -386,11 +402,36 @@ export async function validateAndCalculateVoucherEnhanced(
     // 6. ELIGIBILITY (NEW_USER / RETURNING_USER)
     // ==========================================
 
-    if (voucher.eligibility && voucher.eligibility !== "ALL" && userId) {
-        // Count paid/completed orders for this user
+    /*
+     * Buyer scope for the eligibility history check.
+     *
+     * A logged-in buyer is identified by userId; a guest buyer by the
+     * hashed contact identity captured at checkout. Both are matched so
+     * NEW_USER / RETURNING_USER keep working after guest checkout — a
+     * guest who already bought is NOT treated as a new user.
+     */
+    const guestIdentityKey =
+        !userId &&
+        typeof ownerKey === "string" &&
+        ownerKey.startsWith("guest:")
+            ? ownerKey.slice("guest:".length)
+            : null;
+
+    const buyerScope = userId
+        ? { userId }
+        : guestIdentityKey
+          ? { guestIdentityKey }
+          : null;
+
+    if (
+        voucher.eligibility &&
+        voucher.eligibility !== "ALL" &&
+        buyerScope
+    ) {
+        // Count paid/completed orders for this buyer scope
         const paidOrderCount = await client.order.count({
             where: {
-                userId,
+                ...buyerScope,
                 status: { in: ["PAID", "PROCESSING", "SHIPPED", "COMPLETED"] },
                 paymentStatus: "PAID",
             },
@@ -530,18 +571,26 @@ export async function validateAndCalculateVoucherEnhanced(
 export async function incrementVoucherUserUsage(
     tx: Prisma.TransactionClient,
     voucherId: number,
-    userId: string
+    userId: string | null,
+    ownerKey?: string | null
 ): Promise<number> {
+    /*
+     * Fail-closed: consuming a voucher without a limit scope would
+     * silently remove `maxUsagePerUser` for that buyer.
+     */
+    const scope = requireUsageScope({ ownerKey, userId });
+
     const record = await tx.voucherUserUsage.upsert({
         where: {
-            voucherId_userId: {
+            voucherId_ownerKey: {
                 voucherId,
-                userId,
+                ownerKey: scope,
             },
         },
         create: {
             voucherId,
-            userId,
+            ownerKey: scope,
+            userId: userId ?? undefined,
             usageCount: 1,
         },
         update: {
@@ -553,17 +602,25 @@ export async function incrementVoucherUserUsage(
 }
 
 /**
- * Get user's usage count for a specific voucher.
+ * Get the usage count for a specific voucher under a limit scope.
+ * Returns 0 when no scope can be resolved (nothing recorded).
  */
 export async function getUserVoucherUsageCount(
     voucherId: number,
-    userId: string
+    userId: string | null,
+    ownerKey?: string | null
 ): Promise<number> {
+    const scope = resolveUsageScope({ ownerKey, userId });
+
+    if (!scope) {
+        return 0;
+    }
+
     const usage = await prisma.voucherUserUsage.findUnique({
         where: {
-            voucherId_userId: {
+            voucherId_ownerKey: {
                 voucherId,
-                userId,
+                ownerKey: scope,
             },
         },
     });

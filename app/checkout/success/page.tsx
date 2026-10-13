@@ -4,6 +4,7 @@ import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { resolveOrderAccess } from "@/lib/guest-order-access";
 import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
 import PurchaseTracker from "@/components/analytics/PurchaseTracker";
 
@@ -21,26 +22,15 @@ export default async function CheckoutSuccessPage({
         order?: string;
     }>;
 }) {
+    /*
+     * NO LOGIN REQUIRED.
+     *
+     * Customers order as guests, so this page cannot be gated behind a
+     * session. It is gated behind ORDER ACCESS instead: the browser
+     * must hold the guest access token cookie for this order (issued at
+     * checkout), or, for legacy orders, own it through a session.
+     */
     const session = await auth();
-
-    if (!session?.user?.id) {
-        return (
-            <div className="flex min-h-screen items-center justify-center">
-                <div className="text-center">
-                    <h1 className="text-2xl font-bold">
-                        Silakan login terlebih dahulu
-                    </h1>
-
-                    <Link
-                        href="/login"
-                        className="mt-4 inline-block rounded-lg bg-black px-5 py-3 text-white"
-                    >
-                        Login
-                    </Link>
-                </div>
-            </div>
-        );
-    }
 
     const params = await searchParams;
     const orderId = Number(params.order);
@@ -64,10 +54,43 @@ export default async function CheckoutSuccessPage({
         );
     }
 
+    /*
+     * Ownership is proven BEFORE any order row is read, so a sequential
+     * order id cannot be used to probe other people's orders.
+     */
+    const access = await resolveOrderAccess({
+        orderId,
+        sessionUserId: session?.user?.id ?? null,
+    });
+
+    if (!access.ok) {
+        return (
+            <div className="flex min-h-screen items-center justify-center">
+                <div className="text-center">
+                    <h1 className="text-2xl font-bold">
+                        Pesanan tidak ditemukan
+                    </h1>
+
+                    <p className="mt-2 text-gray-500">
+                        Pastikan Anda membuka halaman ini di
+                        perangkat yang sama saat checkout, atau
+                        pulihkan pesanan dari halaman Pesanan Saya.
+                    </p>
+
+                    <Link
+                        href="/orders"
+                        className="mt-6 inline-block rounded-lg bg-black px-5 py-3 text-white"
+                    >
+                        Pesanan Saya
+                    </Link>
+                </div>
+            </div>
+        );
+    }
+
     const order = await prisma.order.findFirst({
         where: {
             id: orderId,
-            userId: session.user.id,
         },
         include: {
             items: true,
@@ -95,7 +118,8 @@ export default async function CheckoutSuccessPage({
                     </h1>
 
                     <p className="mt-2 text-gray-500">
-                        Pesanan mungkin tidak tersedia atau bukan milik akun ini.
+                        Pesanan mungkin sudah tidak tersedia. Buka halaman
+                        Pesanan Saya untuk mencoba lagi.
                     </p>
 
                     <Link

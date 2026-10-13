@@ -197,12 +197,30 @@ const addressUpdate = readFile(
 );
 
 describe("Proxy route protection", () => {
-    it("protects the Mengantar estimate API", () => {
+    it("keeps the Mengantar estimate API public but server-only", () => {
+        /*
+         * The estimate endpoint is a SERVER-ONLY proxy to Mengantar: the
+         * browser key is never exposed, and guests need a shipping quote
+         * BEFORE checkout (there is no customer login anymore).
+         *
+         * Protection therefore comes from re-deriving the authoritative
+         * shipping price server-side at checkout, not from a session
+         * guard on the quote endpoint.
+         */
+        const publicBlock = proxy.slice(
+            proxy.indexOf("PUBLIC_API_PREFIXES"),
+            proxy.indexOf("PROTECTED_API_PREFIXES")
+        );
+        expect(publicBlock).toContain(
+            '"/api/mengantar/estimate"'
+        );
+
+        // Staff-only Mengantar surfaces stay behind the guard.
         const protectedBlock = proxy.slice(
             proxy.indexOf("PROTECTED_API_PREFIXES"),
             proxy.indexOf("PAGE-LEVEL PROTECTED")
         );
-        expect(protectedBlock).toContain('"/api/mengantar/"');
+        expect(protectedBlock).toContain('"/api/admin/"');
     });
 
     it("keeps the Mengantar webhook public (signed, not session-auth)", () => {

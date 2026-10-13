@@ -32,7 +32,7 @@ if (typeof window !== "undefined") {
 }
 
 import type {
-    SendNotificationPayload,
+    NotificationPayload,
     SendNotificationResult,
 } from "@/lib/notification/types";
 import type { NotificationProvider } from "@/lib/notification/provider";
@@ -46,7 +46,7 @@ import {
     isValidIndonesianPhone,
 } from "@/lib/whatsapp/phone";
 import {
-    generateOrderStatusMessage,
+    generateNotificationMessage,
 } from "@/lib/whatsapp/message";
 
 export class BaileysWhatsAppProvider
@@ -70,7 +70,7 @@ export class BaileysWhatsAppProvider
      * Send a WhatsApp notification.
      */
     async send(
-        payload: SendNotificationPayload
+        payload: NotificationPayload
     ): Promise<SendNotificationResult> {
         try {
             // ==========================================
@@ -120,8 +120,11 @@ export class BaileysWhatsAppProvider
             // ==========================================
             // 4. GENERATE MESSAGE
             // ==========================================
+            //
+            // A raw-message payload (OTP) is sent verbatim; an
+            // order-status payload renders the shared template.
             const message =
-                generateOrderStatusMessage(payload);
+                generateNotificationMessage(payload);
 
             // ==========================================
             // 5. SEND MESSAGE

@@ -384,12 +384,23 @@ export async function createDirectOrderPayment(
  * caller — callers must answer 404 for both cases so order existence
  * is not leaked.
  */
+/**
+ * Load the sanitized payment instruction for the customer's payment
+ * page.
+ *
+ * @param userId Session user id, or NULL for a GUEST whose ownership of
+ *               this order was already proven with a guest access token
+ *               by the calling route (authorizeOrderRequest). NULL is
+ *               therefore "already authorized", never "anyone".
+ */
 export async function loadPaymentView(
     orderId: number,
-    userId: string
+    userId: string | null
 ): Promise<PaymentView | null> {
     const order = await prisma.order.findFirst({
-        where: { id: orderId, userId },
+        where: userId
+            ? { id: orderId, userId }
+            : { id: orderId },
         select: {
             id: true,
             orderNumber: true,
@@ -500,11 +511,19 @@ export type ExpirySettlementResult =
 
 export async function expireUnpaidOrderIfExpired(
     orderId: number,
-    userId: string,
+    /**
+     * Session user id, or NULL for a GUEST whose ownership of this order
+     * was already proven with a guest access token by the calling route
+     * (authorizeOrderRequest). NULL is therefore "already authorized",
+     * never "anyone".
+     */
+    userId: string | null,
     now: Date = new Date()
 ): Promise<ExpirySettlementResult> {
     const order = await prisma.order.findFirst({
-        where: { id: orderId, userId },
+        where: userId
+            ? { id: orderId, userId }
+            : { id: orderId },
         select: {
             id: true,
             status: true,

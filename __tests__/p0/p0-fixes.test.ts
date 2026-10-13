@@ -214,10 +214,24 @@ describe("HARDENING: Self-Referral Prevention", () => {
         expect(conversionCreateIdx).toBeGreaterThan(selfRefIdx);
     });
 
-    test("Register route validates referral code server-side (only APPROVED affiliates)", () => {
-        const registerCode = readFile("app/api/auth/register/route.ts");
-        expect(registerCode).toContain('status: "APPROVED"');
-        expect(registerCode).toContain("validatedReferredBy");
+    test("Referral code is validated server-side (only APPROVED affiliates)", () => {
+        /*
+         * Customer self-serve registration was removed (checkout is
+         * guest-only), so the registration-time referral check no
+         * longer exists. The surviving server-side validation is the
+         * referral endpoint that records the cookie, and it must keep
+         * rejecting non-APPROVED affiliates.
+         */
+        const referralCode = readFile(
+            "app/api/affiliate/referral/route.ts"
+        );
+        expect(referralCode).toContain('status: "APPROVED"');
+    });
+
+    test("No customer registration endpoint is reachable", () => {
+        expect(() =>
+            readFile("app/api/auth/register/route.ts")
+        ).toThrow();
     });
 });
 

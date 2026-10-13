@@ -103,6 +103,48 @@ async function seedAffiliate(userId: string) {
     });
 }
 
+/** A `PATCH /api/admin/affiliate/payouts/[id]` request. */
+function payoutActionRequest(
+    payoutId: number,
+    action: string,
+    extra: Record<string, unknown> = {}
+) {
+    return new Request(
+        `http://localhost/api/admin/affiliate/payouts/${payoutId}`,
+        {
+            method: "PATCH",
+            body: JSON.stringify({ action, ...extra }),
+            headers: { "content-type": "application/json" },
+        }
+    );
+}
+
+function payoutContext(payoutId: number) {
+    return {
+        params: Promise.resolve({ id: String(payoutId) }),
+    };
+}
+
+/** A payout sitting in a specific status (fixture for the action paths). */
+function seedPayout(
+    affiliateId: number,
+    amount: number,
+    status: "PENDING" | "PROCESSING" | "PAID",
+    overrides: Record<string, unknown> = {}
+) {
+    return prisma.affiliatePayout.create({
+        data: {
+            affiliateId,
+            amount: new Prisma.Decimal(amount),
+            status,
+            bankName: "BCA",
+            bankAccountName: "P0 TESTER",
+            bankAccountNumber: "1234567890",
+            ...overrides,
+        },
+    });
+}
+
 function makeWebhookRequest(payload: Record<string, unknown>) {
     return new NextRequest(
         "http://localhost/api/payment/midtrans/notification",
@@ -158,6 +200,7 @@ async function seedPendingOrder(opts: {
         await prisma.voucherUserUsage.create({
             data: {
                 voucherId,
+                ownerKey: `user:${opts.userId}`,
                 userId: opts.userId,
                 usageCount: 1,
             },
@@ -283,9 +326,9 @@ describe("A. User cancel — soft-cancel restores everything", () => {
         // Voucher quota + per-user usage restored
         const voucherRow = await prisma.voucherUserUsage.findUnique({
             where: {
-                voucherId_userId: {
+                voucherId_ownerKey: {
                     voucherId: after!.voucherId!,
-                    userId: user.id,
+                    ownerKey: `user:${user.id}`,
                 },
             },
         });
@@ -589,22 +632,41 @@ describe("B. Payout PAID consumes commissions (ledger balance)", () => {
         });
         expect(resApprove.status).toBe(200);
 
-        // Then check provider status (STATUS action)
-        // In dev mode, getDisbursementStatus returns SUCCESS
-        const req = new Request(
-            "http://localhost/api/admin/affiliate/payouts/" + w.id,
-            {
-                method: "PATCH",
-                body: JSON.stringify({
-                    action: "STATUS",
-                }),
-                headers: { "content-type": "application/json" },
-            }
-        );
-        const res = await payoutPATCH(req, {
-            params: Promise.resolve({ id: String(w.id) }),
+        /*
+         * The provider confirms SYNCHRONOUSLY in this environment
+         * (disbursement dev/mock mode), so APPROVE drove the whole
+         * PENDING → PROCESSING → PAID path and settled the commissions
+         * in the SAME request. The PROCESSING → PAID + settle paths
+         * (STATUS, CONFIRM_PAID) are covered in section F.
+         */
+        const paid = await prisma.affiliatePayout.findUnique({
+            where: { id: w.id },
+            select: {
+                status: true,
+                providerStatus: true,
+                providerTransactionId: true,
+                paidAt: true,
+            },
         });
-        expect(res.status).toBe(200);
+        expect(paid!.status).toBe("PAID");
+        expect(paid!.providerStatus).toBe("success");
+        expect(paid!.providerTransactionId).toBeTruthy();
+        expect(paid!.paidAt).not.toBeNull();
+
+        // STATUS only applies to a PROCESSING payout: on an already-PAID
+        // one the route refuses it rather than settling twice.
+        const resStatus = await payoutPATCH(
+            payoutActionRequest(w.id, "STATUS"),
+            payoutContext(w.id)
+        );
+        expect(resStatus.status).toBe(400);
+
+        // A repeat APPROVE cannot double-settle either.
+        const resApproveAgain = await payoutPATCH(
+            payoutActionRequest(w.id, "APPROVE"),
+            payoutContext(w.id)
+        );
+        expect(resApproveAgain.status).toBe(400);
 
         // Balance after PAID stays consumed (30000), never returns
         expect(
@@ -648,6 +710,14 @@ describe("B. Payout PAID consumes commissions (ledger balance)", () => {
         // settleCommissionsForPayout is idempotent when re-run
         const again = await settleCommissionsForPayout(w.id);
         expect(again).toBeGreaterThanOrEqual(0);
+
+        // …and the settled conversion is still settled exactly once.
+        const c1SettledAgain =
+            await prisma.affiliateConversion.findUnique({
+                where: { id: c1.id },
+                select: { status: true },
+            });
+        expect(c1SettledAgain!.status).toBe("PAID");
     });
 });
 
@@ -850,6 +920,229 @@ describe("E. Admin affiliate detail executes against MariaDB", () => {
             params: Promise.resolve({ id: "999999" }),
         });
         expect(res.status).toBe(403);
+    });
+});
+
+/* ==========================================
+ * F. PAYOUT SETTLEMENT JOINS THE CALLER'S TRANSACTION
+ * ==========================================
+ *
+ * REGRESSION (P2028). The STATUS / CONFIRM_PAID / APPROVE paths lock the
+ * payout row FOR UPDATE and then settle its commissions. Settlement used
+ * to open a SECOND transaction, which blocked on that very lock until
+ * the outer transaction expired (`Transaction already closed ... 5007 ms`,
+ * P2028) — the admin got a 500 and NO settlement ran.
+ *
+ * These tests exercise the real routes against the real database, so a
+ * reintroduced nested transaction fails them again.
+ */
+
+describe("F. Payout settlement is atomic with the status transition", () => {
+    async function seedSettledAffiliate(tag: string) {
+        const user = await seedUser(tag);
+        const affiliate = await seedAffiliate(user.id);
+
+        const conversion = await prisma.affiliateConversion.create({
+            data: {
+                affiliateId: affiliate.id,
+                orderId: (
+                    await seedPendingOrder({
+                        userId: user.id,
+                        total: 40000,
+                        status: "COMPLETED",
+                        paymentStatus: "PAID",
+                    })
+                ).id,
+                affiliateCode: affiliate.affiliateCode,
+                orderSubtotal: new Prisma.Decimal(40000),
+                commissionRate: new Prisma.Decimal(5),
+                commissionAmount: new Prisma.Decimal(2000),
+                status: "APPROVED",
+            },
+        });
+
+        return { user, affiliate, conversion };
+    }
+
+    it("STATUS finalises a PROCESSING payout and settles in the SAME commit", async () => {
+        const { affiliate, conversion } =
+            await seedSettledAffiliate("status");
+
+        const payout = await seedPayout(
+            affiliate.id,
+            2000,
+            "PROCESSING",
+            {
+                providerTransactionId: `DEV-STATUS-${SUFFIX}`,
+                providerReference: `affiliate-payout-status-${SUFFIX}`,
+            }
+        );
+
+        auth.mockResolvedValue({
+            user: { id: ADMIN_ID, role: "ADMIN" },
+        });
+
+        const res = await payoutPATCH(
+            payoutActionRequest(payout.id, "STATUS"),
+            payoutContext(payout.id)
+        );
+
+        expect(res.status).toBe(200);
+
+        const settled = await prisma.affiliatePayout.findUnique({
+            where: { id: payout.id },
+            select: {
+                status: true,
+                providerStatus: true,
+                paidAt: true,
+            },
+        });
+
+        expect(settled!.status).toBe("PAID");
+        expect(settled!.providerStatus).toBe("success");
+        expect(settled!.paidAt).not.toBeNull();
+
+        // The PAID transition and the FIFO consumption committed
+        // together — if settlement had been skipped, this row would
+        // still be APPROVED.
+        const conversionAfter =
+            await prisma.affiliateConversion.findUnique({
+                where: { id: conversion.id },
+                select: { status: true },
+            });
+
+        expect(conversionAfter!.status).toBe("PAID");
+
+        // The ledger reflects ONE consumption of the 2000 commission.
+        expect(
+            (await getAvailableBalance(affiliate.id)).toNumber()
+        ).toBe(0);
+    });
+
+    it("CONFIRM_PAID settles in the same commit as PROCESSING → PAID", async () => {
+        const { affiliate, conversion } =
+            await seedSettledAffiliate("confirm");
+
+        const payout = await seedPayout(
+            affiliate.id,
+            2000,
+            "PROCESSING"
+        );
+
+        auth.mockResolvedValue({
+            user: { id: ADMIN_ID, role: "ADMIN" },
+        });
+
+        const res = await payoutPATCH(
+            payoutActionRequest(payout.id, "CONFIRM_PAID", {
+                proofFilePath: "storage/uploads/proof-p0.pdf",
+            }),
+            payoutContext(payout.id)
+        );
+
+        expect(res.status).toBe(200);
+
+        const after = await prisma.affiliatePayout.findUnique({
+            where: { id: payout.id },
+            select: { status: true, proofFilePath: true },
+        });
+
+        expect(after!.status).toBe("PAID");
+        expect(after!.proofFilePath).toBe(
+            "storage/uploads/proof-p0.pdf"
+        );
+
+        expect(
+            (
+                await prisma.affiliateConversion.findUnique({
+                    where: { id: conversion.id },
+                    select: { status: true },
+                })
+            )!.status
+        ).toBe("PAID");
+
+        // Idempotent: a second CONFIRM_PAID is a conflict, not a
+        // second settlement.
+        const repeat = await payoutPATCH(
+            payoutActionRequest(payout.id, "CONFIRM_PAID", {
+                proofFilePath:
+                    "storage/uploads/proof-p0-again.pdf",
+            }),
+            payoutContext(payout.id)
+        );
+
+        expect(repeat.status).toBe(400);
+
+        expect(
+            (await getAvailableBalance(affiliate.id)).toNumber()
+        ).toBe(0);
+    });
+
+    it("two concurrent APPROVEs settle exactly once", async () => {
+        const { affiliate, conversion } =
+            await seedSettledAffiliate("conc");
+
+        const payout = await seedPayout(
+            affiliate.id,
+            2000,
+            "PENDING"
+        );
+
+        auth.mockResolvedValue({
+            user: { id: ADMIN_ID, role: "ADMIN" },
+        });
+
+        const [first, second] = await Promise.all([
+            payoutPATCH(
+                payoutActionRequest(payout.id, "APPROVE"),
+                payoutContext(payout.id)
+            ),
+            payoutPATCH(
+                payoutActionRequest(payout.id, "APPROVE"),
+                payoutContext(payout.id)
+            ),
+        ]);
+
+        const statuses = [first.status, second.status].sort(
+            (a, b) => a - b
+        );
+
+        // Exactly one admin action happens; the loser is told it was
+        // already handled (409) instead of getting a 500.
+        expect(statuses).toEqual([200, 409]);
+
+        const after = await prisma.affiliatePayout.findUnique({
+            where: { id: payout.id },
+            select: {
+                status: true,
+                providerTransactionId: true,
+            },
+        });
+
+        expect(after!.status).toBe("PAID");
+        expect(after!.providerTransactionId).toBeTruthy();
+
+        // ONE settlement: the commission is consumed exactly once, so
+        // the ledger nets to zero and can never be withdrawn twice.
+        expect(
+            (
+                await prisma.affiliateConversion.findUnique({
+                    where: { id: conversion.id },
+                    select: { status: true },
+                })
+            )!.status
+        ).toBe("PAID");
+
+        expect(
+            (await getAvailableBalance(affiliate.id)).toNumber()
+        ).toBe(0);
+
+        // And no second payout/financial row was created.
+        expect(
+            await prisma.affiliatePayout.count({
+                where: { affiliateId: affiliate.id },
+            })
+        ).toBe(1);
     });
 });
 

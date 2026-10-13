@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
 
 /*
@@ -19,19 +19,6 @@ export async function GET(
     request: NextRequest
 ) {
     try {
-        const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "Silakan login terlebih dahulu.",
-                },
-                { status: 401 }
-            );
-        }
-
         const { searchParams } =
             new URL(request.url);
 
@@ -49,11 +36,44 @@ export async function GET(
             );
         }
 
+        /*
+         * OWNERSHIP: the reference resolves to ONE order, so its
+         * ownership is verified before any data is returned. Guests
+         * present the access token cookie issued at checkout; a
+         * reference alone is never sufficient.
+         */
+        const referenceOrder =
+            await prisma.order.findUnique({
+                where: { orderNumber: reference },
+                select: { id: true },
+            });
+
+        if (!referenceOrder) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    message: "Order tidak ditemukan.",
+                },
+                { status: 404 }
+            );
+        }
+
+        const access = await authorizeOrderRequest(
+            request,
+            referenceOrder.id
+        );
+
+        if (!access.ok) {
+            return NextResponse.json(
+                { success: false, message: access.message },
+                { status: access.status }
+            );
+        }
+
         const order =
             await prisma.order.findFirst({
                 where: {
                     orderNumber: reference,
-                    userId: session.user.id,
                 },
 
                 select: {

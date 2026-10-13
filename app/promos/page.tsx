@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { FiArrowLeft, FiTag, FiClock, FiCheck, FiX } from "react-icons/fi";
 
@@ -103,21 +102,22 @@ function statusBadge(status: string) {
 }
 
 export default function PromosPage() {
-    const { data: session, status } = useSession();
     const router = useRouter();
     const [rewards, setRewards] = useState<SpinRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState<string>("ALL");
 
+    /*
+     * NO LOGIN GATE.
+     *
+     * Guests earn spins by ordering, so this page loads for everyone:
+     * /api/spin-wheel/my-rewards resolves the caller's scope from the
+     * session or from the guest order tokens, and returns an empty list
+     * when there is nothing to show yet.
+     */
     useEffect(() => {
-        if (status === "unauthenticated") {
-            router.push("/login");
-            return;
-        }
-        if (status === "authenticated") {
-            loadRewards();
-        }
-    }, [status, router]);
+        loadRewards();
+    }, []);
 
     async function loadRewards() {
         try {
@@ -144,7 +144,7 @@ export default function PromosPage() {
         (r) => r.status === "AVAILABLE"
     ).length;
 
-    if (status === "loading") {
+    if (loading) {
         return (
             <main className="mx-auto min-h-screen max-w-lg bg-white p-5">
                 <div className="flex min-h-[400px] items-center justify-center">

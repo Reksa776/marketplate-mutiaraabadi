@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import type { CartScope } from "@/lib/cart-scope";
+import { cartScopeWhere } from "@/lib/cart-scope";
 
 /* ==========================================
  * CART STOCK VALIDATION
@@ -10,6 +12,10 @@ import { Prisma } from "@prisma/client";
  *   - Cart API GET (display warnings)
  *   - Checkout API GET (block checkout)
  *   - Checkout order creation (pre-validation)
+ *
+ * Supports the anonymous guest cart scope as well as the legacy
+ * logged-in cart: pass a `CartScope` (preferred) or a bare userId
+ * string. A guest scope resolves via the hashed cart cookie token.
  *
  * DOES NOT mutate stock — read-only check.
  */
@@ -51,22 +57,31 @@ export type CartStockValidationResult = {
  * Returns validation result without mutating any data.
  */
 export async function validateCartStock(
-    userId: string,
+    scope: CartScope | string,
     tx?: Prisma.TransactionClient
 ): Promise<CartStockValidationResult> {
     const client = tx ?? prisma;
 
-    const cart = await client.cart.findUnique({
-        where: { userId },
-        include: {
-            items: {
-                include: {
-                    product: true,
-                    variant: true,
-                },
-            },
-        },
-    });
+    const resolved: CartScope =
+        typeof scope === "string"
+            ? { userId: scope, guestTokenHash: null }
+            : scope;
+
+    const where = cartScopeWhere(resolved);
+
+    const cart = where
+        ? await client.cart.findFirst({
+              where,
+              include: {
+                  items: {
+                      include: {
+                          product: true,
+                          variant: true,
+                      },
+                  },
+              },
+          })
+        : null;
 
     if (!cart || cart.items.length === 0) {
         return {

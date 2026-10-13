@@ -145,6 +145,10 @@ export async function GET(request: Request) {
                         status: true,
                         paymentMethod: true,
                         createdAt: true,
+                        // Guest-order fallback identity (userId may be
+                        // NULL after guest checkout).
+                        recipientName: true,
+                        customerEmail: true,
                         user: {
                             select: {
                                 id: true,
@@ -170,10 +174,21 @@ export async function GET(request: Request) {
             id: refund.id,
             orderId: refund.orderId,
             orderNumber: refund.order.orderNumber,
+            /*
+             * Guest orders have no user row (userId = NULL). Fall back
+             * to the recipient/contact captured at checkout so admin
+             * refund handling never breaks on a guest order.
+             */
             customer: {
-                id: refund.order.user.id,
-                name: refund.order.user.name || "Unknown",
-                email: refund.order.user.email || "",
+                id: refund.order.user?.id ?? null,
+                name:
+                    refund.order.user?.name ||
+                    refund.order.recipientName ||
+                    "Unknown",
+                email:
+                    refund.order.user?.email ||
+                    refund.order.customerEmail ||
+                    "",
             },
             orderTotal: Number(refund.order.total),
             refundAmount: Number(refund.amount),

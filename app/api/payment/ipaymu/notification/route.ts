@@ -467,8 +467,16 @@ export async function POST(
                         );
                     }
 
-                    /* Clear cart ONLY for cart checkout orders */
+                    /*
+                     * Clear cart ONLY for cart checkout orders.
+                     *
+                     * Guest orders (userId = NULL) have no server-side
+                     * user cart: their cart is scoped by an anonymous
+                     * cookie and is cleared by the checkout response, so
+                     * there is nothing to clear here.
+                     */
                     if (
+                        existingOrder.userId &&
                         existingOrder.orderNumber.startsWith(
                             "PAY-CART-"
                         )

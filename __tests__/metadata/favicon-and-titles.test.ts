@@ -344,10 +344,12 @@ describe("Page titles — every important route", () => {
         ["app/cart/page.tsx", /title:\s*"Keranjang"/],
         ["app/checkout/page.tsx", /title:\s*"Checkout"/],
         ["app/login/page.tsx", /title:\s*"Masuk"/],
-        ["app/register/page.tsx", /title:\s*"Daftar"/],
         ["app/orders/page.tsx", /title:\s*"Pesanan Saya"/],
         ["app/orders/[id]/layout.tsx", /generateMetadata/],
-        ["app/profile/page.tsx", /title:\s*"Profil Saya"/],
+        /*
+         * `/register` and `/profile` were removed with the customer
+         * account area — guests have no account to register or edit.
+         */
         ["app/admin/layout.tsx", /ADMIN_SITE_NAME/],
         ["app/admin/page.tsx", /adminPageMetadata\(\s*"Dashboard"/],
         ["app/admin/settings/page.tsx", /"Pengaturan"/],

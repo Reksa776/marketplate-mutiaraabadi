@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 
 import { pageMetadata } from "@/lib/site-metadata";
-import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import BuyNowPage from "./BuyNowPage";
 
@@ -19,17 +18,20 @@ type Props = {
     }>;
 };
 
+/*
+ * ==========================================
+ * BUY NOW — GUEST ACCESSIBLE
+ * ==========================================
+ *
+ * "Beli Sekarang" is the primary guest purchase path (no cart and no
+ * account needed), so this page is intentionally public: it renders for
+ * anonymous visitors and never redirects to /login. Only the product
+ * parameters are validated here; price, stock and shipping are resolved
+ * server-side by /api/buy-now.
+ */
 export default async function BuyNow(
     { searchParams }: Props
 ) {
-    const session = await auth();
-
-    if (!session?.user) {
-        redirect(
-            "/login?callbackUrl=/buy-now"
-        );
-    }
-
     const params =
         await searchParams;
 

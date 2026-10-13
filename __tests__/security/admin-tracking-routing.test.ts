@@ -384,9 +384,22 @@ describe("MENGANTAR tracking routing", () => {
 
     test("customer MENGANTAR tracking also avoids RajaOngkir", async () => {
         customerSession();
-        mockedOrder.findFirst.mockResolvedValue(
-            PRODUCTION_ORDER
-        );
+
+        /*
+         * Customer endpoints now authorize ownership BEFORE reading
+         * the order (session owner or guest access token), so the
+         * authorizer's findUnique must answer with the owner.
+         */
+        mockedOrder.findUnique.mockResolvedValue({
+            id: PRODUCTION_ORDER.id,
+            userId: "user-1",
+            guestAccessTokenHash: null,
+        });
+
+        mockedOrder.findFirst.mockResolvedValue({
+            ...PRODUCTION_ORDER,
+            userId: "user-1",
+        });
 
         const response = (await customerTrackingGET(
             new Request("http://test"),

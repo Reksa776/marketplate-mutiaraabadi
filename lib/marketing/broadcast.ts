@@ -42,6 +42,54 @@ function validateStatusTransition(current: string, next: string) {
 const MESSAGE_DELAY_MS = 500;
 
 /**
+ * ==========================================
+ * AUDIENCE MEMBER FROM AN ORDER
+ * ==========================================
+ *
+ * Broadcast audiences are ACCOUNT-based: they are built from the
+ * `user` relation, which is what the admin audience UI has always
+ * shown.
+ *
+ * Since guest checkout, `Order.userId` and `Order.user` can both be
+ * NULL. Such orders have no account contact attached and are skipped
+ * here — the historical, account-based audience is preserved exactly
+ * and no guest is silently mapped onto someone else's account.
+ *
+ * (Reaching guest buyers by `Order.customerEmail` / `Order.phone` is a
+ * separate product decision, reported as an open item.)
+ */
+function audienceMemberFromUser(
+    order: {
+        userId: string | null;
+        user: {
+            id: string;
+            name: string | null;
+            phone: string | null;
+            email: string | null;
+        } | null;
+    },
+    reason: string
+) {
+    const user = order.user;
+
+    if (!order.userId || !user) {
+        return null;
+    }
+
+    if (!user.phone && !user.email) {
+        return null;
+    }
+
+    return {
+        userId: user.id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        reason,
+    };
+}
+
+/**
  * Sleep utility.
  */
 function sleep(ms: number): Promise<void> {
@@ -268,14 +316,18 @@ async function getBestSellerAudience(): Promise<BroadcastAudienceMember[]> {
     });
 
     return orders
-        .filter((o) => o.user.phone || o.user.email)
-        .map((o) => ({
-            userId: o.user.id,
-            name: o.user.name,
-            phone: o.user.phone,
-            email: o.user.email,
-            reason: "Pembeli produk terlaris",
-        }));
+        .map((o) =>
+            audienceMemberFromUser(
+                o,
+                "Pembeli produk terlaris"
+            )
+        )
+        .filter(
+            (
+                member
+            ): member is BroadcastAudienceMember =>
+                member !== null
+        );
 }
 
 /**
@@ -313,14 +365,18 @@ async function getNewProductAudience(): Promise<BroadcastAudienceMember[]> {
     });
 
     return orders
-        .filter((o) => o.user.phone || o.user.email)
-        .map((o) => ({
-            userId: o.user.id,
-            name: o.user.name,
-            phone: o.user.phone,
-            email: o.user.email,
-            reason: "Pembeli kategori produk baru",
-        }));
+        .map((o) =>
+            audienceMemberFromUser(
+                o,
+                "Pembeli kategori produk baru"
+            )
+        )
+        .filter(
+            (
+                member
+            ): member is BroadcastAudienceMember =>
+                member !== null
+        );
 }
 
 /**
@@ -340,14 +396,18 @@ async function getBuyAgainAudience(): Promise<BroadcastAudienceMember[]> {
     });
 
     return orders
-        .filter((o) => o.user.phone || o.user.email)
-        .map((o) => ({
-            userId: o.user.id,
-            name: o.user.name,
-            phone: o.user.phone,
-            email: o.user.email,
-            reason: "Pembeli aktif — ajakan beli lagi",
-        }));
+        .map((o) =>
+            audienceMemberFromUser(
+                o,
+                "Pembeli aktif — ajakan beli lagi"
+            )
+        )
+        .filter(
+            (
+                member
+            ): member is BroadcastAudienceMember =>
+                member !== null
+        );
 }
 
 /**
@@ -364,15 +424,22 @@ async function getInactiveBuyerAudience(): Promise<BroadcastAudienceMember[]> {
         },
     });
 
-    const recentUserIds = new Set(usersWithRecentOrder.map((g) => g.userId));
+    const recentUserIds = new Set(
+        usersWithRecentOrder
+            .map((g) => g.userId)
+            .filter((id): id is string => id !== null)
+    );
 
-    // Find all users with at least one order but no recent order
+    // Find all users with at least one order but no recent order.
+    // Guest orders (userId NULL) have no account, so they are excluded
+    // from this account-based audience.
     const allBuyingUsers = await prisma.order.groupBy({
         by: ["userId"],
     });
 
     const inactiveUserIds = allBuyingUsers
         .map((g) => g.userId)
+        .filter((id): id is string => id !== null)
         .filter((id) => !recentUserIds.has(id));
 
     if (inactiveUserIds.length === 0) return [];
@@ -420,6 +487,10 @@ async function getPriceDropAudience(): Promise<BroadcastAudienceMember[]> {
     const userPurchases = new Map<string, { name: string | null; phone: string | null; email: string | null; items: { variantId: number; orderPrice: number }[] }>();
 
     for (const order of recentOrders) {
+        // Guest orders (userId/user NULL) are not part of this
+        // account-based audience.
+        if (!order.userId || !order.user) continue;
+
         if (!order.user.phone && !order.user.email) continue;
 
         const existing = userPurchases.get(order.userId) ?? {
@@ -490,14 +561,18 @@ async function getCartReminderAudience(): Promise<BroadcastAudienceMember[]> {
     });
 
     return carts
-        .filter((c) => c.user.phone || c.user.email)
-        .map((c) => ({
-            userId: c.user.id,
-            name: c.user.name,
-            phone: c.user.phone,
-            email: c.user.email,
-            reason: "Masih ada produk di keranjang",
-        }));
+        .map((c) =>
+            audienceMemberFromUser(
+                c,
+                "Masih ada produk di keranjang"
+            )
+        )
+        .filter(
+            (
+                member
+            ): member is BroadcastAudienceMember =>
+                member !== null
+        );
 }
 
 /**
@@ -518,14 +593,18 @@ async function getCheckoutReminderAudience(): Promise<BroadcastAudienceMember[]>
     });
 
     return orders
-        .filter((o) => o.user.phone || o.user.email)
-        .map((o) => ({
-            userId: o.user.id,
-            name: o.user.name,
-            phone: o.user.phone,
-            email: o.user.email,
-            reason: `Pesanan ${o.orderNumber} belum dibayar`,
-        }));
+        .map((o) =>
+            audienceMemberFromUser(
+                o,
+                `Pesanan ${o.orderNumber} belum dibayar`
+            )
+        )
+        .filter(
+            (
+                member
+            ): member is BroadcastAudienceMember =>
+                member !== null
+        );
 }
 
 /**
@@ -546,14 +625,18 @@ async function getThankYouAudience(): Promise<BroadcastAudienceMember[]> {
     });
 
     return orders
-        .filter((o) => o.user.phone || o.user.email)
-        .map((o) => ({
-            userId: o.user.id,
-            name: o.user.name,
-            phone: o.user.phone,
-            email: o.user.email,
-            reason: "Pesanan selesai — ucapan terima kasih",
-        }));
+        .map((o) =>
+            audienceMemberFromUser(
+                o,
+                "Pesanan selesai — ucapan terima kasih"
+            )
+        )
+        .filter(
+            (
+                member
+            ): member is BroadcastAudienceMember =>
+                member !== null
+        );
 }
 
 // ==========================================

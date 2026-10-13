@@ -1,6 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import {
+    requireUsageScope,
+    resolveUsageScope,
+} from "@/lib/guest-identity";
+import {
     FlashSaleNotFoundError,
     FlashSaleNotActiveError,
     FlashSaleOutOfStockError,
@@ -322,20 +326,37 @@ export async function releaseFlashSaleStock(
 /**
  * Record a flash sale purchase (for purchase limit tracking).
  *
- * Uses @@unique([flashSaleId, userId]) to prevent duplicates.
+ * Uniqueness is enforced on @@unique([flashSaleId, ownerKey]) — the
+ * `ownerKey` is the purchase-limit SCOPE:
+ *   logged-in → "user:<userId>"   (see lib/guest-identity.ts)
+ *   guest     → "guest:<hashed email/phone>"
+ *
+ * It cannot be keyed on userId alone: MySQL treats NULLs as distinct in
+ * a unique index, which would silently disable the per-user purchase
+ * limit for every guest.
  *
  * MUST be called inside a transaction.
  *
  * Returns the NEW quantity after increment.
  * Caller MUST validate against purchaseLimit to catch
  * concurrent race conditions.
+ *
+ * @param ownerKey Authoritative limit scope (guest path). When omitted,
+ *                 it falls back to `user:<userId>` for logged-in
+ *                 callers. There is NO silent unlimited fallback: a
+ *                 call with neither scope throws.
  */
 export async function recordFlashSalePurchase(
     tx: Prisma.TransactionClient,
     flashSaleId: number,
-    userId: string,
-    quantity: number
+    userId: string | null,
+    quantity: number,
+    ownerKey?: string | null
 ): Promise<number> {
+    // Fail-closed: never record a purchase without a limit scope,
+    // otherwise the purchase cap would be silently skipped.
+    const scope = requireUsageScope({ ownerKey, userId });
+
     // Check purchase limit
     const sale = await tx.flashSale.findUnique({
         where: { id: flashSaleId },
@@ -352,9 +373,9 @@ export async function recordFlashSalePurchase(
     // Pre-check: reject if already at or over limit
     const existingPurchase = await tx.flashSalePurchase.findUnique({
         where: {
-            flashSaleId_userId: {
+            flashSaleId_ownerKey: {
                 flashSaleId,
-                userId,
+                ownerKey: scope,
             },
         },
     });
@@ -371,9 +392,9 @@ export async function recordFlashSalePurchase(
     if (existingPurchase) {
         record = await tx.flashSalePurchase.update({
             where: {
-                flashSaleId_userId: {
+                flashSaleId_ownerKey: {
                     flashSaleId,
-                    userId,
+                    ownerKey: scope,
                 },
             },
             data: {
@@ -384,7 +405,8 @@ export async function recordFlashSalePurchase(
         record = await tx.flashSalePurchase.create({
             data: {
                 flashSaleId,
-                userId,
+                ownerKey: scope,
+                userId: userId ?? undefined,
                 quantity,
             },
         });
@@ -401,17 +423,28 @@ export async function recordFlashSalePurchase(
 }
 
 /**
- * Get user's flash sale purchase count for a specific sale.
+ * Get the purchase count for a specific sale under a limit scope.
+ *
+ * Returns 0 when no scope can be resolved (nothing has been recorded
+ * against that scope); this is a read-only helper and never consumes
+ * anything.
  */
 export async function getUserFlashSalePurchaseCount(
     flashSaleId: number,
-    userId: string
+    userId: string | null,
+    ownerKey?: string | null
 ) {
+    const scope = resolveUsageScope({ ownerKey, userId });
+
+    if (!scope) {
+        return 0;
+    }
+
     const purchase = await prisma.flashSalePurchase.findUnique({
         where: {
-            flashSaleId_userId: {
+            flashSaleId_ownerKey: {
                 flashSaleId,
-                userId,
+                ownerKey: scope,
             },
         },
     });
@@ -424,7 +457,8 @@ export async function getUserFlashSalePurchaseCount(
  */
 export async function hasReachedFlashSaleLimit(
     flashSaleId: number,
-    userId: string
+    userId: string | null,
+    ownerKey?: string | null
 ) {
     const sale = await prisma.flashSale.findUnique({
         where: { id: flashSaleId },
@@ -437,7 +471,8 @@ export async function hasReachedFlashSaleLimit(
     const purchaseLimit = sale.purchaseLimit ?? 1;
     const currentCount = await getUserFlashSalePurchaseCount(
         flashSaleId,
-        userId
+        userId,
+        ownerKey
     );
 
     return currentCount >= purchaseLimit;

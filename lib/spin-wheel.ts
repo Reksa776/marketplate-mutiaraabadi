@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import {
+    ownerKeyForGuest,
+    ownerKeyForUser,
+} from "@/lib/guest-identity";
 
 // ==========================================
 // TYPES
@@ -40,6 +44,82 @@ export type SpinResult = {
 // ELIGIBILITY CHECK — MILESTONE SYSTEM
 // ==========================================
 
+/*
+ * ==========================================
+ * SPIN OWNER SCOPE
+ * ==========================================
+ *
+ * The storefront is guest-only for customers, so a spin can be earned
+ * by a buyer who has no account. Ownership/eligibility is therefore
+ * expressed as a scope:
+ *
+ *   authenticated → "user:<userId>"          (unchanged behaviour)
+ *   guest         → "guest:<hashed email/phone>"
+ *
+ * Guests pass a scope object; existing callers may still pass a bare
+ * userId string, which resolves to the historical user scope.
+ *
+ * `userScope` is the query fragment used to find that owner's PAID
+ * orders, so a guest's milestone progress is derived from their own
+ * guest orders (matched on the hashed identity) — never from someone
+ * else's.
+ */
+export type SpinOwner =
+    | string
+    | {
+          userId?: string | null;
+          guestIdentityKey?: string | null;
+      };
+
+type ResolvedSpinOwner = {
+    ownerKey: string;
+    userScope:
+        | { userId: string }
+        | { guestIdentityKey: string };
+    userId: string | null;
+};
+
+function resolveSpinOwner(
+    owner: SpinOwner
+): ResolvedSpinOwner {
+    if (typeof owner === "string") {
+        return {
+            ownerKey: ownerKeyForUser(owner),
+            userScope: { userId: owner },
+            userId: owner,
+        };
+    }
+
+    if (owner.userId) {
+        return {
+            ownerKey: ownerKeyForUser(owner.userId),
+            userScope: { userId: owner.userId },
+            userId: owner.userId,
+        };
+    }
+
+    if (owner.guestIdentityKey) {
+        return {
+            ownerKey: ownerKeyForGuest(
+                owner.guestIdentityKey
+            ),
+            userScope: {
+                guestIdentityKey:
+                    owner.guestIdentityKey,
+            },
+            userId: null,
+        };
+    }
+
+    /*
+     * Fail loudly: without a scope a spin could not be attributed or
+     * rate-capped, which would allow unlimited free spins.
+     */
+    throw new Error(
+        "Identitas pemilik spin tidak tersedia."
+    );
+}
+
 /**
  * Check if user is eligible to spin in an active campaign.
  *
@@ -55,9 +135,14 @@ export type SpinResult = {
  *   Spend 50000 more → progress 100000 → +1 spin → 2 available, progress 0
  */
 export async function checkEligibility(
-    userId: string,
+    owner: SpinOwner,
     userRole?: string
 ): Promise<EligibilityResult> {
+    const {
+        ownerKey,
+        userScope,
+    } = resolveSpinOwner(owner);
+
     const now = new Date();
 
     // Find active campaign
@@ -94,7 +179,7 @@ export async function checkEligibility(
     // ==========================================
     const paidOrders = await prisma.order.aggregate({
         where: {
-            userId,
+            ...userScope,
             paymentStatus: "PAID",
         },
         _sum: {
@@ -110,7 +195,7 @@ export async function checkEligibility(
     const existingSpins = await prisma.spinWheelSpin.count({
         where: {
             campaignId: campaign.id,
-            userId,
+            ownerKey,
             status: { in: ["AVAILABLE", "USED"] },
         },
     });
@@ -119,7 +204,7 @@ export async function checkEligibility(
     const usedSpins = await prisma.spinWheelSpin.count({
         where: {
             campaignId: campaign.id,
-            userId,
+            ownerKey,
             status: "USED",
         },
     });
@@ -320,9 +405,15 @@ export async function selectReward(
  * 7. Return reward to client (for animation)
  */
 export async function executeSpin(
-    userId: string,
+    owner: SpinOwner,
     userRole?: string
 ): Promise<SpinResult> {
+    const {
+        ownerKey,
+        userScope,
+        userId,
+    } = resolveSpinOwner(owner);
+
     const now = new Date();
 
     // Find active campaign
@@ -345,7 +436,7 @@ export async function executeSpin(
     // Calculate paid spend
     const paidOrders = await prisma.order.aggregate({
         where: {
-            userId,
+            ...userScope,
             paymentStatus: "PAID",
         },
         _sum: { subtotal: true },
@@ -396,7 +487,7 @@ export async function executeSpin(
         const existingSpins = await tx.spinWheelSpin.count({
             where: {
                 campaignId: campaign.id,
-                userId,
+                ownerKey,
                 status: { in: ["AVAILABLE", "USED"] },
             },
         });
@@ -405,7 +496,7 @@ export async function executeSpin(
         const usedSpins = await tx.spinWheelSpin.count({
             where: {
                 campaignId: campaign.id,
-                userId,
+                ownerKey,
                 status: "USED",
             },
         });
@@ -454,7 +545,8 @@ export async function executeSpin(
             spinRecord = await tx.spinWheelSpin.create({
                 data: {
                     campaignId: campaign.id,
-                    userId,
+                    ownerKey,
+                    userId: userId ?? undefined,
                     rewardId: reward.id,
                     status: "AVAILABLE",
                     expiresAt:

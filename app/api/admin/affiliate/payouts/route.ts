@@ -174,7 +174,20 @@ export async function POST(request: Request) {
                         `;
 
                         if (affectedRows > 0) {
-                            await settleCommissionsForPayout(payout.id);
+                            /*
+                             * Settlement JOINS this transaction: the
+                             * payout row is locked FOR UPDATE here, so a
+                             * second transaction (the helper's no-tx
+                             * branch) would self-block on that lock and
+                             * die as P2028 — the same defect the admin
+                             * APPROVE path had. Atomicity, locking and
+                             * idempotency are unchanged: the CAS above
+                             * still decides whether anything settles.
+                             */
+                            await settleCommissionsForPayout(
+                                payout.id,
+                                tx
+                            );
                         }
                     });
 

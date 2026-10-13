@@ -160,12 +160,23 @@ test(
     }
 );
 
+/*
+ * The table names below are the MariaDB identifiers declared in
+ * prisma/schema.prisma (`@@map("affiliateclick")` ...), which is what the
+ * live database actually contains. MariaDB is case-sensitive on Linux, so
+ * asserting the Prisma MODEL name would assert a table that does not
+ * exist - the raw SQL must quote the mapped name.
+ */
+
+const affiliateClickTable = "affiliateclick";
+const affiliateConversionTable = "affiliateconversion";
+
 test(
     "AffiliateClick table uses backtick quoting",
     () => {
         // Backtick in the source file shows as \` in the file
         assert(
-            dashboard.includes("\\`AffiliateClick\\`"),
+            dashboard.includes("\\`" + affiliateClickTable + "\\`"),
             "AffiliateClick table should use backtick quoting"
         );
     }
@@ -175,11 +186,39 @@ test(
     "AffiliateConversion table uses backtick quoting",
     () => {
         assert(
-            dashboard.includes(
-                "\\`AffiliateConversion\\`"
-            ),
+            dashboard.includes("\\`" + affiliateConversionTable + "\\`"),
             "AffiliateConversion table should use backtick quoting"
         );
+    }
+);
+
+test(
+    "Raw SQL table names match their Prisma @@map names",
+    () => {
+        const schema = readFile("prisma/schema.prisma");
+
+        for (const [model, table] of [
+            ["AffiliateClick", affiliateClickTable],
+            ["AffiliateConversion", affiliateConversionTable],
+        ] as const) {
+            const start = schema.indexOf("model " + model + " ");
+            assert(
+                start >= 0,
+                model + " model missing from schema.prisma"
+            );
+
+            const end = schema.indexOf("\n}", start);
+            const modelBlock = schema.slice(
+                start,
+                end > 0 ? end : undefined
+            );
+            const mapping = '@@map("' + table + '")';
+
+            assert(
+                modelBlock.includes(mapping),
+                model + " must declare " + mapping + " to match the raw SQL"
+            );
+        }
     }
 );
 

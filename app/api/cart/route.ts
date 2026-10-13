@@ -3,6 +3,61 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
 import type { CartStockStatus } from "@/lib/cart-validation";
+import {
+    applyCartCookie,
+    findCartForScope,
+    getOrCreateCartForScope,
+    resolveCartScope,
+    type CartScope,
+} from "@/lib/cart-scope";
+import {
+    getClientIp,
+    guestIpKey,
+    rateLimiters,
+} from "@/lib/rate-limit";
+import { rejectCrossSite } from "@/lib/checkout-idempotency";
+
+/**
+ * ==========================================
+ * CART API — CUSTOMER LOGIN IS NOT REQUIRED
+ * ==========================================
+ *
+ * The cart may belong to:
+ *   - an authenticated customer (legacy), or
+ *   - an anonymous guest, scoped by an httpOnly cart cookie.
+ *
+ * Security notes:
+ *  - A cart is a CART SCOPE, not a verified identity. Every price and
+ *    stock level shown here is display data; checkout re-derives the
+ *    authoritative values server-side (lib/checkout.ts). A tampered
+ *    cart cookie cannot change what is charged.
+ *  - Item lookups are always filtered by the resolved scope, so one
+ *    guest can never read or mutate another guest's cart items.
+ *  - Guest mutations are rate limited by IP.
+ */
+
+/**
+ * Prisma `where` fragment identifying carts owned by this scope.
+ * Returns null for a guest that has no cookie yet.
+ */
+function cartScopeFilter(
+    scope: CartScope
+):
+    | { userId: string }
+    | { guestTokenHash: string }
+    | null {
+    if (scope.userId) {
+        return { userId: scope.userId };
+    }
+
+    if (scope.guestTokenHash) {
+        return {
+            guestTokenHash: scope.guestTokenHash,
+        };
+    }
+
+    return null;
+}
 
 /**
  * ==========================================
@@ -19,7 +74,7 @@ import type { CartStockStatus } from "@/lib/cart-validation";
 async function formatCartResponse(
     cartData: {
         id: number | null;
-        userId: string;
+        userId: string | null;
         items: Array<{
             id: number;
             productId: number;
@@ -138,37 +193,51 @@ async function formatCartResponse(
     };
 }
 
+/**
+ * Load the scope's cart with items, for the formatted response.
+ */
+async function loadScopedCart(scope: CartScope) {
+    const filter = cartScopeFilter(scope);
+
+    if (!filter) {
+        return null;
+    }
+
+    return prisma.cart.findFirst({
+        where: filter,
+        include: {
+            items: {
+                include: { product: true, variant: true },
+                orderBy: { createdAt: "desc" },
+            },
+        },
+    });
+}
+
+/**
+ * Rate limit guest cart mutations. Logged-in traffic keeps the
+ * pre-existing behaviour (no extra limiter).
+ */
+function guestCartRateLimited(
+    request: Request,
+    scope: CartScope
+): boolean {
+    if (scope.userId) {
+        return false;
+    }
+
+    const ip = getClientIp(request);
+
+    return !rateLimiters.guestCart(
+        guestIpKey({ ip, scope: "cart" })
+    ).allowed;
+}
+
 export async function GET() {
     try {
-        const session = await auth();
+        const scope = await resolveCartScope();
 
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    message: "Unauthorized",
-                },
-                {
-                    status: 401,
-                }
-            );
-        }
-
-        const cart = await prisma.cart.findUnique({
-            where: {
-                userId: session.user.id,
-            },
-            include: {
-                items: {
-                    include: {
-                        product: true,
-                        variant: true,
-                    },
-                    orderBy: {
-                        createdAt: "desc",
-                    },
-                },
-            },
-        });
+        const cart = await loadScopedCart(scope);
 
         // ==========================================
         // FORMAT WITH MARKETING PRICES
@@ -194,16 +263,21 @@ export async function POST(
     request: Request
 ) {
     try {
-        const session = await auth();
+        const crossSite = rejectCrossSite(request);
 
-        if (!session?.user?.id) {
+        if (crossSite) {
+            return crossSite;
+        }
+
+        const scope = await resolveCartScope();
+
+        if (guestCartRateLimited(request, scope)) {
             return NextResponse.json(
                 {
-                    message: "Silakan login terlebih dahulu.",
+                    message:
+                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
                 },
-                {
-                    status: 401,
-                }
+                { status: 429 }
             );
         }
 
@@ -319,35 +393,37 @@ export async function POST(
                 }
             );
         }
-        // tambahin ini sebelum cart upsert
-        const userExists = await prisma.user.findUnique({
-            where: { id: session.user.id },
-            select: { id: true },
-        });
 
-        if (!userExists) {
-            return NextResponse.json(
-                {
-                    message:
-                        "Sesi tidak valid, silakan login ulang.",
-                },
-                { status: 401 }
-            );
+        /*
+         * LOGGED-IN ONLY: verify the account still exists (deleted
+         * accounts must not keep a cart). Guests have no account.
+         */
+        if (scope.userId) {
+            const userExists = await prisma.user.findUnique({
+                where: { id: scope.userId },
+                select: { id: true },
+            });
+
+            if (!userExists) {
+                return NextResponse.json(
+                    {
+                        message:
+                            "Sesi tidak valid, silakan login ulang.",
+                    },
+                    { status: 401 }
+                );
+            }
         }
 
+        /*
+         * Find or create the cart for this scope. A guest with no
+         * cookie yet gets a fresh token, returned so it can be set as
+         * an httpOnly cookie on this response.
+         */
+        const { cart, issuedToken } =
+            await getOrCreateCartForScope(scope);
 
-        const cart =
-            await prisma.cart.upsert({
-                where: {
-                    userId: session.user.id,
-                },
-
-                create: {
-                    userId: session.user.id,
-                },
-
-                update: {},
-            });
+        const scopeFilter = cartScopeFilter(scope);
 
         const existingItem =
             await prisma.cartItem.findUnique({
@@ -367,7 +443,7 @@ export async function POST(
             const updated = await prisma.cartItem.updateMany({
                 where: {
                     id: existingItem.id,
-                    cart: { userId: session.user.id },
+                    cart: scopeFilter ?? { id: cart.id },
                 },
                 data: {
                     quantity: { increment: quantity },
@@ -392,7 +468,7 @@ export async function POST(
                 await prisma.cartItem.updateMany({
                     where: {
                         id: existingItem.id,
-                        cart: { userId: session.user.id },
+                        cart: scopeFilter ?? { id: cart.id },
                     },
                     data: {
                         quantity: { decrement: quantity },
@@ -421,22 +497,20 @@ export async function POST(
         }
 
         // Return formatted cart with marketing prices
-        const updatedCart = await prisma.cart.findUnique({
-            where: { userId: session.user.id },
-            include: {
-                items: {
-                    include: { product: true, variant: true },
-                    orderBy: { createdAt: "desc" },
-                },
-            },
+        const updatedCart = await loadScopedCart({
+            userId: scope.userId,
+            guestTokenHash:
+                scope.guestTokenHash ??
+                null,
         });
 
         const result = await formatCartResponse(updatedCart);
 
-        return NextResponse.json(
+        const response = NextResponse.json(
             {
                 message:
                     existingItem
+
                         ? "Keranjang berhasil diperbarui."
                         : "Produk berhasil ditambahkan ke keranjang.",
                 ...result,
@@ -445,6 +519,8 @@ export async function POST(
                 status: existingItem ? 200 : 201,
             }
         );
+
+        return applyCartCookie(response, issuedToken);
     } catch (error) {
         console.error(
             "POST CART ERROR:",
@@ -467,15 +543,38 @@ export async function PATCH(
     request: Request
 ) {
     try {
-        const session = await auth();
+        const crossSite = rejectCrossSite(request);
 
-        if (!session?.user?.id) {
+        if (crossSite) {
+            return crossSite;
+        }
+
+        const scope = await resolveCartScope();
+
+        if (guestCartRateLimited(request, scope)) {
             return NextResponse.json(
                 {
-                    message: "Silakan login terlebih dahulu.",
+                    message:
+                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
+                },
+                { status: 429 }
+            );
+        }
+
+        const scopeFilter = cartScopeFilter(scope);
+
+        /*
+         * A guest with no cart cookie has no cart, so there is nothing
+         * of theirs to update (404, never another scope's item).
+         */
+        if (!scopeFilter) {
+            return NextResponse.json(
+                {
+                    message:
+                        "Item keranjang tidak ditemukan.",
                 },
                 {
-                    status: 401,
+                    status: 404,
                 }
             );
         }
@@ -505,10 +604,7 @@ export async function PATCH(
             await prisma.cartItem.findFirst({
                 where: {
                     id: itemId,
-                    cart: {
-                        userId:
-                            session.user.id,
-                    },
+                    cart: scopeFilter,
                 },
                 include: {
                     variant: true,
@@ -588,20 +684,7 @@ export async function PATCH(
         });
 
         // Return formatted cart with marketing prices
-        const cart =
-            await prisma.cart.findUnique({
-                where: {
-                    userId: session.user.id,
-                },
-                include: {
-                    items: {
-                        include: {
-                            product: true,
-                            variant: true,
-                        },
-                    },
-                },
-            });
+        const cart = await loadScopedCart(scope);
 
         const result = await formatCartResponse(cart);
 
@@ -632,16 +715,34 @@ export async function DELETE(
     request: Request
 ) {
     try {
-        const session = await auth();
+        const crossSite = rejectCrossSite(request);
 
-        if (!session?.user?.id) {
+        if (crossSite) {
+            return crossSite;
+        }
+
+        const scope = await resolveCartScope();
+
+        if (guestCartRateLimited(request, scope)) {
             return NextResponse.json(
                 {
                     message:
-                        "Silakan login terlebih dahulu.",
+                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
+                },
+                { status: 429 }
+            );
+        }
+
+        const scopeFilter = cartScopeFilter(scope);
+
+        if (!scopeFilter) {
+            return NextResponse.json(
+                {
+                    message:
+                        "Item tidak ditemukan.",
                 },
                 {
-                    status: 401,
+                    status: 404,
                 }
             );
         }
@@ -666,10 +767,7 @@ export async function DELETE(
             await prisma.cartItem.findFirst({
                 where: {
                     id: itemId,
-                    cart: {
-                        userId:
-                            session.user.id,
-                    },
+                    cart: scopeFilter,
                 },
             });
 
@@ -692,20 +790,7 @@ export async function DELETE(
         });
 
         // Return formatted cart with marketing prices
-        const cart =
-            await prisma.cart.findUnique({
-                where: {
-                    userId: session.user.id,
-                },
-                include: {
-                    items: {
-                        include: {
-                            product: true,
-                            variant: true,
-                        },
-                    },
-                },
-            });
+        const cart = await loadScopedCart(scope);
 
         const result = await formatCartResponse(cart);
 

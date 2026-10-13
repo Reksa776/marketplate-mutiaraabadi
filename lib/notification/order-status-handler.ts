@@ -25,6 +25,11 @@ import { MockNotificationProvider } from "./mock-provider";
 import { getNotificationQueue } from "./queue";
 import type { OrderStatusChangedEvent } from "./types";
 import type { SendNotificationPayload } from "./types";
+import type {
+    NotificationChannel,
+    NotificationType,
+    SendNotificationResult,
+} from "./types";
 import type { NotificationProvider } from "./provider";
 
 /**
@@ -102,6 +107,35 @@ function getNotificationService(): Promise<NotificationService> {
         initPromise = initializeService();
     }
     return initPromise;
+}
+
+/**
+ * ==========================================
+ * SEND A RAW NOTIFICATION NOW (SYNCHRONOUS)
+ * ==========================================
+ *
+ * Delivers a caller-supplied message through the SAME provider
+ * selection as the order-status pipeline (mock in development,
+ * Baileys WhatsApp in production) and RETURNS the provider result.
+ *
+ * Used by the guest order recovery OTP, which must FAIL CLOSED: a
+ * one-time code may only be considered delivered when the provider
+ * accepted it. The queue worker is deliberately NOT initialised —
+ * there is nothing to queue for a synchronous send.
+ */
+export async function sendRawNotificationNow(input: {
+    orderId: number;
+    userId?: string | null;
+    channel: NotificationChannel;
+    notificationType: NotificationType;
+    recipient: string;
+    orderNumber: string;
+    idempotencyKey: string;
+    rawMessage: string;
+}): Promise<SendNotificationResult> {
+    const service = await getNotificationService();
+
+    return service.sendRawMessageNow(input);
 }
 
 /**

@@ -493,17 +493,25 @@ describe("D. Voucher usage increment and rollback", () => {
             "user-1"
         );
 
+        /*
+         * The per-identity limit scope moved from `userId` to
+         * `ownerKey` so it also holds for guest buyers (a nullable
+         * userId would make every guest distinct in a unique index and
+         * silently disable maxUsagePerUser). A logged-in caller still
+         * resolves to `user:<userId>`, so this path is unchanged.
+         */
         expect(mockTx.voucherUserUsage.upsert).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: {
-                    voucherId_userId: {
+                    voucherId_ownerKey: {
                         voucherId: 1,
-                        userId: "user-1",
+                        ownerKey: "user:user-1",
                     },
                 },
                 create: expect.objectContaining({
                     voucherId: 1,
                     userId: "user-1",
+                    ownerKey: "user:user-1",
                     usageCount: 1,
                 }),
                 update: expect.objectContaining({

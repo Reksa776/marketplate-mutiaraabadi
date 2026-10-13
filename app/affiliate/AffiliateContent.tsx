@@ -548,7 +548,7 @@ export default function AffiliateContent() {
                 {/* HEADER */}
                 <div className="mb-6">
                     <Link
-                        href="/profile"
+                        href="/affiliate"
                         className="inline-flex items-center gap-1 text-sm text-gray-500 transition hover:text-gray-900"
                     >
                         <FiArrowLeft size={14} />
@@ -731,7 +731,7 @@ export default function AffiliateContent() {
             {/* HEADER */}
             <div className="mb-6">
                 <Link
-                    href="/profile"
+                    href="/affiliate"
                     className="inline-flex items-center gap-1 text-sm text-gray-500 transition hover:text-gray-900"
                 >
                     <FiArrowLeft size={14} />

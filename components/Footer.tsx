@@ -39,6 +39,24 @@ export default async function Footer() {
                         </h3>
 
                         <ul className="mt-4 space-y-3">
+                            {/*
+                             * PUBLIC entry point to the affiliate
+                             * programme. This is a marketing link, not
+                             * an account surface: customers keep shopping
+                             * as guests, and anyone who wants to join the
+                             * programme signs in on the affiliate page's
+                             * own (affiliate) login. Do NOT turn this into
+                             * a customer profile/register/login wall.
+                             */}
+                            <li>
+                                <Link
+                                    href="/affiliate"
+                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                >
+                                    Program Affiliate
+                                </Link>
+                            </li>
+
                             <li>
                                 <Link
                                     href="/faq"
@@ -104,21 +122,19 @@ export default async function Footer() {
                                 </Link>
                             </li>
 
+                            {/*
+                             * Customer accounts are gone: shopping and
+                             * checkout are guest-only. "Lacak Pesanan"
+                             * is the customer-facing replacement for the
+                             * old Masuk/Daftar entries (order number +
+                             * the contact used at checkout).
+                             */}
                             <li>
                                 <Link
-                                    href="/register"
+                                    href="/orders"
                                     className="text-sm text-gray-500 transition hover:text-rose-600"
                                 >
-                                    Daftar
-                                </Link>
-                            </li>
-
-                            <li>
-                                <Link
-                                    href="/login"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
-                                >
-                                    Masuk
+                                    Lacak Pesanan
                                 </Link>
                             </li>
                         </ul>

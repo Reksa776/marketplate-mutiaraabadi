@@ -962,17 +962,52 @@ test("Admin navbar Affiliator label present", () => {
     );
 });
 
-const profileContent = readFile(
-    "app/profile/ProfileContent.tsx"
+/*
+ * The account/profile page that used to host the "Daftar Affiliator"
+ * entry point was removed with the guest-checkout rework, so the
+ * customer-facing affiliate entry point is the affiliate page itself.
+ *
+ * NOTE: readFile() throws on a missing path, so pointing this at a
+ * deleted file aborts the WHOLE suite instead of failing one assertion.
+ */
+const affiliatePage = readFile(
+    "app/affiliate/page.tsx"
 );
 
-test("Profile page has Daftar Affiliator link", () => {
+test("Affiliate page gates on a logged-in user", () => {
     assert(
-        profileContent.includes("/affiliate") &&
-            profileContent.includes(
-                "Daftar Affiliator"
-            ),
-        "Profile page missing Daftar Affiliator link"
+        affiliatePage.includes(
+            'redirect("/login")'
+        ),
+        "Affiliate page no longer gates on the session"
+    );
+});
+
+test("Affiliate page exposes the Daftar Affiliator form", () => {
+    assert(
+        affiliateContent.includes(
+            "Daftar Affiliator"
+        ),
+        "Affiliate page missing Daftar Affiliator entry point"
+    );
+});
+
+const publicFooter = readFile("components/Footer.tsx");
+
+test("Public footer links to the affiliate programme", () => {
+    assert(
+        publicFooter.includes('href="/affiliate"') &&
+            publicFooter.includes("Program Affiliate"),
+        "Footer missing the public Program Affiliate link"
+    );
+});
+
+test("Public footer has no customer account links", () => {
+    assert(
+        !publicFooter.includes('href="/login"') &&
+            !publicFooter.includes('href="/register"') &&
+            !publicFooter.includes('href="/profile"'),
+        "Footer reintroduced a customer account surface"
     );
 });
 

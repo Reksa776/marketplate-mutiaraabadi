@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { auth } from "@/auth";
 import { rateLimiters } from "@/lib/rate-limit";
 import { expireUnpaidOrderIfExpired } from "@/lib/payment/order-payment";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 
 export const dynamic = "force-dynamic";
 
@@ -32,31 +32,6 @@ export async function POST(
     }
 ) {
     try {
-        const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Silakan login terlebih dahulu.",
-                },
-                { status: 401 }
-            );
-        }
-
-        const rateLimit = rateLimiters.repayment(session.user.id);
-
-        if (!rateLimit.allowed) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "Terlalu banyak permintaan. Coba lagi nanti.",
-                },
-                { status: 429 }
-            );
-        }
-
         const { id } = await context.params;
         const orderId = Number(id);
 
@@ -70,9 +45,41 @@ export async function POST(
             );
         }
 
+        /*
+         * OWNERSHIP FIRST, then rate limit the (now known) buyer.
+         */
+        const access = await authorizeOrderRequest(
+            request,
+            orderId
+        );
+
+        if (!access.ok) {
+            return NextResponse.json(
+                { success: false, message: access.message },
+                { status: access.status }
+            );
+        }
+
+        if (access.userId) {
+            const rateLimit = rateLimiters.repayment(
+                access.userId
+            );
+
+            if (!rateLimit.allowed) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message:
+                            "Terlalu banyak permintaan. Coba lagi nanti.",
+                    },
+                    { status: 429 }
+                );
+            }
+        }
+
         const result = await expireUnpaidOrderIfExpired(
             orderId,
-            session.user.id
+            access.userId
         );
 
         if (result === "NOT_FOUND") {

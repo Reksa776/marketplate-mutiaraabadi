@@ -8,9 +8,28 @@ import {
 } from "@/lib/checkout";
 
 import { getReferralCode } from "@/lib/affiliate/referral";
-import { rateLimiters } from "@/lib/rate-limit";
+import {
+    getClientIp,
+    guestIdentityKey as guestIdentityBucketKey,
+    guestIpKey,
+    rateLimiters,
+} from "@/lib/rate-limit";
 import { getAppOrigin } from "@/lib/app-origin";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
+import {
+    buildGuestIdentityKey,
+    generateGuestAccessToken,
+} from "@/lib/guest-identity";
+import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
+import {
+    hashCartToken,
+    readCartTokenFromCookieHeader,
+} from "@/lib/cart-scope";
+import {
+    readIdempotencyKey,
+    rejectCrossSite,
+    scopeIdempotencyKey,
+} from "@/lib/checkout-idempotency";
 
 import {
     formatProductName,
@@ -51,13 +70,17 @@ type Body = {
     productId: number;
     variantId: number;
     quantity: number;
-    addressId: string;
+    /** Logged-in buyers: a saved address id. */
+    addressId?: string;
+    /** Guests: the inline shipping address (validated server-side). */
+    guestAddress?: Record<string, unknown>;
     shipping: ShippingPayload;
     paymentMethod: PaymentMethod;
     /** Optional provider channel chosen by the customer (e.g. bca, dana). */
     paymentChannel?: string | null;
     voucherCode?: string | null;
     spinWheelSpinId?: number | null;
+    idempotencyKey?: string | null;
 };
 
 function jsonError(
@@ -91,6 +114,9 @@ function normalizeVoucherCode(
     return code || null;
 }
 
+/**
+ * Session user, or null for a guest. Buy Now does NOT require a login.
+ */
 async function getCurrentUser() {
     const session = await auth();
     if (!session?.user?.id) {
@@ -105,26 +131,16 @@ export async function POST(
     let createdOrderId: number | null = null;
 
     try {
+        /* CSRF defense-in-depth for cookie-authorized guest checkout. */
+        const crossSite = rejectCrossSite(request);
+
+        if (crossSite) {
+            return crossSite;
+        }
+
         const user = await getCurrentUser();
 
-        if (!user) {
-            return jsonError(
-                "Anda harus login terlebih dahulu.",
-                401
-            );
-        }
-
-        // Rate limiting
-        const rateLimit =
-            rateLimiters.orderCreation(
-                user.id!
-            );
-        if (!rateLimit.allowed) {
-            return jsonError(
-                "Terlalu banyak permintaan. Coba lagi nanti.",
-                429
-            );
-        }
+        const userId = user?.id ?? null;
 
         // iPaymu credentials check (FAIL-CLOSED)
         //
@@ -178,6 +194,63 @@ export async function POST(
             body.addressId || ""
         );
 
+        const guestAddress =
+            body.guestAddress &&
+            typeof body.guestAddress === "object"
+                ? body.guestAddress
+                : null;
+
+        /*
+         * Guest identity scope + per-buyer rate limiting.
+         *
+         * The logged-in path keeps the original per-user limiter; guests
+         * are limited on a device/IP bucket AND a hashed-identity bucket
+         * so IP rotation cannot bypass it.
+         */
+        const guestIdentity =
+            buildGuestIdentityKey({
+                email: guestAddress?.email,
+                phone: guestAddress?.phone,
+            });
+
+        if (userId) {
+            const rateLimit =
+                rateLimiters.orderCreation(userId);
+
+            if (!rateLimit.allowed) {
+                return jsonError(
+                    "Terlalu banyak permintaan. Coba lagi nanti.",
+                    429
+                );
+            }
+        } else {
+            const ip = getClientIp(request);
+
+            const allowed =
+                rateLimiters.guestCheckoutDevice(
+                    guestIpKey({
+                        ip,
+                        scope: "buy-now-ipaymu",
+                    })
+                ).allowed &&
+                (guestIdentity
+                    ? rateLimiters.guestCheckoutIdentity(
+                          guestIdentityBucketKey({
+                              ip,
+                              scope: "buy-now-ipaymu",
+                              identityKey: guestIdentity,
+                          })!
+                      ).allowed
+                    : true);
+
+            if (!allowed) {
+                return jsonError(
+                    "Terlalu banyak permintaan. Coba lagi nanti.",
+                    429
+                );
+            }
+        }
+
         const paymentMethod =
             body.paymentMethod;
 
@@ -218,9 +291,11 @@ export async function POST(
             );
         }
 
-        if (!addressId) {
+        if (!addressId && !guestAddress) {
             return jsonError(
-                "Alamat pengiriman wajib dipilih."
+                userId
+                    ? "Alamat pengiriman wajib dipilih."
+                    : "Alamat pengiriman wajib diisi."
             );
         }
 
@@ -264,11 +339,53 @@ export async function POST(
             request.headers.get("cookie")
         );
 
+        /*
+         * Duplicate-submission guard, namespaced to the buyer scope.
+         */
+        const rawIdempotencyKey =
+            readIdempotencyKey(
+                request,
+                body as unknown as Record<
+                    string,
+                    unknown
+                >
+            );
+
+        const idempotencyKey = rawIdempotencyKey
+            ? scopeIdempotencyKey(
+                  userId
+                      ? `u:${userId}`
+                      : guestIdentity
+                        ? `g:${guestIdentity}`
+                        : "anon",
+                  rawIdempotencyKey
+              )
+            : null;
+
+        const rawCartToken =
+            readCartTokenFromCookieHeader(
+                request.headers.get("cookie")
+            );
+
+        /* Guest order access token — returned once, via cookie only. */
+        const guestToken = userId
+            ? null
+            : generateGuestAccessToken();
+
         const result =
             await createCheckoutOrder({
-                userId: user.id,
+                userId,
                 mode: "BUY_NOW",
-                addressId,
+                addressId: addressId || undefined,
+                guestAddress:
+                    guestAddress ?? undefined,
+                guestIdentityKey: guestIdentity,
+                customerEmail:
+                    user?.email ?? null,
+                idempotencyKey,
+                cartGuestTokenHash: rawCartToken
+                    ? hashCartToken(rawCartToken)
+                    : null,
                 shipping: body.shipping,
                 paymentMethod,
                 voucherCode:
@@ -465,7 +582,14 @@ export async function POST(
             orderNumber: result.order.orderNumber,
             buyerName: recipientName,
             buyerPhone: phone,
-            buyerEmail: user.email ?? "",
+            /*
+             * buyerEmail comes from the ORDER, never from the session:
+             * a guest order has no session email.
+             */
+            buyerEmail:
+                result.order.customerEmail ??
+                user?.email ??
+                "",
             amount: result.grossAmount,
             paymentMethod,
             paymentChannel,
@@ -482,7 +606,7 @@ export async function POST(
          * `paymentUrl` is OUR OWN payment page (no provider redirect).
          */
 
-        return jsonSuccess(
+        const response = jsonSuccess(
             {
                 paymentUrl: payment.paymentPageUrl,
                 paymentReference:
@@ -510,6 +634,23 @@ export async function POST(
             },
             201
         );
+
+        /*
+         * Bind the guest order to this browser so the payment page can
+         * be opened without exposing the token in a body or URL.
+         *
+         * Skipped for an idempotent REPLAY — a new token would not match
+         * the stored hash and would clobber the buyer's valid cookie.
+         */
+        if (guestToken && !result.duplicate) {
+            issueGuestOrderAccessCookie(
+                response,
+                result.order.id,
+                guestToken
+            );
+        }
+
+        return response;
     } catch (error) {
         console.error(
             JSON.stringify({

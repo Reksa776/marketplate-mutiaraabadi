@@ -11,7 +11,7 @@
  */
 
 import type {
-    SendNotificationPayload,
+    NotificationPayload,
     SendNotificationResult,
 } from "./types";
 
@@ -30,7 +30,7 @@ export interface NotificationProvider {
      * 3. Tidak throw error (handle error internal)
      */
     send(
-        payload: SendNotificationPayload
+        payload: NotificationPayload
     ): Promise<SendNotificationResult>;
 
     /**

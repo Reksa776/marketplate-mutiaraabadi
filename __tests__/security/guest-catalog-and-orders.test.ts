@@ -1,13 +1,21 @@
 /**
- * GUEST CATALOG & ORDERS NAVIGATION — REGRESSION TESTS
+ * GUEST CATALOG & ORDERS — REGRESSION TESTS
  *
- * Verifies the guest-visibility change without a database:
+ * Verifies the guest-only shopping model:
  *   - /api/products returns the full non-archived catalog to guests
  *     (no bestseller-only restriction) while keeping stock hidden.
  *   - /products/[slug] is public (no guest redirect / guestProduct).
  *   - ProductGrid no longer shows a guest login wall.
- *   - The /orders PAGE is public with a soft-login state, but the
- *     /api/orders API remains authenticated and ownership-scoped.
+ *   - /orders is public and lists the orders THIS BROWSER owns
+ *     (guest access tokens), never a login wall.
+ *   - /api/orders is guest-scoped and never returns another buyer's
+ *     orders.
+ *   - ProductDetail adds to cart / buys now WITHOUT a login gate.
+ *
+ * These are source-level invariants: the behavioural coverage for
+ * guest order access lives in
+ * __tests__/security/guest-order-access.test.ts and the COD choke
+ * points in __tests__/security/cod-protection.test.ts.
  */
 
 import * as fs from "fs";
@@ -15,6 +23,10 @@ import * as path from "path";
 
 function readFile(relPath: string): string {
     return fs.readFileSync(path.resolve(process.cwd(), relPath), "utf-8");
+}
+
+function fileExists(relPath: string): boolean {
+    return fs.existsSync(path.resolve(process.cwd(), relPath));
 }
 
 const productsApiCode = readFile("app/api/products/route.ts");
@@ -28,6 +40,8 @@ const productDetailComponentCode = readFile(
     "components/products/ProductDetail.tsx"
 );
 const buyNowClientCode = readFile("app/buy-now/BuyNowPage.tsx");
+const checkoutPageCode = readFile("app/checkout/page.tsx");
+const buyNowPageCode = readFile("app/buy-now/page.tsx");
 
 describe("Guest catalog visibility", () => {
     test("product API no longer restricts guests to bestsellers", () => {
@@ -77,38 +91,92 @@ describe("Guest catalog visibility", () => {
     });
 });
 
-describe("Orders page — guest soft-login", () => {
-    test("orders page renders a soft-login state for guests", () => {
-        expect(ordersPageCode).toMatch(
-            /Silakan masuk untuk melihat riwayat pesanan/
+describe("Guest Add to Cart — no login gate", () => {
+    test("no session-based guard blocks add to cart", () => {
+        expect(productDetailComponentCode).not.toMatch(
+            /Silakan login terlebih dahulu untuk/
         );
-        expect(ordersPageCode).toMatch(/GuestOrdersGate/);
+        expect(productDetailComponentCode).not.toMatch(
+            /sessionStatus === "unauthenticated"/
+        );
     });
 
-    test("orders page offers Masuk and Daftar actions for guests", () => {
-        expect(ordersPageCode).toMatch(/href="\/login\?callbackUrl=\/orders"/);
-        expect(ordersPageCode).toMatch(/href="\/register"/);
+    test("the cart API is still called with the selected variant", () => {
+        expect(productDetailComponentCode).toMatch(/\/api\/cart/);
+        expect(productDetailComponentCode).toMatch(
+            /variantId:[\s\S]{0,40}selectedVariant\.id/
+        );
+        expect(productDetailComponentCode).toMatch(
+            /Produk ditambahkan ke keranjang/
+        );
     });
 
-    test("OrdersPage (which fetches /api/orders) is gated behind a session", () => {
-        const gateIndex = ordersPageCode.indexOf("session?.user ? (");
-        const ordersPageIndex = ordersPageCode.indexOf("<OrdersPage />");
-
-        expect(gateIndex).toBeGreaterThan(-1);
-        expect(ordersPageIndex).toBeGreaterThan(-1);
-        // The authenticated branch comes first, so a guest never
-        // reaches the component that requests /api/orders.
-        expect(ordersPageIndex).toBeGreaterThan(gateIndex);
+    test("no login prompt modal remains in the product detail", () => {
+        expect(productDetailComponentCode).not.toMatch(/showLoginPrompt/);
+        expect(productDetailComponentCode).not.toMatch(/Login diperlukan/);
     });
 });
 
-describe("Orders API stays protected", () => {
-    test("proxy keeps /api/orders in the protected API prefixes", () => {
+describe("Guest Buy Now — no login gate", () => {
+    test("Buy Now navigates straight to the buy-now page", () => {
+        expect(productDetailComponentCode).toMatch(
+            /\/buy-now\?productId=/
+        );
+        expect(productDetailComponentCode).not.toMatch(
+            /\/login\?callbackUrl=/
+        );
+    });
+
+    test("Buy Now client never redirects to login", () => {
+        expect(buyNowClientCode).not.toMatch(/router\.push\(["'`]\/login/);
+        expect(buyNowClientCode).not.toMatch(
+            /window\.location[\s\S]{0,20}\/login/
+        );
+    });
+
+    test("/buy-now page renders for guests", () => {
+        expect(buyNowPageCode).not.toMatch(/redirect\(\s*["'`]\/login/);
+        expect(buyNowPageCode).not.toMatch(/session\?\.user/);
+    });
+});
+
+describe("Guest checkout entry", () => {
+    test("/checkout no longer redirects to login", () => {
+        expect(checkoutPageCode).not.toMatch(/redirect\(\s*["'`]\/login/);
+        expect(checkoutPageCode).not.toMatch(/await auth\(\)/);
+    });
+});
+
+describe("Orders page — public, token-scoped", () => {
+    test("orders page renders the order list for guests", () => {
+        expect(ordersPageCode).toMatch(/<OrdersPage \/>/);
+        expect(ordersPageCode).not.toMatch(/GuestOrdersGate/);
+        expect(ordersPageCode).not.toMatch(/Silakan masuk untuk melihat/);
+    });
+
+    test("orders page offers no login or register CTA", () => {
+        expect(ordersPageCode).not.toMatch(/\/login\?callbackUrl/);
+        expect(ordersPageCode).not.toMatch(/href="\/register"/);
+    });
+
+    test("orders page offers order recovery instead", () => {
+        const ordersListCode = readFile(
+            "components/orders/OrdersPage.tsx"
+        );
+        expect(ordersListCode).toMatch(/OrderRecovery/);
+        expect(fileExists("components/orders/OrderRecovery.tsx")).toBe(
+            true
+        );
+    });
+});
+
+describe("Orders API — guest scoped, never login gated", () => {
+    test("proxy does NOT force /api/orders behind a session", () => {
         const apiPrefixes = proxyCode.substring(
             proxyCode.indexOf("PROTECTED_API_PREFIXES"),
             proxyCode.indexOf("PAGE-LEVEL PROTECTED ROUTES")
         );
-        expect(apiPrefixes).toMatch(/"\/api\/orders"/);
+        expect(apiPrefixes).not.toMatch(/"\/api\/orders"/);
     });
 
     test("proxy no longer forces the /orders page behind login", () => {
@@ -121,99 +189,86 @@ describe("Orders API stays protected", () => {
         expect(pageRoutes).not.toMatch(/"\/orders"/);
     });
 
-    test("GET /api/orders requires a session", () => {
+    test("GET /api/orders does not require a session", () => {
         const getSection = ordersApiCode.substring(
             ordersApiCode.indexOf("export async function GET")
         );
-        expect(getSection).toMatch(/const session\s*=\s*await auth\(\)/);
-        expect(getSection).toMatch(/!session\?\.user\?\.id/);
-        expect(getSection).toMatch(/status:\s*401/);
+        expect(getSection).not.toMatch(/status:\s*401/);
     });
 
-    test("GET /api/orders is scoped to the authenticated user", () => {
+    test("GET /api/orders is scoped to the caller", () => {
         const getSection = ordersApiCode.substring(
             ordersApiCode.indexOf("export async function GET")
         );
-        expect(getSection).toMatch(/where:\s*\{[\s\S]{0,80}userId:[\s\S]{0,40}session\.user\.id/);
-    });
-});
-
-describe("BottomNavbar — authenticated only", () => {
-    test("guests get no navbar on /products", () => {
-        expect(productsPageCode).toMatch(/session\?\.user && <BottomNavbar \/>/);
-    });
-
-    test("guests get no navbar on product detail", () => {
-        expect(productDetailCode).toMatch(/session\?\.user && <BottomNavbar \/>/);
-    });
-
-    test("guest orders soft-login state renders no navbar", () => {
-        const gateStart = ordersPageCode.indexOf("function GuestOrdersGate");
-        const gateEnd = ordersPageCode.indexOf(
-            "export default async function Orders"
-        );
-
-        expect(gateStart).toBeGreaterThan(-1);
-        expect(gateEnd).toBeGreaterThan(gateStart);
-        expect(ordersPageCode.substring(gateStart, gateEnd)).not.toMatch(
-            /BottomNavbar/
-        );
-    });
-
-    test("authenticated orders branch still renders the navbar", () => {
-        const authIndex = ordersPageCode.indexOf("session?.user ? (");
-        const navbarIndex = ordersPageCode.indexOf("<BottomNavbar />");
-        expect(authIndex).toBeGreaterThan(-1);
-        expect(navbarIndex).toBeGreaterThan(authIndex);
-    });
-});
-
-describe("Guest Add to Cart", () => {
-    test("uses the existing session mechanism and a login prompt", () => {
-        expect(productDetailComponentCode).toMatch(
-            /from "next-auth\/react"/
-        );
-        expect(productDetailComponentCode).toMatch(
-            /Silakan login terlebih dahulu untuk[\s\S]{0,40}menambahkan produk ke keranjang/
-        );
-    });
-
-    test("guest guard runs before the cart API request", () => {
-        const guardIndex = productDetailComponentCode.indexOf(
-            'sessionStatus === "unauthenticated"'
-        );
-        const cartApiIndex = productDetailComponentCode.indexOf("/api/cart");
-
-        expect(guardIndex).toBeGreaterThan(-1);
-        expect(cartApiIndex).toBeGreaterThan(-1);
-        expect(guardIndex).toBeLessThan(cartApiIndex);
-    });
-
-    test("authenticated add-to-cart flow is unchanged", () => {
-        expect(productDetailComponentCode).toMatch(
-            /Produk ditambahkan ke keranjang/
-        );
-        expect(productDetailComponentCode).toMatch(
-            /variantId:[\s\S]{0,40}selectedVariant\.id/
+        // Session owner scope OR the verified guest token set.
+        expect(getSection).toMatch(
+            /listGuestAccessibleOrderIds|userId:\s*session\.user\.id/
         );
     });
 });
 
-describe("Guest Buy Now", () => {
-    test("redirects to login with a safe, encoded internal callback", () => {
-        expect(productDetailComponentCode).toMatch(
-            /router\.push\(`\/login\?callbackUrl=\$\{loginCallback\}`\)/
-        );
-        expect(productDetailComponentCode).toMatch(
-            /encodeURIComponent\(productPath\)/
-        );
-        expect(productDetailComponentCode).toMatch(
-            /const productPath = `\/products\/\$\{product\.slug\}`/
-        );
+describe("No customer account surface remains", () => {
+    test.each([
+        "app/register/page.tsx",
+        "app/api/auth/register/route.ts",
+        "components/auth/RegisterForm.tsx",
+        "app/profile/page.tsx",
+        "app/api/profile/route.ts",
+        "app/addresses/page.tsx",
+    ])("%s is deleted", (file) => {
+        expect(fileExists(file)).toBe(false);
     });
 
-    test("Buy Now client never sends non-auth errors to login", () => {
-        expect(buyNowClientCode).not.toMatch(/router\.push\(["'`]\/login/);
-        expect(buyNowClientCode).not.toMatch(/window\.location[\s\S]{0,20}\/login/);
+    test("/login is kept for admin/affiliate dashboards", () => {
+        expect(fileExists("app/login/page.tsx")).toBe(true);
+        expect(fileExists("app/api/auth/[...nextauth]/route.ts")).toBe(
+            true
+        );
+    });
+});
+
+/**
+ * The affiliate programme needs a PUBLIC entry point again, without
+ * resurrecting any customer account surface. The footer is the right
+ * place: it is marketing navigation rendered by the root layout on every
+ * page, while the affiliate page keeps its own (affiliate) login.
+ */
+describe("Public affiliate entry point", () => {
+    const footerCode = readFile("components/Footer.tsx");
+    const layoutCode = readFile("app/layout.tsx");
+    const affiliatePageCode = readFile(
+        "app/affiliate/page.tsx"
+    );
+
+    test("the footer links to the affiliate programme", () => {
+        expect(footerCode).toMatch(/href="\/affiliate"/);
+        expect(footerCode).toMatch(/Program Affiliate/);
+    });
+
+    test("the footer renders on every public page", () => {
+        expect(layoutCode).toMatch(/<Footer \/>/);
+    });
+
+    test("the footer stays guest-only — no customer account links", () => {
+        expect(footerCode).not.toMatch(/href="\/login"/);
+        expect(footerCode).not.toMatch(/href="\/register"/);
+        expect(footerCode).not.toMatch(/href="\/profile"/);
+        expect(footerCode).not.toMatch(/href="\/addresses"/);
+    });
+
+    test("the affiliate entry page keeps its own affiliate login", () => {
+        expect(affiliatePageCode).toMatch(/await auth\(\)/);
+        expect(affiliatePageCode).toMatch(/redirect\("\/login"\)/);
+    });
+
+    test.each([
+        "app/affiliate/AffiliateContent.tsx",
+        "app/affiliate/dashboard/page.tsx",
+        "app/affiliate/payouts/page.tsx",
+        "app/api/affiliate/application/route.ts",
+        "app/api/affiliate/dashboard/route.ts",
+        "app/api/affiliate/referral/route.ts",
+    ])("%s still exists", (file) => {
+        expect(fileExists(file)).toBe(true);
     });
 });

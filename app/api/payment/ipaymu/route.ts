@@ -9,8 +9,27 @@ import {
 
 import { getReferralCode } from "@/lib/affiliate/referral";
 
-import { rateLimiters } from "@/lib/rate-limit";
+import {
+    getClientIp,
+    guestIdentityKey as guestIdentityBucketKey,
+    guestIpKey,
+    rateLimiters,
+} from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
+import {
+    buildGuestIdentityKey,
+    generateGuestAccessToken,
+} from "@/lib/guest-identity";
+import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
+import {
+    hashCartToken,
+    readCartTokenFromCookieHeader,
+} from "@/lib/cart-scope";
+import {
+    readIdempotencyKey,
+    rejectCrossSite,
+    scopeIdempotencyKey,
+} from "@/lib/checkout-idempotency";
 
 import {
     formatProductName,
@@ -59,44 +78,26 @@ export async function POST(request: Request) {
     let createdOrderId: number | null = null;
 
     try {
+        /* CSRF defense-in-depth for cookie-authorized guest checkout. */
+        const crossSite = rejectCrossSite(request);
+
+        if (crossSite) {
+            return crossSite;
+        }
+
         /* ==========================================
-         * AUTH
-         * ========================================== */
+         * BUYER (login is OPTIONAL)
+         * ==========================================
+         *
+         * Non-COD checkout must work for guests, so the buyer identity
+         * is the session when present and a hashed contact scope
+         * otherwise. Rate limiting is applied on a device/IP bucket AND
+         * the identity bucket for guests.
+         */
 
         const session = await auth();
 
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "Silakan login terlebih dahulu.",
-                },
-                {
-                    status: 401,
-                }
-            );
-        }
-
-        const userId = session.user.id;
-
-        /* ==========================================
-         * RATE LIMIT
-         * ========================================== */
-
-        const rateLimit =
-            rateLimiters.orderCreation(userId);
-
-        if (!rateLimit.allowed) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "Terlalu banyak permintaan. Coba lagi nanti.",
-                },
-                { status: 429 }
-            );
-        }
+        const userId = session?.user?.id ?? null;
 
         /* ==========================================
          * CREDENTIALS CHECK (FAIL-CLOSED)
@@ -145,6 +146,7 @@ export async function POST(request: Request) {
         const {
             mode = "CART",
             addressId,
+            guestAddress,
             shipping,
             paymentMethod,
             paymentChannel,
@@ -155,6 +157,65 @@ export async function POST(request: Request) {
             spinWheelSpinId,
             selectedCartItemIds,
         } = body;
+
+        const hasGuestAddress =
+            guestAddress &&
+            typeof guestAddress === "object";
+
+        const guestIdentity =
+            buildGuestIdentityKey({
+                email: guestAddress?.email,
+                phone: guestAddress?.phone,
+            });
+
+        const rawCartToken =
+            readCartTokenFromCookieHeader(
+                request.headers.get("cookie")
+            );
+
+        /* Per-buyer rate limiting. */
+        if (userId) {
+            const rateLimit =
+                rateLimiters.orderCreation(userId);
+
+            if (!rateLimit.allowed) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message:
+                            "Terlalu banyak permintaan. Coba lagi nanti.",
+                    },
+                    { status: 429 }
+                );
+            }
+        } else {
+            const ip = getClientIp(request);
+
+            const allowed =
+                rateLimiters.guestCheckoutDevice(
+                    guestIpKey({ ip, scope: "ipaymu" })
+                ).allowed &&
+                (guestIdentity
+                    ? rateLimiters.guestCheckoutIdentity(
+                          guestIdentityBucketKey({
+                              ip,
+                              scope: "ipaymu",
+                              identityKey: guestIdentity,
+                          })!
+                      ).allowed
+                    : true);
+
+            if (!allowed) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message:
+                            "Terlalu banyak permintaan. Coba lagi nanti.",
+                    },
+                    { status: 429 }
+                );
+            }
+        }
 
         /* ==========================================
          * MODE
@@ -232,17 +293,25 @@ export async function POST(request: Request) {
 
         /* ==========================================
          * ADDRESS
-         * ========================================== */
+         * ==========================================
+         *
+         * Logged-in buyers may use a saved address; guests send the
+         * inline address, which createCheckoutOrder validates and
+         * resolves server-side.
+         */
 
-        if (
-            typeof addressId !== "string" ||
-            !addressId.trim()
-        ) {
+        const addressIdString =
+            typeof addressId === "string"
+                ? addressId.trim()
+                : "";
+
+        if (!addressIdString && !hasGuestAddress) {
             return NextResponse.json(
                 {
                     success: false,
-                    message:
-                        "Alamat pengiriman wajib dipilih.",
+                    message: userId
+                        ? "Alamat pengiriman wajib dipilih."
+                        : "Alamat pengiriman wajib diisi.",
                 },
                 {
                     status: 400,
@@ -278,12 +347,49 @@ export async function POST(request: Request) {
             request.headers.get("cookie")
         );
 
+        /*
+         * Duplicate-submission guard, namespaced to the buyer scope.
+         */
+        const rawIdempotencyKey =
+            readIdempotencyKey(request, body);
+
+        const idempotencyKey = rawIdempotencyKey
+            ? scopeIdempotencyKey(
+                  userId
+                      ? `u:${userId}`
+                      : guestIdentity
+                        ? `g:${guestIdentity}`
+                        : "anon",
+                  rawIdempotencyKey
+              )
+            : null;
+
+        /* Guest order access token — returned once, via cookie only. */
+        const guestToken = userId
+            ? null
+            : generateGuestAccessToken();
+
         const result = await createCheckoutOrder({
             userId,
 
             mode,
 
-            addressId,
+            addressId: addressIdString || undefined,
+
+            guestAddress: hasGuestAddress
+                ? guestAddress
+                : undefined,
+
+            cartGuestTokenHash: rawCartToken
+                ? hashCartToken(rawCartToken)
+                : null,
+
+            guestIdentityKey: guestIdentity,
+
+            customerEmail:
+                session?.user?.email ?? null,
+
+            idempotencyKey,
 
             shipping,
 
@@ -496,7 +602,14 @@ export async function POST(request: Request) {
             orderNumber: result.order.orderNumber,
             buyerName: recipientName,
             buyerPhone: phone,
-            buyerEmail: session.user.email ?? "",
+            /*
+             * buyerEmail comes from the ORDER, not the session: a guest
+             * order has no session email to fall back on.
+             */
+            buyerEmail:
+                result.order.customerEmail ??
+                session?.user?.email ??
+                "",
             amount: result.grossAmount,
             paymentMethod: selectedPaymentMethod,
             paymentChannel: selectedPaymentChannel,
@@ -514,7 +627,7 @@ export async function POST(request: Request) {
          * the store domain and never sees an iPaymu URL.
          */
 
-        return NextResponse.json({
+        const response = NextResponse.json({
             success: true,
 
             message:
@@ -558,6 +671,24 @@ export async function POST(request: Request) {
                 mode,
             },
         });
+
+        /*
+         * Bind the guest order to this browser so the payment page and
+         * tracking can be opened without ever exposing the token in a
+         * response body or URL.
+         *
+         * Skipped for an idempotent REPLAY — a new token would not match
+         * the stored hash and would clobber the buyer's valid cookie.
+         */
+        if (guestToken && !result.duplicate) {
+            issueGuestOrderAccessCookie(
+                response,
+                result.order.id,
+                guestToken
+            );
+        }
+
+        return response;
     } catch (error: any) {
         console.error(
             JSON.stringify({

@@ -9,8 +9,24 @@ import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/auth";
-import { rateLimiters } from "@/lib/rate-limit";
+import {
+    getClientIp,
+    guestDeviceKey,
+    guestIdentityKey as guestIdentityBucketKey,
+    guestIpKey,
+    rateLimiters,
+} from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
+import {
+    buildGuestIdentityKey,
+    generateGuestAccessToken,
+} from "@/lib/guest-identity";
+import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
+import {
+    readIdempotencyKey,
+    rejectCrossSite,
+    scopeIdempotencyKey,
+} from "@/lib/checkout-idempotency";
 
 export const dynamic = "force-dynamic";
 
@@ -36,11 +52,15 @@ type BuyNowPostBody = {
     productId: number;
     variantId: number;
     quantity: number;
-    addressId: string;
+    /** Logged-in buyers: a saved address id. */
+    addressId?: string;
+    /** Guests: the inline shipping address (validated server-side). */
+    guestAddress?: Record<string, unknown>;
     shipping: ShippingPayload;
     paymentMethod: PaymentMethod;
     voucherCode?: string | null;
     spinWheelSpinId?: number | null;
+    idempotencyKey?: string | null;
 };
 
 function jsonError(
@@ -138,6 +158,10 @@ function getShippingService(
     );
 }
 
+/**
+ * Current session user, or null for a guest. Buy Now does NOT require
+ * a login: guest checkout is the default customer path.
+ */
 async function getCurrentUser() {
     const session =
         await auth();
@@ -172,13 +196,6 @@ export async function GET(
     try {
         const user =
             await getCurrentUser();
-
-        if (!user) {
-            return jsonError(
-                "Anda harus login terlebih dahulu.",
-                401
-            );
-        }
 
         const searchParams =
             request.nextUrl.searchParams;
@@ -252,21 +269,27 @@ export async function GET(
                     },
                 }),
 
-                prisma.userAddress.findMany({
-                    where: {
-                        userId: user.id,
-                    },
-                    orderBy: [
-                        {
-                            isDefault:
-                                "desc",
-                        },
-                        {
-                            createdAt:
-                                "desc",
-                        },
-                    ],
-                }),
+                /*
+                 * A guest has no address book — the UI shows an inline
+                 * address form. Returning [] keeps the shape stable.
+                 */
+                user?.id
+                    ? prisma.userAddress.findMany({
+                          where: {
+                              userId: user.id,
+                          },
+                          orderBy: [
+                              {
+                                  isDefault:
+                                      "desc",
+                              },
+                              {
+                                  createdAt:
+                                      "desc",
+                              },
+                          ],
+                      })
+                    : Promise.resolve([]),
 
                 prisma.storeSetting.findUnique({
                     where: {
@@ -467,24 +490,17 @@ export async function POST(
     request: NextRequest
 ) {
     try {
+        /* CSRF defense-in-depth for cookie-authorized guest checkout. */
+        const crossSite = rejectCrossSite(request);
+
+        if (crossSite) {
+            return crossSite;
+        }
+
         const user =
             await getCurrentUser();
 
-        if (!user) {
-            return jsonError(
-                "Anda harus login terlebih dahulu.",
-                401
-            );
-        }
-
-        // Rate limiting for order creation
-        const rateLimit = rateLimiters.orderCreation(user.id!);
-        if (!rateLimit.allowed) {
-            return jsonError(
-                "Terlalu banyak permintaan. Coba lagi nanti.",
-                429
-            );
-        }
+        const userId = user?.id ?? null;
 
         let body: BuyNowPostBody;
 
@@ -511,6 +527,12 @@ export async function POST(
                 body.addressId || ""
             );
 
+        const guestAddress =
+            body.guestAddress &&
+            typeof body.guestAddress === "object"
+                ? body.guestAddress
+                : null;
+
         const paymentMethod =
             body.paymentMethod;
 
@@ -518,6 +540,66 @@ export async function POST(
             normalizeVoucherCode(
                 body.voucherCode
             );
+
+        /*
+         * Guest identity scope + rate limiting.
+         *
+         * Logged-in buyers keep the original per-user limiter; guests are
+         * limited on both a device/IP bucket and a hashed-identity
+         * bucket so IP rotation cannot bypass the COD cap.
+         */
+        const guestIdentity =
+            buildGuestIdentityKey({
+                email: guestAddress?.email,
+                phone: guestAddress?.phone,
+            });
+
+        if (userId) {
+            // Rate limiting for order creation
+            const rateLimit =
+                rateLimiters.orderCreation(userId);
+
+            if (!rateLimit.allowed) {
+                return jsonError(
+                    "Terlalu banyak permintaan. Coba lagi nanti.",
+                    429
+                );
+            }
+        } else {
+            const ip = getClientIp(request);
+
+            const allowed =
+                rateLimiters.guestCheckoutDevice(
+                    guestIpKey({ ip, scope: "buy-now" })
+                ).allowed &&
+                rateLimiters.guestCodDevice(
+                    guestDeviceKey({
+                        ip,
+                        scope: "buy-now-cod",
+                        deviceKey: null,
+                    }) ??
+                        guestIpKey({
+                            ip,
+                            scope: "buy-now-cod",
+                        })
+                ).allowed &&
+                (guestIdentity
+                    ? rateLimiters.guestCodIdentity(
+                          guestIdentityBucketKey({
+                              ip,
+                              scope: "buy-now-cod",
+                              identityKey: guestIdentity,
+                          })!
+                      ).allowed
+                    : true);
+
+            if (!allowed) {
+                return jsonError(
+                    "Terlalu banyak permintaan. Coba lagi nanti.",
+                    429
+                );
+            }
+        }
 
         if (
             !Number.isInteger(productId) ||
@@ -547,9 +629,11 @@ export async function POST(
             );
         }
 
-        if (!addressId) {
+        if (!addressId && !guestAddress) {
             return jsonError(
-                "Alamat pengiriman wajib dipilih."
+                userId
+                    ? "Alamat pengiriman wajib dipilih."
+                    : "Alamat pengiriman wajib diisi."
             );
         }
 
@@ -590,11 +674,46 @@ export async function POST(
                 request.headers.get("cookie")
             );
 
+        /*
+         * Duplicate-submission guard, namespaced to the buyer scope so
+         * one guest cannot replay another guest's key.
+         */
+        const rawIdempotencyKey =
+            readIdempotencyKey(
+                request,
+                body as unknown as Record<
+                    string,
+                    unknown
+                >
+            );
+
+        const idempotencyKey = rawIdempotencyKey
+            ? scopeIdempotencyKey(
+                  userId
+                      ? `u:${userId}`
+                      : guestIdentity
+                        ? `g:${guestIdentity}`
+                        : "anon",
+                  rawIdempotencyKey
+              )
+            : null;
+
+        /* Guest order access token — returned once, via cookie only. */
+        const guestToken = userId
+            ? null
+            : generateGuestAccessToken();
+
         const result =
             await createCheckoutOrder({
-                userId: user.id,
+                userId,
                 mode: "BUY_NOW",
-                addressId,
+                addressId: addressId || undefined,
+                guestAddress:
+                    guestAddress ?? undefined,
+                guestIdentityKey: guestIdentity,
+                customerEmail:
+                    user?.email ?? null,
+                idempotencyKey,
                 shipping: body.shipping,
                 paymentMethod: "COD",
                 voucherCode: voucherCode ?? undefined,
@@ -606,7 +725,7 @@ export async function POST(
                 attribution: readOrderAttribution(request),
             });
 
-        return jsonSuccess(
+        const response = jsonSuccess(
             {
                 id: result.order.id,
 
@@ -626,9 +745,28 @@ export async function POST(
                 shippingCost: result.shippingCost,
                 discount: result.discount,
                 total: result.grossAmount,
+
+                requiresCodReview: Boolean(
+                    result.requiresCodReview
+                ),
             },
             201
         );
+
+        /*
+         * Never re-issue the cookie for an idempotent REPLAY: the stored
+         * hash belongs to the original token, so overwriting it here
+         * would invalidate the buyer's working cookie.
+         */
+        if (guestToken && !result.duplicate) {
+            issueGuestOrderAccessCookie(
+                response,
+                result.order.id,
+                guestToken
+            );
+        }
+
+        return response;
     } catch (error) {
         console.error(
             JSON.stringify({
@@ -639,6 +777,11 @@ export async function POST(
             })
         );
 
-        return jsonError("Gagal membuat pesanan.", 400);
+        return jsonError(
+            error instanceof Error
+                ? error.message
+                : "Gagal membuat pesanan.",
+            400
+        );
     }
 }

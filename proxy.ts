@@ -2,11 +2,31 @@ import { auth } from "@/auth";
 
 /**
  * ==========================================
+ * PROXY (ex-middleware) — ROUTE GUARDS
+ * ==========================================
+ *
+ * CUSTOMER SHOPPING IS GUEST-ONLY.
+ *
+ * Shopping, cart, checkout, payment, order history and tracking all
+ * work without a session, so those routes are deliberately NOT gated
+ * here. What remains gated is the STAFF surface:
+ *
+ *   /admin/**            → ADMIN dashboard + /api/admin/**
+ *   /api/affiliate/**    → affiliate dashboard, payouts, commissions
+ *   /api/uploads/affiliate/**
+ *
+ * NOTE: this proxy is defense-in-depth only. Every admin/affiliate API
+ * route still performs its own `requireAdmin()` / role check, and the
+ * guest-facing routes enforce OWNERSHIP (session scope or guest access
+ * token). Nothing here is the sole authorization layer.
+ */
+
+/**
+ * ==========================================
  * PUBLIC API ROUTES
  * ==========================================
  *
- * These API routes do NOT require authentication.
- * They are checked BEFORE protected API routes.
+ * Checked BEFORE protected API routes.
  */
 const PUBLIC_API_PREFIXES = [
     "/api/auth/",
@@ -22,6 +42,14 @@ const PUBLIC_API_PREFIXES = [
     "/api/campaigns/",
     "/api/promotions/",
     "/api/shipping/",
+    "/api/rajaongkir/",
+    /*
+     * Mengantar estimate is a server-only proxy (the browser key is
+     * never exposed). Guests need it to see shipping quotes before
+     * checkout, and the authoritative price is re-verified
+     * server-side at checkout regardless of what this returns.
+     */
+    "/api/mengantar/estimate",
     // Mengantar shipment-status webhook: called by Mengantar, not by a
     // logged-in user. Authenticated by HMAC-SHA256 signature inside the
     // handler (fail-closed), so it must bypass session auth. This is
@@ -34,32 +62,18 @@ const PUBLIC_API_PREFIXES = [
  * PROTECTED API ROUTES
  * ==========================================
  *
- * These API routes require authentication.
- * If the user is not logged in, return 401 JSON.
+ * STAFF ONLY. Customer-facing APIs (cart, checkout, orders, buy-now,
+ * payment, voucher, spin wheel) are intentionally absent: they must be
+ * reachable without a login, and they authorize per-request instead.
  */
 const PROTECTED_API_PREFIXES = [
     "/api/admin/",
-    "/api/orders",
-    "/api/cart",
-    "/api/checkout",
-    "/api/profile",
-    "/api/address",
-    "/api/addresses",
-    "/api/spin-wheel",
     "/api/affiliate/dashboard",
     "/api/affiliate/payouts",
     "/api/affiliate/commissions",
     "/api/affiliate/application",
     "/api/affiliate/upload",
     "/api/uploads/affiliate/",
-    "/api/payment/ipaymu",
-    "/api/buy-now",
-    "/api/buy-now/shipping",
-    "/api/voucher",
-    "/api/rajaongkir",
-    // Mengantar estimate never touches the browser key: it is a
-    // server-only proxy, so it is authenticated like any private API.
-    "/api/mengantar/",
 ];
 
 /**
@@ -67,26 +81,19 @@ const PROTECTED_API_PREFIXES = [
  * PAGE-LEVEL PROTECTED ROUTES
  * ==========================================
  *
- * These page routes redirect to /login
- * if the user is not authenticated.
+ * These page routes redirect to /login if the user is not
+ * authenticated. Customer shopping pages are NOT listed.
  */
 /*
- * NOTE: `/orders` is intentionally NOT listed here. The orders
- * PAGE is public so guests can see a soft-login state, while the
- * `/api/orders` API stays in PROTECTED_API_PREFIXES (see above)
- * and each route handler still enforces auth + ownership.
+ * NOTE: `/orders` is intentionally NOT listed here. The orders PAGE is
+ * public: a guest sees their own orders (token-scoped) and the
+ * "find my order" form, never a forced login.
  */
 const PROTECTED_PAGE_ROUTES = [
-    "/profile",
-    "/wishlist",
-    "/cart",
-    "/checkout",
-    "/buy-now",
-    "/address",
-    "/addresses",
     "/admin",
     "/dashboard",
     "/seller",
+    "/affiliate",
 ];
 
 function isPublicApiRoute(pathname: string): boolean {
@@ -150,7 +157,7 @@ export default auth((req) => {
     // PAGE ROUTE PROTECTION
     // ==========================================
     // Redirect unauthenticated users to login
-    // for protected pages.
+    // for protected (staff) pages.
 
     if (!isLoggedIn && isProtectedPageRoute(pathname)) {
         const loginUrl = new URL("/login", req.url);
@@ -163,17 +170,11 @@ export const config = {
     matcher: [
         // API routes
         "/api/:path*",
-        // Page routes that need auth redirect
-        "/profile/:path*",
-        "/wishlist/:path*",
-        "/cart/:path*",
-        "/checkout/:path*",
-        "/buy-now/:path*",
-        "/address/:path*",
-        "/addresses/:path*",
+        // Staff page routes that need an auth redirect
         "/admin/:path*",
         "/dashboard/:path*",
         "/seller/:path*",
+        "/affiliate/:path*",
         // /products is public but needs session context for auth-aware rendering
         "/products/:path*",
     ],

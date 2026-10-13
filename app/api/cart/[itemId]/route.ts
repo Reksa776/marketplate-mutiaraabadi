@@ -1,7 +1,16 @@
 import { NextResponse } from "next/server";
 
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import {
+    resolveCartScope,
+    type CartScope,
+} from "@/lib/cart-scope";
+import {
+    getClientIp,
+    guestIpKey,
+    rateLimiters,
+} from "@/lib/rate-limit";
+import { rejectCrossSite } from "@/lib/checkout-idempotency";
 
 type Params = {
     params: Promise<{
@@ -9,21 +18,74 @@ type Params = {
     }>;
 };
 
+/**
+ * Cart item routes accept BOTH the logged-in cart scope and the
+ * anonymous guest cart scope. The item is always resolved through the
+ * caller's own scope, so a guest can never touch another scope's item
+ * by guessing an item id.
+ */
+function scopeFilter(scope: CartScope) {
+    if (scope.userId) {
+        return { userId: scope.userId };
+    }
+
+    if (scope.guestTokenHash) {
+        return {
+            guestTokenHash: scope.guestTokenHash,
+        };
+    }
+
+    return null;
+}
+
+function guestLimited(
+    request: Request,
+    scope: CartScope
+): boolean {
+    if (scope.userId) {
+        return false;
+    }
+
+    const ip = getClientIp(request);
+
+    return !rateLimiters.guestCart(
+        guestIpKey({ ip, scope: "cart-item" })
+    ).allowed;
+}
+
 export async function PATCH(
     request: Request,
     { params }: Params
 ) {
     try {
-        const session = await auth();
+        const crossSite = rejectCrossSite(request);
 
-        if (!session?.user?.id) {
+        if (crossSite) {
+            return crossSite;
+        }
+
+        const scope = await resolveCartScope();
+
+        if (guestLimited(request, scope)) {
             return NextResponse.json(
                 {
                     message:
-                        "Silakan login terlebih dahulu.",
+                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
+                },
+                { status: 429 }
+            );
+        }
+
+        const filter = scopeFilter(scope);
+
+        if (!filter) {
+            return NextResponse.json(
+                {
+                    message:
+                        "Item keranjang tidak ditemukan.",
                 },
                 {
-                    status: 401,
+                    status: 404,
                 }
             );
         }
@@ -78,10 +140,7 @@ export async function PATCH(
                     where: {
                         id,
 
-                        cart: {
-                            userId:
-                                session.user.id,
-                        },
+                        cart: filter,
                     },
 
                     include: {
@@ -102,13 +161,30 @@ export async function PATCH(
             );
         }
 
-        if (
-            quantity >
-            item.variant.stock
-        ) {
+        /*
+         * Flash-aware stock ceiling: an active flash sale's saleStock
+         * is the authoritative stock for that variant, so the cart can
+         * never be sized beyond what checkout would accept.
+         */
+        const activeFlashSale =
+            await prisma.flashSale.findFirst({
+                where: {
+                    variantId: item.variantId,
+                    isActive: true,
+                    startAt: { lte: new Date() },
+                    endAt: { gte: new Date() },
+                },
+                select: { saleStock: true },
+            });
+
+        const availableLimit = activeFlashSale
+            ? activeFlashSale.saleStock
+            : item.variant.stock;
+
+        if (quantity > availableLimit) {
             return NextResponse.json(
                 {
-                    message: `Stok tersedia hanya ${item.variant.stock}.`,
+                    message: `Stok tersedia hanya ${availableLimit}.`,
                 },
                 {
                     status: 400,
@@ -154,16 +230,34 @@ export async function DELETE(
     { params }: Params
 ) {
     try {
-        const session = await auth();
+        const crossSite = rejectCrossSite(request);
 
-        if (!session?.user?.id) {
+        if (crossSite) {
+            return crossSite;
+        }
+
+        const scope = await resolveCartScope();
+
+        if (guestLimited(request, scope)) {
             return NextResponse.json(
                 {
                     message:
-                        "Silakan login terlebih dahulu.",
+                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
+                },
+                { status: 429 }
+            );
+        }
+
+        const filter = scopeFilter(scope);
+
+        if (!filter) {
+            return NextResponse.json(
+                {
+                    message:
+                        "Item tidak ditemukan.",
                 },
                 {
-                    status: 401,
+                    status: 404,
                 }
             );
         }
@@ -179,10 +273,7 @@ export async function DELETE(
                     where: {
                         id,
 
-                        cart: {
-                            userId:
-                                session.user.id,
-                        },
+                        cart: filter,
                     },
                 }
             );

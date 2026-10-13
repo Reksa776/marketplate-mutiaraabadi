@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { updateCommissionRate } from "@/lib/affiliate/commission";
+import { buildChartData } from "@/lib/affiliate/chart";
 import { createAuditLog, getAuditLogs } from "@/lib/admin/audit-log";
 
 type RouteContext = {
@@ -298,52 +299,8 @@ export async function PATCH(req: Request, { params }: RouteContext) {
     }
 }
 
-/* ==========================================
- * CHART DATA BUILDER
- * ==========================================
- *
- * Takes raw SQL results (grouped by day)
- * and fills in missing dates with zeros.
+/*
+ * The per-day chart (90-day window) is built by the shared, date-safe
+ * `buildChartData` in lib/affiliate/chart.ts — see that module for the
+ * `DATE()` value contract and the UTC-day bucket grid.
  */
-
-function buildChartData(
-    clicksRows: Array<{ date: string; count: bigint }> |
-        Array<{ date: unknown; count: unknown }> |
-        undefined,
-    conversionRows: Array<{ date: string; count: bigint; sales: string; commission: string }> |
-        Array<{ date: unknown; count: unknown; sales: unknown; commission: unknown }> |
-        undefined,
-    days: number
-) {
-    const map = new Map<string, { clicks: number; conversions: number; sales: number; commission: number }>();
-
-    const now = new Date();
-    for (let i = days - 1; i >= 0; i--) {
-        const d = new Date(now);
-        d.setDate(d.getDate() - i);
-        const key = d.toISOString().split("T")[0];
-        map.set(key, { clicks: 0, conversions: 0, sales: 0, commission: 0 });
-    }
-
-    if (clicksRows) {
-        for (const row of clicksRows) {
-            const key = String(row.date).split("T")[0];
-            const existing = map.get(key);
-            if (existing) existing.clicks = Number(row.count);
-        }
-    }
-
-    if (conversionRows) {
-        for (const row of conversionRows) {
-            const key = String(row.date).split("T")[0];
-            const existing = map.get(key);
-            if (existing) {
-                existing.conversions = Number(row.count);
-                existing.sales = Number(row.sales ?? 0);
-                existing.commission = Number(row.commission ?? 0);
-            }
-        }
-    }
-
-    return Array.from(map.entries()).map(([date, data]) => ({ date, ...data }));
-}

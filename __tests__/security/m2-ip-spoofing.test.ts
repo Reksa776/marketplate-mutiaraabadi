@@ -36,6 +36,7 @@ function makeRequest(
  * ========================================== */
 
 const originalEnv = process.env.TRUSTED_PROXY;
+const originalHops = process.env.TRUSTED_PROXY_HOPS;
 
 afterEach(() => {
     // Restore env after each test
@@ -43,6 +44,12 @@ afterEach(() => {
         delete process.env.TRUSTED_PROXY;
     } else {
         process.env.TRUSTED_PROXY = originalEnv;
+    }
+
+    if (originalHops === undefined) {
+        delete process.env.TRUSTED_PROXY_HOPS;
+    } else {
+        process.env.TRUSTED_PROXY_HOPS = originalHops;
     }
 });
 
@@ -113,11 +120,21 @@ describe("M2 — getClientIp WITHOUT TRUSTED_PROXY (default)", () => {
 describe("M2 — getClientIp WITH TRUSTED_PROXY configured", () => {
     beforeEach(() => {
         process.env.TRUSTED_PROXY = "10.0.0.1";
+        delete process.env.TRUSTED_PROXY_HOPS;
     });
+
+    /*
+     * `x-forwarded-for` is APPEND-ONLY: every proxy appends the address
+     * it saw. A client can send its own header, so only the entries
+     * written by OUR proxy (the rightmost ones, one per configured hop)
+     * are trustworthy. These fixtures are the realistic shapes:
+     * our proxy is the last one to append, so the client address is the
+     * last entry, preceded by whatever the client fabricated.
+     */
 
     test("x-forwarded-for is TRUSTED when proxy configured", () => {
         const req = makeRequest({
-            "x-forwarded-for": "1.2.3.4, 10.0.0.1",
+            "x-forwarded-for": "1.2.3.4",
         });
         const ip = getClientIp(req);
         expect(ip).toBe("1.2.3.4");
@@ -146,13 +163,52 @@ describe("M2 — getClientIp WITH TRUSTED_PROXY configured", () => {
         expect(ip).toBe("untrusted");
     });
 
-    test("Multiple IPs in x-forwarded-for — first one is client", () => {
+    test("a client-supplied x-forwarded-for cannot move the bucket", () => {
+        /*
+         * The client sent `1.2.3.4`; our proxy appended the address it
+         * actually saw (203.0.113.50). The RIGHTMOST entry wins, so the
+         * fabricated prefix is ignored — the old "first entry is the
+         * client" rule would have handed the attacker a unique bucket
+         * per request.
+         */
         const req = makeRequest({
-            "x-forwarded-for":
-                "203.0.113.50, 10.0.0.1, 172.16.0.1",
+            "x-forwarded-for": "1.2.3.4, 203.0.113.50",
         });
         const ip = getClientIp(req);
         expect(ip).toBe("203.0.113.50");
+    });
+
+    test("TRUSTED_PROXY_HOPS=2 counts the client two hops from the right (CDN + nginx)", () => {
+        process.env.TRUSTED_PROXY_HOPS = "2";
+
+        const req = makeRequest({
+            "x-forwarded-for":
+                "6.6.6.6, 203.0.113.50, 10.0.0.5",
+        });
+        const ip = getClientIp(req);
+
+        // Two of our own proxies means the client address is the SECOND
+        // entry from the right (203.0.113.50). Anything further left was
+        // never observed by our infrastructure, so 6.6.6.6 (client
+        // supplied) is ignored.
+        expect(ip).toBe("203.0.113.50");
+    });
+
+    test("a non-IP entry at the trusted hop fails closed to 'untrusted'", () => {
+        const req = makeRequest({
+            "x-forwarded-for": "evil.example.com",
+        });
+        const ip = getClientIp(req);
+        expect(ip).toBe("untrusted");
+    });
+
+    test("a spoofed x-real-ip cannot be used when the chain has no usable entry", () => {
+        const req = makeRequest({
+            "x-forwarded-for": "not-an-ip",
+            "x-real-ip": "also-not-an-ip",
+        });
+        const ip = getClientIp(req);
+        expect(ip).toBe("untrusted");
     });
 });
 
@@ -242,10 +298,12 @@ describe("M2 — Legitimate traffic", () => {
         process.env.TRUSTED_PROXY = "10.0.0.1";
 
         const req = makeRequest({
-            "x-forwarded-for": "203.0.113.50, 10.0.0.1",
+            "x-forwarded-for": "203.0.113.50",
         });
         const ip = getClientIp(req);
 
+        // The rightmost entry is the address our proxy observed — one
+        // unique, stable bucket per real client.
         expect(ip).toBe("203.0.113.50");
     });
 });

@@ -166,26 +166,6 @@ export default function LoginForm() {
         }
     }
 
-    async function handleGoogleLogin() {
-        try {
-            setLoading(true);
-
-            await signIn("google", {
-                callbackUrl: "/home",
-            });
-        } catch (error) {
-            console.error(
-                "Google login error:",
-                error
-            );
-
-            toast.error(
-                "Gagal login dengan Google."
-            );
-
-            setLoading(false);
-        }
-    }
     /*
  * ==========================================
  * CEK SESSION
@@ -364,50 +344,13 @@ export default function LoginForm() {
                             : "Login"}
                     </button>
 
-                    {/* DIVIDER */}
-                    <div className="flex items-center">
-
-                        <div className="h-px flex-1 bg-gray-300" />
-
-                        <span className="mx-4 text-sm text-gray-500">
-                            atau
-                        </span>
-
-                        <div className="h-px flex-1 bg-gray-300" />
-
-                    </div>
-
-                    {/* GOOGLE */}
-                    <button
-                        type="button"
-                        onClick={handleGoogleLogin}
-                        disabled={loading}
-                        className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-gray-300 bg-white font-medium text-gray-800 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-
-                        <img
-                            src="https://www.svgrepo.com/show/475656/google-color.svg"
-                            alt="Google"
-                            className="h-5 w-5"
-                        />
-
-                        Lanjutkan dengan Google
-
-                    </button>
-
-                    {/* REGISTER */}
-                    <p className="pt-2 text-center text-sm text-gray-600">
-
-                        Belum punya akun?
-
-                        <Link
-                            href="/register"
-                            className="ml-1 font-semibold text-rose-600 hover:underline"
-                        >
-                            Daftar
-                        </Link>
-
-                    </p>
+                    {/*
+                     * The Google provider and the self-serve
+                     * registration link were removed together with the
+                     * customer account area. This form now exists only
+                     * for the ADMIN / AFFILIATE dashboards, which
+                     * authenticate with the credentials provider.
+                     */}
 
                 </form>
 

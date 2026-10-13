@@ -69,7 +69,12 @@ import { NextRequest } from "next/server";
 
 const { auth } = require("@/auth") as { auth: jest.Mock };
 const { prisma } = require("@/lib/prisma") as {
-    prisma: { order: { findFirst: jest.Mock } };
+    prisma: {
+        order: {
+            findFirst: jest.Mock;
+            findUnique: jest.Mock;
+        };
+    };
 };
 
 import { loadPaymentView } from "@/lib/payment/order-payment";
@@ -125,7 +130,18 @@ function orderRow(
 beforeEach(() => {
     jest.clearAllMocks();
     (auth as jest.Mock).mockResolvedValue({
-        user: { id: "user-1" },
+        user: { id: USER_ID },
+    });
+    /*
+     * `/api/payment/status` resolves the reference to an order id and
+     * authorizes ownership BEFORE reading the order (session owner or
+     * guest access token), so the authorizer's findUnique must answer
+     * with the owner of the order under test.
+     */
+    prisma.order.findUnique.mockResolvedValue({
+        id: 101,
+        userId: USER_ID,
+        guestAccessTokenHash: null,
     });
     prisma.order.findFirst.mockResolvedValue(orderRow());
 });
@@ -288,12 +304,18 @@ describe("GET /api/payment/status returns digest-only identity", () => {
         );
     });
 
-    test("unauthenticated → 401, no order read", async () => {
+    test("anonymous without a guest token → 404, no order read", async () => {
         (auth as jest.Mock).mockResolvedValue(null);
 
         const response = await paymentStatusGET(request());
 
-        expect(response.status).toBe(401);
+        /*
+         * Guests authorize with an order access token, not a session.
+         * Without one the order is simply "not found" — never 403, so
+         * a sequential order reference cannot confirm existence — and
+         * the order row is still not read.
+         */
+        expect(response.status).toBe(404);
         expect(
             prisma.order.findFirst
         ).not.toHaveBeenCalled();

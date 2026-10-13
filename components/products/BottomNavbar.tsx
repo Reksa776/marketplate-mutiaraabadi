@@ -6,9 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   FiHome,
   FiCoffee,
-  FiHeart,
   FiShoppingBag,
-  FiUser,
 } from "react-icons/fi";
 import { LiaShippingFastSolid } from "react-icons/lia";
 
@@ -33,12 +31,14 @@ const menus = [
     href: "/cart",
     icon: FiShoppingBag,
   },
-  {
-    title: "Saya",
-    href: "/profile",
-    icon: FiUser,
-  },
 ];
+
+/*
+ * NOTE: the "Saya" → /profile entry was removed together with the
+ * customer account area. Customers browse and buy as guests, so every
+ * remaining entry points at a public page that works without a
+ * session.
+ */
 
 export default function BottomNavbar() {
   const pathname = usePathname();

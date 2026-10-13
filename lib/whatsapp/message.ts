@@ -10,7 +10,11 @@
  * No marketing, no templates system.
  */
 
-import type { SendNotificationPayload } from "@/lib/notification/types";
+import {
+    isRawMessagePayload,
+    type NotificationPayload,
+    type SendNotificationPayload,
+} from "@/lib/notification/types";
 
 /**
  * ==========================================
@@ -155,6 +159,28 @@ export function generateOrderStatusMessage(
     );
 
     return lines.join("\n");
+}
+
+/**
+ * ==========================================
+ * GENERATE NOTIFICATION MESSAGE
+ * ==========================================
+ *
+ * Single entry point for every notification payload:
+ *
+ *   - a raw-message notification (guest recovery OTP) is sent
+ *     VERBATIM — its wording is owned by the security flow that
+ *     generated it, so nothing here may rewrite it, and
+ *   - an order-status notification keeps the existing template.
+ */
+export function generateNotificationMessage(
+    payload: NotificationPayload
+): string {
+    if (isRawMessagePayload(payload)) {
+        return payload.rawMessage;
+    }
+
+    return generateOrderStatusMessage(payload);
 }
 
 /**

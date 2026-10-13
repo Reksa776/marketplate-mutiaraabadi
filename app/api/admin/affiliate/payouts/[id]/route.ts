@@ -10,6 +10,23 @@ type RouteContext = {
     params: Promise<{ id: string }>;
 };
 
+/**
+ * Raised when a concurrent admin request already moved the payout out of
+ * the status this action requires. It is a CLIENT conflict, not a server
+ * failure, so the route answers 409 instead of a 500 — the loser of a
+ * double-approve must be told the truth (someone else already handled
+ * it), not that the request blew up.
+ *
+ * Nothing financial happens on this path: the transaction that raises it
+ * rolls back, and the winner's single settlement stands.
+ */
+class PayoutConflictError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "PayoutConflictError";
+    }
+}
+
 /* ==========================================
  * PATCH /api/admin/affiliate/payouts/[id]
  * ==========================================
@@ -141,7 +158,20 @@ export async function PATCH(req: Request, { params }: RouteContext) {
                         return;
                     }
 
-                    await settleCommissionsForPayout(payoutId);
+                    /*
+                     * SETTLEMENT JOINS THIS TRANSACTION.
+                     *
+                     * The payout row is locked FOR UPDATE above, so
+                     * opening a second transaction here (the helper's
+                     * no-tx branch) would block forever on that lock and
+                     * die as P2028 when the outer transaction expires.
+                     * Passing `tx` keeps the CAS, the settlement and
+                     * everything they touch in ONE atomic commit.
+                     */
+                    await settleCommissionsForPayout(
+                        payoutId,
+                        tx
+                    );
                 });
 
                 await createAuditLog({
@@ -244,7 +274,9 @@ export async function PATCH(req: Request, { params }: RouteContext) {
                 `;
 
                 if (!locked || locked.length === 0) {
-                    throw new Error("Payout sudah tidak PENDING (concurrent edit).");
+                    throw new PayoutConflictError(
+                        "Payout sudah tidak PENDING (concurrent edit)."
+                    );
                 }
 
                 await tx.affiliatePayout.update({
@@ -296,7 +328,20 @@ export async function PATCH(req: Request, { params }: RouteContext) {
                         `;
 
                         if (affectedRows > 0) {
-                            await settleCommissionsForPayout(payoutId);
+                            /*
+                             * Settlement JOINS this transaction: the
+                             * payout row is already locked FOR UPDATE by
+                             * it, so the helper's no-tx branch (a second
+                             * transaction) would self-block on that lock
+                             * and fail as P2028. One commit keeps the
+                             * PAID transition and the FIFO consumption
+                             * atomic, which is what the ledger math
+                             * (available = earned - disbursed) assumes.
+                             */
+                            await settleCommissionsForPayout(
+                                payoutId,
+                                tx
+                            );
                         }
                     });
 
@@ -476,10 +521,17 @@ export async function PATCH(req: Request, { params }: RouteContext) {
                 `;
 
                 if (affectedRows === 0) {
-                    throw new Error("Payout sudah tidak PROCESSING (concurrent edit).");
+                    throw new PayoutConflictError(
+                        "Payout sudah tidak PROCESSING (concurrent edit)."
+                    );
                 }
 
-                await settleCommissionsForPayout(payoutId);
+                /*
+                 * Settlement JOINS this transaction (see the APPROVE
+                 * path): the payout row is locked by it, so a nested
+                 * transaction would self-block until the P2028 timeout.
+                 */
+                await settleCommissionsForPayout(payoutId, tx);
             });
 
             await createAuditLog({
@@ -577,6 +629,27 @@ export async function PATCH(req: Request, { params }: RouteContext) {
 
         return NextResponse.json({ success: false, message: "Action tidak valid." }, { status: 400 });
     } catch (error: any) {
+        /*
+         * A concurrent admin action that already moved the payout is a
+         * 409 Conflict: the caller's action is no longer applicable and
+         * the database is consistent (the transaction rolled back).
+         */
+        if (error instanceof PayoutConflictError) {
+            console.warn(
+                "ADMIN PAYOUT CONFLICT:",
+                error.message
+            );
+
+            return NextResponse.json(
+                {
+                    success: false,
+                    message:
+                        "Payout ini sudah diproses oleh admin lain. Muat ulang untuk melihat status terbaru.",
+                },
+                { status: 409 }
+            );
+        }
+
         console.error("ADMIN PAYOUT ACTION ERROR:", error);
         return NextResponse.json(
             { success: false, message: "Gagal memproses payout." },

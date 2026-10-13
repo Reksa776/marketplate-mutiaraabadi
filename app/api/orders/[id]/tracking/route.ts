@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 import { getMengantarOrderByTracking } from "@/lib/mengantar";
 import {
     buildMengantarTrackingData,
@@ -66,26 +66,6 @@ export async function GET(
     try {
         /*
          * ==========================================
-         * AUTH
-         * ==========================================
-         */
-
-        const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Unauthorized.",
-                },
-                {
-                    status: 401,
-                }
-            );
-        }
-
-        /*
-         * ==========================================
          * PARAMS
          * ==========================================
          */
@@ -112,6 +92,27 @@ export async function GET(
 
         /*
          * ==========================================
+         * OWNERSHIP
+         * ==========================================
+         *
+         * Session owner OR a valid guest access token. A guest caller
+         * is already proven to own THIS order, so the lookup below is
+         * scoped by order id only — never by a caller-supplied id.
+         */
+        const access = await authorizeOrderRequest(
+            req,
+            orderId
+        );
+
+        if (!access.ok) {
+            return NextResponse.json(
+                { success: false, message: access.message },
+                { status: access.status }
+            );
+        }
+
+        /*
+         * ==========================================
          * GET ORDER
          * ==========================================
          */
@@ -120,7 +121,6 @@ export async function GET(
             await prisma.order.findFirst({
                 where: {
                     id: orderId,
-                    userId: session.user.id,
                 },
 
                 select: {

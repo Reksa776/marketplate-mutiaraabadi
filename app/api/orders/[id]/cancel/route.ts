@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { cancelOwnPendingOrder } from "@/lib/checkout";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 
 export async function POST(
     req: Request,
@@ -11,18 +11,6 @@ export async function POST(
     }
 ) {
     try {
-        const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Unauthorized.",
-                },
-                { status: 401 }
-            );
-        }
-
         const { id } = await context.params;
 
         const orderId = Number(id);
@@ -38,6 +26,22 @@ export async function POST(
         }
 
         /*
+         * OWNERSHIP: session owner OR a valid guest access token.
+         * Order ids are sequential, so they are never sufficient alone.
+         */
+        const access = await authorizeOrderRequest(
+            req,
+            orderId
+        );
+
+        if (!access.ok) {
+            return NextResponse.json(
+                { success: false, message: access.message },
+                { status: access.status }
+            );
+        }
+
+        /*
          * P0 FIX (C1):
          * Soft-cancel via atomic CAS state transition.
          * The order is NEVER deleted. rollbackCheckoutOrder
@@ -46,7 +50,7 @@ export async function POST(
          * the same transaction.
          */
         const result = await cancelOwnPendingOrder(
-            session.user.id,
+            access.userId,
             orderId
         );
 

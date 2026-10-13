@@ -1,29 +1,31 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { resolveSpinScope } from "@/lib/spin-owner";
 
 // ==========================================
 // GET /api/spin-wheel/my-rewards
 // ==========================================
-// Get current user's spin wheel rewards.
+// Get the caller's spin wheel rewards — session or guest.
+//
+// Scoped by `ownerKey` so a guest sees exactly the rewards earned by
+// the identity their verified order tokens point at. `ownerKey` is a
+// server-side scope and is never included in the payload.
 
 export async function GET() {
     try {
-        const session = await auth();
+        const scope = await resolveSpinScope();
 
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Silakan login terlebih dahulu.",
-                },
-                { status: 401 }
-            );
+        if (!scope.ownerKey) {
+            /* No session, no verifiable guest order → no rewards. */
+            return NextResponse.json({
+                success: true,
+                data: [],
+            });
         }
 
         const spins = await prisma.spinWheelSpin.findMany({
             where: {
-                userId: session.user.id,
+                ownerKey: scope.ownerKey,
             },
             include: {
                 reward: true,

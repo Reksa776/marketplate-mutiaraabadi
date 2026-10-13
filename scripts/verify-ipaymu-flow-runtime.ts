@@ -782,7 +782,12 @@ async function main(): Promise<void> {
     snapshot.vouchers.set(voucher.id, 0);
 
     await prisma.voucherUserUsage.create({
-        data: { voucherId: voucher.id, userId: user.id, usageCount: 1 },
+        data: {
+            voucherId: voucher.id,
+            ownerKey: `user:${user.id}`,
+            userId: user.id,
+            usageCount: 1,
+        },
     });
 
     const shippingDiscount = await prisma.shippingDiscount.create({
@@ -1425,9 +1430,9 @@ async function main(): Promise<void> {
     });
     const usageAfter = await prisma.voucherUserUsage.findUniqueOrThrow({
         where: {
-            voucherId_userId: {
+            voucherId_ownerKey: {
                 voucherId: createdVoucherId!,
-                userId: user.id,
+                ownerKey: `user:${user.id}`,
             },
         },
         select: { usageCount: true },

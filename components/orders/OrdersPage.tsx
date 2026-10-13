@@ -12,6 +12,8 @@ import {
 } from "react-icons/fi";
 import toast from "react-hot-toast";
 
+import OrderRecovery from "./OrderRecovery";
+
 type OrderItem = {
     id: number;
     productName: string;
@@ -308,6 +310,13 @@ export default function OrdersPage() {
                         >
                             Mulai Belanja
                         </Link>
+
+                        {/*
+                         * Lost the access token (cleared browser /
+                         * new device)? Recover it with the order
+                         * number + the checkout contact.
+                         */}
+                        <OrderRecovery />
                     </div>
                 ) : (
                     <div className="space-y-3">

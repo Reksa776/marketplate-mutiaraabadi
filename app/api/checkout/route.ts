@@ -1,27 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
 import type { CartStockStatus } from "@/lib/cart-validation";
+import {
+    resolveCartScope,
+    cartScopeWhere,
+} from "@/lib/cart-scope";
 
+/**
+ * Checkout data (GET).
+ *
+ * CUSTOMER LOGIN IS NOT REQUIRED. The cart is read from the caller's
+ * own scope (session cart or anonymous guest cart), and the saved
+ * address book is only returned for a logged-in buyer — guests fill
+ * their shipping address inline at checkout.
+ */
 export async function GET(request: NextRequest) {
     try {
-        const session = await auth();
+        const scope = await resolveCartScope();
 
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message:
-                        "Silakan login terlebih dahulu.",
-                },
-                {
-                    status: 401,
-                }
-            );
-        }
-
-        const userId = session.user.id;
+        const userId = scope.userId;
 
         // ==========================================
         // SELECTED CART ITEM IDs
@@ -64,23 +62,24 @@ export async function GET(request: NextRequest) {
         // CART
         // ==========================================
 
-        const cart =
-            await prisma.cart.findUnique({
-                where: {
-                    userId,
-                },
-                include: {
-                    items: {
-                        orderBy: {
-                            createdAt: "asc",
-                        },
-                        include: {
-                            product: true,
-                            variant: true,
-                        },
-                    },
-                },
-            });
+        const scopeWhere = cartScopeWhere(scope);
+
+        const cart = scopeWhere
+            ? await prisma.cart.findFirst({
+                  where: scopeWhere,
+                  include: {
+                      items: {
+                          orderBy: {
+                              createdAt: "asc",
+                          },
+                          include: {
+                              product: true,
+                              variant: true,
+                          },
+                      },
+                  },
+              })
+            : null;
 
         if (
             !cart ||
@@ -102,20 +101,26 @@ export async function GET(request: NextRequest) {
         // ADDRESSES
         // ==========================================
 
+        /*
+         * A guest has no address book; the UI renders an inline address
+         * form instead. Returning [] keeps the response shape stable.
+         */
         const addresses =
-            await prisma.userAddress.findMany({
-                where: {
-                    userId,
-                },
-                orderBy: [
-                    {
-                        isDefault: "desc",
-                    },
-                    {
-                        createdAt: "desc",
-                    },
-                ],
-            });
+            userId
+                ? await prisma.userAddress.findMany({
+                      where: {
+                          userId,
+                      },
+                      orderBy: [
+                          {
+                              isDefault: "desc",
+                          },
+                          {
+                              createdAt: "desc",
+                          },
+                      ],
+                  })
+                : [];
 
         // ==========================================
         // STORE

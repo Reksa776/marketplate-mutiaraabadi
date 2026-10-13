@@ -12,9 +12,10 @@
  * - SmsProvider
  */
 
-import type {
-    SendNotificationPayload,
-    SendNotificationResult,
+import {
+    isRawMessagePayload,
+    type NotificationPayload,
+    type SendNotificationResult,
 } from "./types";
 import type { NotificationProvider } from "./provider";
 
@@ -49,7 +50,7 @@ export class MockNotificationProvider
     }
 
     async send(
-        payload: SendNotificationPayload
+        payload: NotificationPayload
     ): Promise<SendNotificationResult> {
         /**
          * Simulate network delay.
@@ -68,7 +69,8 @@ export class MockNotificationProvider
          */
         if (this.options.simulateFailure) {
             console.log(
-                `[MOCK] Notification FAILED (simulated) for order ${payload.orderNumber}`
+                `[MOCK] Notification FAILED (simulated) for order ${payload.orderNumber} | ` +
+                    `Type: ${payload.notificationType}`
             );
 
             return {
@@ -81,12 +83,17 @@ export class MockNotificationProvider
 
         /**
          * Simulate successful send.
+         *
+         * NEVER log a raw message: it can contain an OTP. Only the
+         * fact and shape of the delivery is logged.
          */
         console.log(
             `[MOCK] Notification SENT to ${payload.recipient} | ` +
                 `Order: ${payload.orderNumber} | ` +
                 `Type: ${payload.notificationType} | ` +
-                `Status: ${payload.previousStatus} → ${payload.newStatus}`
+                (isRawMessagePayload(payload)
+                    ? `Payload: raw message (${payload.rawMessage.length} chars, redacted)`
+                    : `Status: ${payload.previousStatus} → ${payload.newStatus}`)
         );
 
         return {

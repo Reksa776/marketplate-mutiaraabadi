@@ -249,27 +249,27 @@ describe("M4 — External Origin Verification", () => {
     });
 
     test("Leaflet tile origin matches CSP allowance", async () => {
-        const mapCode = readFileSync(
-            resolve(
-                process.cwd(),
-                "app/addresses/new/LocationPickerMap.tsx"
-            ),
+        /*
+         * The address-book Leaflet map (app/addresses/new) was removed
+         * with the customer account area. The CSP allowance is still
+         * asserted directly against the policy, so map tiles stay
+         * usable by any future guest-facing picker.
+         */
+        const config = readFileSync(
+            resolve(process.cwd(), "next.config.ts"),
             "utf-8"
         );
         // Leaflet uses tile.openstreetmap.org
-        expect(mapCode).toContain("tile.openstreetmap.org");
+        expect(config).toContain("tile.openstreetmap.org");
     });
 
     test("Leaflet marker origin matches CSP allowance", async () => {
-        const mapCode = readFileSync(
-            resolve(
-                process.cwd(),
-                "app/addresses/new/LocationPickerMap.tsx"
-            ),
+        const config = readFileSync(
+            resolve(process.cwd(), "next.config.ts"),
             "utf-8"
         );
         // Leaflet markers come from unpkg.com
-        expect(mapCode).toContain("unpkg.com");
+        expect(config).toContain("unpkg.com");
     });
 });
 

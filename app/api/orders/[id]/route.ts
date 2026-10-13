@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/auth";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 
 type Order = {
     id: number;
@@ -62,20 +62,6 @@ export async function GET(
     { params }: RouteContext
 ) {
     try {
-        const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Unauthorized.",
-                },
-                {
-                    status: 401,
-                }
-            );
-        }
-
         const { id } = await params;
 
         const orderId = Number(id);
@@ -95,11 +81,27 @@ export async function GET(
             );
         }
 
+        /*
+         * OWNERSHIP: session owner OR a valid guest access token for
+         * THIS order. Order ids are sequential, so an id alone must
+         * never reveal an order (see lib/guest-order-access.ts).
+         */
+        const access = await authorizeOrderRequest(
+            req,
+            orderId
+        );
+
+        if (!access.ok) {
+            return NextResponse.json(
+                { success: false, message: access.message },
+                { status: access.status }
+            );
+        }
+
         const order =
             await prisma.order.findFirst({
                 where: {
                     id: orderId,
-                    userId: session.user.id,
                 },
 
                 include: {

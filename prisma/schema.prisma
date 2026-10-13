@@ -141,13 +141,27 @@ model ProductVariant {
   @@map("productvariant")
 }
 
+// ==========================================
+// CART — supports BOTH logged-in and GUEST carts
+// ==========================================
+//
+// userId        → set only for an authenticated cart (legacy shape).
+// guestTokenHash→ SHA-256 of the random cart token stored in the
+//                 httpOnly cookie. The RAW token is never persisted,
+//                 so a database leak cannot be replayed as a cookie.
+//
+// Exactly one of the two is non-null for a live cart. A cart id/token
+// is a CART SCOPE, never a verified customer identity: every price,
+// stock level and shipping quote is re-derived server-side at
+// checkout.
 model Cart {
-  id        Int        @id @default(autoincrement())
-  userId    String     @unique
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  items     CartItem[]
+  id             Int        @id @default(autoincrement())
+  userId         String?    @unique
+  guestTokenHash String?    @unique
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  user           User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items          CartItem[]
   @@map("cart")
 }
 
@@ -216,7 +230,10 @@ model UserAddress {
 
 model Order {
   id               Int                 @id @default(autoincrement())
-  userId           String
+  // NULLABLE for guest orders. onDelete: SetNull means deleting a
+  // customer row NEVER cascade-deletes order/financial history —
+  // the order survives with userId = NULL.
+  userId           String?
   orderNumber      String              @unique
   recipientName    String
   phone            String
@@ -292,6 +309,49 @@ model Order {
   clientIp         String?
   clientUserAgent  String?             @db.Text
 
+  // ==========================================
+  // GUEST ORDER IDENTITY — ADDITIVE
+  // ==========================================
+  //
+  // customerEmail        → buyer email captured at checkout. Used as the
+  //                        iPaymu buyerEmail for guest orders (there is
+  //                        no session email to fall back on).
+  // guestAccessTokenHash → SHA-256 of the high-entropy guest access token.
+  //                        Only the HASH is stored; the raw token lives in
+  //                        an httpOnly cookie / token link. Never logged.
+  // guestIdentityKey     → normalized + hashed buyer contact identity
+  //                        (email/phone), used ONLY for per-identity abuse
+  //                        controls (voucher/flash-sale caps, COD cap,
+  //                        affiliate self-referral). Never returned to the
+  //                        browser. NULL for logged-in orders.
+  // guestAccessTokenExpiresAt → SERVER-SIDE expiry of the guest access
+  //                        token (30 days from issuance). Enforced in
+  //                        resolveOrderAccess() — an expired token is
+  //                        never accepted, whatever the cookie says.
+  //                        The ORDER itself is never deleted or hidden:
+  //                        an expired buyer recovers access through the
+  //                        OTP recovery flow (/api/orders/recover).
+  // idempotencyKey       → de-duplicates repeated checkout submissions.
+  customerEmail        String?
+  guestAccessTokenHash String?             @unique
+  guestAccessTokenExpiresAt DateTime?
+  guestIdentityKey     String?
+  idempotencyKey       String?             @unique
+
+  // ==========================================
+  // COD ABUSE CONTROL — ADDITIVE
+  // ==========================================
+  //
+  // High-risk COD orders are held for admin review: requiresCodReview
+  // is set at order creation and NO ShipmentJob is enqueued until an
+  // admin approves (codReviewStatus = APPROVED). A flagged order is
+  // never auto-cancelled — it simply waits.
+  // codReviewStatus: NULL (not applicable) | PENDING | APPROVED | REJECTED
+  requiresCodReview    Boolean             @default(false)
+  codReviewStatus      String?
+  codReviewedAt        DateTime?
+  codReviewedBy        String?
+
   voucherId        Int?
   voucherCode      String?
   discount         Decimal             @default(0) @db.Decimal(12, 2)
@@ -336,7 +396,9 @@ model Order {
   shipmentStatus        String?
   codAmount             Decimal?            @db.Decimal(12, 2)
 
-  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // SetNull (NOT Cascade): order + financial history must survive the
+  // deletion of a customer row. See AUDIT F.1.
+  user             User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
   items            OrderItem[]
   notifications    Notification[]
 
@@ -361,7 +423,11 @@ model Order {
   // settles, processed by the shipment worker with retry/backoff.
   shipmentJob ShipmentJob?
 
+  // Guest order recovery challenges (OTP). Short-lived, single-use.
+  guestRecoveryChallenges GuestRecoveryChallenge[]
+
   @@index([userId])
+  @@index([guestIdentityKey])
   @@index([status])
   @@index([paymentStatus])
   @@index([paymentExpiresAt])
@@ -651,6 +717,56 @@ enum Order_paymentMethod {
   QRIS
 }
 
+// ============================================================
+// GuestRecoveryChallenge — two-phase guest ORDER RECOVERY (OTP)
+// ============================================================
+//
+// A guest buyer whose access-token cookie is gone (or expired) proves
+// ownership of the order with an OTP delivered over the EXISTING
+// WhatsApp notification pipeline. The access token is NEVER rotated
+// before the OTP is verified.
+//
+// Properties enforced here and in lib/guest-recovery.ts:
+//   * SINGLE USE     → consumedAt is set by a conditional update, so a
+//                      replayed code can never be redeemed twice.
+//   * SHORT LIVED    → expiresAt (10 minutes).
+//   * ATTEMPT LIMITED→ attempts / maxAttempts burn the challenge.
+//   * ORDER + CONTACT BOUND → orderId / orderNumber plus contactHash of
+//                      the CHECKOUT contact that was matched. Both must
+//                      match again at confirmation time.
+//   * FAIL CLOSED    → deliveredAt stays NULL when the provider refuses
+//                      the message, so no code is ever usable.
+//
+// Only keyed hashes are persisted: the raw OTP and the raw contact are
+// never written to the database, logs or responses.
+model GuestRecoveryChallenge {
+  id             String    @id @default(cuid())
+  orderId        Int
+  orderNumber    String
+  channel        String    @default("whatsapp")
+  // "email" | "phone" — which checkout contact was proven in phase 1.
+  contactChannel String
+  // Keyed HMAC of the proven checkout contact (never the raw value).
+  contactHash    String
+  // Keyed HMAC of the OTP code (never the raw code).
+  codeHash       String
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5)
+  deliveredAt    DateTime?
+  deliveryError  String?   @db.Text
+  consumedAt     DateTime?
+  expiresAt      DateTime
+  notificationId Int?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, consumedAt])
+  @@index([expiresAt])
+  @@map("guestrecoverychallenge")
+}
+
 enum Notification_status {
   QUEUED
   PROCESSING
@@ -828,20 +944,36 @@ model FlashSale {
   @@map("flashsale")
 }
 
+// ==========================================
+// FLASH SALE PURCHASE — owner-scope keyed
+// ==========================================
+//
+// userId   → set for logged-in buyers (nullable for guests).
+// ownerKey → the AUTHORITATIVE purchase-limit scope:
+//            * logged-in  → "user:<userId>"
+//            * guest      → "guest:<guestIdentityKey>" (normalized +
+//                           hashed email/phone captured at checkout)
+//
+// The uniqueness is on ownerKey (not userId) because MySQL unique
+// indexes treat every NULL as distinct — which would silently disable
+// the per-user purchase limit for every guest. Historical rows are
+// backfilled from userId so existing limits are preserved.
 model FlashSalePurchase {
   id          Int    @id @default(autoincrement())
   flashSaleId Int
-  userId      String
+  userId      String?
+  ownerKey    String
   quantity    Int
 
   createdAt DateTime @default(now())
 
   flashSale FlashSale @relation(fields: [flashSaleId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id])
+  user      User?     @relation(fields: [userId], references: [id])
 
-  @@unique([flashSaleId, userId])
+  @@unique([flashSaleId, ownerKey])
   @@index([flashSaleId])
   @@index([userId])
+  @@index([ownerKey])
   @@map("flashsalepurchase")
 }
 
@@ -915,18 +1047,32 @@ model VoucherCategory {
 // 7.3 VOUCHER USER USAGE
 // ------------------------------------------
 
+// ==========================================
+// VOUCHER USER USAGE — owner-scope keyed
+// ==========================================
+//
+// ownerKey is the authoritative maxUsagePerUser scope, exactly like
+// FlashSalePurchase.ownerKey.
+//
+// SECURITY: the raw identity is NEVER stored or returned to the
+// browser — only a SHA-256 hash (guestIdentityKey). Hashing is NOT
+// proof of ownership: stronger guarantees require a verified contact
+// channel. It exists to keep per-user caps enforceable for guests,
+// not to authenticate them.
 model VoucherUserUsage {
   id         Int    @id @default(autoincrement())
   voucherId  Int
-  userId     String
+  userId     String?
+  ownerKey   String
   usageCount Int    @default(1)
 
   voucher Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id])
+  user    User?   @relation(fields: [userId], references: [id])
 
-  @@unique([voucherId, userId])
+  @@unique([voucherId, ownerKey])
   @@index([voucherId])
   @@index([userId])
+  @@index([ownerKey])
   @@map("voucheruserusage")
 }
 
@@ -1301,10 +1447,18 @@ model SpinWheelReward {
   @@map("spinwheelreward")
 }
 
+// ==========================================
+// SPIN WHEEL SPIN — supports a GUEST owner
+// ==========================================
+//
+// userId   → set for logged-in players (nullable for guests).
+// ownerKey → the maxSpinsPerUser / ownership scope, same convention as
+//            FlashSalePurchase.ownerKey.
 model SpinWheelSpin {
   id         Int                   @id @default(autoincrement())
   campaignId Int
-  userId     String
+  userId     String?
+  ownerKey   String
   rewardId   Int
   status     SpinWheelSpinStatus   @default(AVAILABLE)
   expiresAt  DateTime?
@@ -1314,7 +1468,7 @@ model SpinWheelSpin {
   updatedAt  DateTime              @updatedAt
 
   campaign SpinWheelCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
   reward   SpinWheelReward    @relation(fields: [rewardId], references: [id], onDelete: Restrict)
   order    Order?             @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
@@ -1324,6 +1478,7 @@ model SpinWheelSpin {
 
   @@index([campaignId])
   @@index([userId])
+  @@index([ownerKey])
   @@index([status])
   @@map("spinwheelspin")
 }

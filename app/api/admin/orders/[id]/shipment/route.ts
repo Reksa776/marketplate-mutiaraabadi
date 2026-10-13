@@ -74,6 +74,28 @@ export async function POST(
         });
 
         if (!result.ok) {
+            /*
+             * COD REVIEW hold: a COD order that is still PENDING review —
+             * or was REJECTED — must not be shipped by a manual click
+             * either. Only an approved review releases it (through the
+             * cod-review endpoint, which records who approved it), so
+             * this answers 409 Conflict rather than a generic 400.
+             */
+            if (result.reviewBlocked) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message:
+                            result.reason ??
+                            "COD menunggu tinjauan admin.",
+                        data: {
+                            codReviewBlocked: true,
+                        },
+                    },
+                    { status: 409 }
+                );
+            }
+
             return NextResponse.json(
                 {
                     success: false,

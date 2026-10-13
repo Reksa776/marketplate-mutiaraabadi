@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { auth } from "@/auth";
 import { loadPaymentView } from "@/lib/payment/order-payment";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 
 export const dynamic = "force-dynamic";
 
@@ -30,18 +30,6 @@ export async function GET(
     }
 ) {
     try {
-        const session = await auth();
-
-        if (!session?.user?.id) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Silakan login terlebih dahulu.",
-                },
-                { status: 401 }
-            );
-        }
-
         const { id } = await context.params;
         const orderId = Number(id);
 
@@ -55,9 +43,28 @@ export async function GET(
             );
         }
 
+        /*
+         * Ownership is resolved BEFORE any order data is read: the
+         * session owner or a valid guest access token. Payment
+         * instructions (VA / QRIS) must never leak to another caller —
+         * a leaked VA could be paid by a third party to hijack the
+         * order.
+         */
+        const access = await authorizeOrderRequest(
+            request,
+            orderId
+        );
+
+        if (!access.ok) {
+            return NextResponse.json(
+                { success: false, message: access.message },
+                { status: access.status }
+            );
+        }
+
         const view = await loadPaymentView(
             orderId,
-            session.user.id
+            access.userId
         );
 
         if (!view) {

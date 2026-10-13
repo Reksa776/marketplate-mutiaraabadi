@@ -407,7 +407,13 @@ export async function POST(
                  * berasal dari checkout cart (bukan buy-now,
                  * bukan COD yang sudah dihapus di endpoint lain).
                  */
+                /*
+                 * Guest orders (userId = NULL) have no server-side user
+                 * cart — theirs is scoped by an anonymous cookie and is
+                 * cleared by the checkout response.
+                 */
                 if (
+                    existingOrder.userId &&
                     existingOrder.orderNumber.startsWith(
                         "PAY-CART-"
                     )

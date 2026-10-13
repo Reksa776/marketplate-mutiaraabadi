@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { createRefundRequest } from "@/lib/refund";
+import { authorizeOrderRequest } from "@/lib/guest-order-access";
 import { rateLimiters } from "@/lib/rate-limit";
 import {
     maskAccountNumber,
@@ -43,15 +43,19 @@ export async function POST(
         // AUTH
         // ==========================================
 
-        const session = await auth();
+        // ==========================================
+        // OWNERSHIP (session OR guest access token)
+        // ==========================================
 
-        if (!session?.user?.id) {
+        const access = await authorizeOrderRequest(
+            req,
+            Number((await context.params).id)
+        );
+
+        if (!access.ok) {
             return NextResponse.json(
-                {
-                    success: false,
-                    message: "Unauthorized.",
-                },
-                { status: 401 }
+                { success: false, message: access.message },
+                { status: access.status }
             );
         }
 
@@ -59,15 +63,19 @@ export async function POST(
         // RATE LIMIT
         // ==========================================
 
-        const rateLimit = rateLimiters.refundRequest(session.user.id);
-        if (!rateLimit.allowed) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    message: "Terlalu banyak permintaan. Coba lagi nanti.",
-                },
-                { status: 429 }
+        if (access.userId) {
+            const rateLimit = rateLimiters.refundRequest(
+                access.userId
             );
+            if (!rateLimit.allowed) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        message: "Terlalu banyak permintaan. Coba lagi nanti.",
+                    },
+                    { status: 429 }
+                );
+            }
         }
 
         // ==========================================
@@ -143,7 +151,12 @@ export async function POST(
         // Client cannot influence the refund amount.
 
         const result = await createRefundRequest(
-            session.user.id,
+            /*
+             * Refund.requestedBy records WHO asked. A guest order has no
+             * user id, so the caller is recorded as the guest owner of
+             * that order (ownership was just verified above).
+             */
+            access.userId ?? "GUEST",
             orderId,
             reason,
             {

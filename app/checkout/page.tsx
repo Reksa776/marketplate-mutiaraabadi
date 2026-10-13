@@ -1,8 +1,6 @@
 import type { Metadata } from "next";
 
 import { pageMetadata } from "@/lib/site-metadata";
-import { auth } from "@/auth";
-import { redirect } from "next/navigation";
 import CheckoutPage from "./CheckoutPage";
 
 export const metadata: Metadata = pageMetadata({
@@ -12,12 +10,18 @@ export const metadata: Metadata = pageMetadata({
     noindex: true,
 });
 
-export default async function Checkout() {
-    const session = await auth();
-
-    if (!session?.user) {
-        redirect("/login?callbackUrl=/checkout");
-    }
-
+/*
+ * ==========================================
+ * CHECKOUT — GUEST ACCESSIBLE
+ * ==========================================
+ *
+ * Customers check out as guests: there is no account and no login
+ * step, so this page must never redirect to /login. The buyer identity
+ * (name, phone, email, address) is collected INLINE by CheckoutPage and
+ * validated server-side in lib/guest-address.ts — the page itself holds
+ * no privileges, and every price/stock/shipping value is re-derived by
+ * the API.
+ */
+export default function Checkout() {
     return <CheckoutPage />;
 }

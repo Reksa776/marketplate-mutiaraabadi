@@ -1,5 +1,7 @@
 import crypto from "crypto";
 
+import type { Prisma } from "@prisma/client";
+
 import { prisma } from "@/lib/prisma";
 import {
     incrementVoucherUsage,
@@ -9,7 +11,6 @@ import {
 } from "@/lib/voucher";
 import {
     recordFlashSalePurchase,
-    hasReachedFlashSaleLimit,
 } from "./marketing/flash-sale";
 import {
     resolveBatchPrices,
@@ -35,6 +36,26 @@ import {
 import { formatProductName } from "./payment/ipaymu";
 import { PAYMENT_EXPIRY_GRACE_MS } from "./payment/order-payment";
 import type { OrderAttributionInput } from "@/lib/analytics/attribution";
+import {
+    buildGuestIdentityKey,
+    contactFingerprints,
+    generateGuestAccessToken,
+    guestAccessTokenExpiry,
+    hashGuestAccessToken,
+    orderOwnerKey,
+    resolveOwnerKey,
+} from "./guest-identity";
+import {
+    resolveGuestAddress,
+    type GuestAddressInput,
+} from "./guest-address";
+import {
+    assessCodRisk,
+    countActiveGuestCodOrders,
+} from "./cod-policy";
+import {
+    findOrderByIdempotencyKey,
+} from "./checkout-idempotency";
 
 /*
  * ==========================================
@@ -182,11 +203,50 @@ export type MidtransItem = {
 };
 
 export type CreateCheckoutInput = {
-    userId: string;
+    /**
+     * Authenticated customer id, or NULL for a guest checkout.
+     * Guest checkout is the default customer path.
+     */
+    userId: string | null;
 
     mode?: CheckoutMode;
 
-    addressId: string;
+    /**
+     * Legacy logged-in path: id of a `UserAddress` owned by `userId`.
+     * Guests must use `guestAddress` instead.
+     */
+    addressId?: string;
+
+    /**
+     * GUEST path: the address supplied inline by the buyer. It is
+     * UNTRUSTED input and is validated + resolved server-side
+     * (see lib/guest-address.ts) before it becomes an order.
+     */
+    guestAddress?: GuestAddressInput;
+
+    /**
+     * GUEST cart scope: SHA-256 of the anonymous cart cookie token.
+     * Null for a logged-in cart.
+     */
+    cartGuestTokenHash?: string | null;
+
+    /**
+     * Hashed guest identity (normalized email + phone) used for the
+     * per-identity abuse scopes (voucher / flash-sale / COD caps,
+     * affiliate self-referral). Never sent to the browser.
+     */
+    guestIdentityKey?: string | null;
+
+    /**
+     * Duplicate-submission guard, already namespaced by the caller.
+     */
+    idempotencyKey?: string | null;
+
+    /**
+     * Authoritative order email for a LOGGED-IN buyer (the session
+     * email). Guests are covered by `guestAddress.email`.
+     */
+    customerEmail?: string | null;
 
     shipping: ShippingOption;
 
@@ -244,6 +304,27 @@ export type CreatedCheckout = {
     grossAmount: number;
 
     cartId: number | null;
+
+    /**
+     * RAW guest access token — present only for a guest order.
+     *
+     * The caller MUST put this in an httpOnly cookie / one-time token
+     * link and MUST NEVER log it, store it in analytics, or return it
+     * in a response body that is not the buyer's own.
+     */
+    guestAccessToken?: string | null;
+
+    /**
+     * true when the COD order is held for admin review and therefore
+     * has NO ShipmentJob yet.
+     */
+    requiresCodReview?: boolean;
+
+    /**
+     * true when this result is a REPLAY of an earlier submission that
+     * carried the same idempotency key — no new order was created.
+     */
+    duplicate?: boolean;
 };
 
 /*
@@ -705,12 +786,40 @@ export function isPendingOrderStillPayable(
 }
 
 export async function cleanupPendingCheckoutOrders(
-    userId: string
+    scope:
+        | string
+        | {
+              userId?: string | null;
+              guestIdentityKey?: string | null;
+          }
 ) {
+    /*
+     * Scope the sweep to the buyer. Guests have no userId, so their
+     * identity scope (hashed email/phone) is used instead — this keeps
+     * the "one live payment attempt" guarantee for guest checkout too,
+     * instead of letting retried guest checkouts pile up payable
+     * PENDING orders with no cleanup path.
+     */
+    const scopeWhere =
+        typeof scope === "string"
+            ? { userId: scope }
+            : scope.userId
+              ? { userId: scope.userId }
+              : scope.guestIdentityKey
+                ? {
+                      guestIdentityKey:
+                          scope.guestIdentityKey,
+                  }
+                : null;
+
+    if (!scopeWhere) {
+        return;
+    }
+
     const pendingOrders =
         await prisma.order.findMany({
             where: {
-                userId,
+                ...scopeWhere,
 
                 paymentMethod: {
                     in: [
@@ -793,6 +902,60 @@ function logCheckoutEvent(
     );
 }
 
+/**
+ * Rebuild a checkout result from an order that already exists for the
+ * same idempotency key.
+ *
+ * Nothing is recalculated from the CURRENT cart/prices: a replay must
+ * return exactly the amounts the buyer already agreed to, and must not
+ * reserve stock, a voucher or a flash-sale slot a second time.
+ */
+function buildIdempotentReplay(
+    replay: Prisma.OrderGetPayload<{
+        include: { items: true };
+    }>
+): CreatedCheckout {
+    const replayItems = replay.items ?? [];
+
+    return {
+        order: replay,
+
+        checkoutItems: replayItems.map((item) => ({
+            productId: item.productId ?? 0,
+            variantId: item.variantId ?? 0,
+            productName: item.productName,
+            variantName: item.variantName,
+            price: Number(item.price),
+            quantity: item.quantity,
+            subtotal: Number(item.subtotal),
+        })),
+
+        itemDetails: replayItems.map((item) => ({
+            id: String(item.variantId ?? item.productId),
+            price: Number(item.price),
+            quantity: item.quantity,
+            name: formatProductName(
+                item.productName,
+                item.variantName
+            ),
+        })),
+
+        subtotal: Number(replay.subtotal),
+        shippingCost: Number(replay.shippingCost),
+        discount: Number(replay.discount),
+        spinWheelDiscount: 0,
+        grossAmount: Number(replay.total),
+        /*
+         * The replay did not consume a cart (nothing was cleared), so
+         * there is no cart to report to the caller.
+         */
+        cartId: null,
+        guestAccessToken: null,
+        requiresCodReview: replay.requiresCodReview,
+        duplicate: true,
+    };
+}
+
 export async function createCheckoutOrder(
     input: CreateCheckoutInput
 ): Promise<CreatedCheckout> {
@@ -813,6 +976,79 @@ export async function createCheckoutOrder(
             "Mode checkout tidak valid."
         );
     }
+
+    /*
+     * ==========================================
+     * IDEMPOTENCY — REPLAY A DUPLICATE SUBMISSION
+     * ==========================================
+     *
+     * A double-clicked / retried checkout sends the SAME server-scoped
+     * idempotency key. `Order.idempotencyKey` is UNIQUE, so the second
+     * submission could never create a second order — but without this
+     * lookup it would surface as a raw P2002/500 error even though the
+     * first submission succeeded.
+     *
+     * Returning the ORIGINAL order makes the endpoint properly
+     * idempotent: the buyer sees their order, no second stock/voucher
+     * reservation is attempted, and no duplicate payment instruction is
+     * created. The stored row is authoritative — nothing is recomputed
+     * from the (possibly changed) cart.
+     */
+    if (input.idempotencyKey) {
+        const replay = await findOrderByIdempotencyKey(
+            input.idempotencyKey
+        );
+
+        if (replay) {
+            return buildIdempotentReplay(replay);
+        }
+    }
+
+    /*
+     * ==========================================
+     * BUYER SCOPE
+     * ==========================================
+     *
+     * A customer no longer has to sign in, so every buyer resolves to
+     * exactly one scope:
+     *   logged-in → userId
+     *   guest     → hashed contact identity (email/phone)
+     *
+     * `ownerKey` is the authoritative scope for the per-identity caps
+     * (voucher maxUsagePerUser, flash-sale purchase limit, COD cap).
+     * `resolveOwnerKey` fails loudly when neither is available, rather
+     * than collapsing every anonymous buyer into one shared bucket.
+     */
+    const isGuest = !input.userId;
+
+    const guestIdentityKey =
+        input.guestIdentityKey ??
+        (isGuest
+            ? buildGuestIdentityKey({
+                  email:
+                      input.guestAddress?.email,
+                  phone:
+                      input.guestAddress?.phone,
+              })
+            : null);
+
+    const ownerKey = resolveOwnerKey({
+        userId: input.userId,
+        guestIdentityKey,
+    });
+
+    /*
+     * Cart scope for the CART mode: the authenticated cart or the
+     * anonymous guest cart (hashed cookie token).
+     */
+    const cartWhere = input.userId
+        ? { userId: input.userId }
+        : input.cartGuestTokenHash
+          ? {
+                guestTokenHash:
+                    input.cartGuestTokenHash,
+            }
+          : null;
 
     /*
      * ==========================================
@@ -872,27 +1108,40 @@ export async function createCheckoutOrder(
      * Client-provided address fields are ignored.
      */
 
+    /*
+     * GUEST ORDERS have no UserAddress row. Their address arrives inline
+     * and is validated + resolved server-side (region canonicalization,
+     * Mengantar area resolution, verified RajaOngkir destination). The
+     * resolved object intentionally has the SAME shape the rest of this
+     * function already expects, so pricing/verification is unchanged.
+     */
     const address =
-        await prisma.userAddress.findFirst(
-            {
-                where: {
-                    id:
-                        input.addressId,
+        input.userId && input.addressId
+            ? await prisma.userAddress.findFirst(
+                  {
+                      where: {
+                          id: input.addressId,
 
-                    userId:
-                        input.userId,
-                },
-            }
-        );
+                          userId: input.userId,
+                      },
+                  }
+              )
+            : input.guestAddress
+              ? await resolveGuestAddress(
+                    input.guestAddress
+                )
+              : null;
 
     if (!address) {
         const error =
             new Error(
-                "Alamat tidak ditemukan."
+                input.userId
+                    ? "Alamat tidak ditemukan."
+                    : "Alamat pengiriman wajib diisi."
             );
 
         (error as any).status =
-            404;
+            input.userId ? 404 : 400;
 
         throw error;
     }
@@ -1024,12 +1273,16 @@ export async function createCheckoutOrder(
             Math.round(Number(variant.weight)) *
             quantityNumber!;
     } else {
+        if (!cartWhere) {
+            throw new Error(
+                "Keranjang kosong."
+            );
+        }
+
         const cartItems =
             await prisma.cartItem.findMany({
                 where: {
-                    cart: {
-                        userId: input.userId,
-                    },
+                    cart: cartWhere,
                 },
                 select: {
                     quantity: true,
@@ -1111,9 +1364,10 @@ export async function createCheckoutOrder(
         input.paymentMethod !==
         "COD"
     ) {
-        await cleanupPendingCheckoutOrders(
-            input.userId
-        );
+        await cleanupPendingCheckoutOrders({
+            userId: input.userId,
+            guestIdentityKey,
+        });
     }
 
     /*
@@ -1130,12 +1384,58 @@ export async function createCheckoutOrder(
 
     /*
      * ==========================================
+     * GUEST ORDER ACCESS TOKEN
+     * ==========================================
+     *
+     * CRITICAL: an order id (sequential) or order number alone must
+     * NEVER grant access to an order. A guest order therefore carries
+     * a 256-bit CSPRNG token; only its SHA-256 HASH is persisted.
+     *
+     * The raw token is returned to the caller so it can be set as an
+     * httpOnly cookie / one-time token link. It is never logged and
+     * never included in analytics payloads.
+     */
+    const guestAccessToken = isGuest
+        ? generateGuestAccessToken()
+        : null;
+
+    const guestAccessTokenHash = guestAccessToken
+        ? hashGuestAccessToken(guestAccessToken)
+        : null;
+
+    /*
+     * SERVER-SIDE expiry (30 days), always persisted WITH the
+     * hash: resolveOrderAccess refuses a token whose window is
+     * missing or past, so the two can never be written
+     * separately.
+     */
+    const guestAccessTokenExpiresAt = guestAccessToken
+        ? guestAccessTokenExpiry()
+        : null;
+
+    /*
+     * Authoritative buyer email for this order: the guest's checkout
+     * email, or the session email supplied by the route for a
+     * logged-in buyer. Drives iPaymu buyerEmail (no session dependency
+     * for guests).
+     */
+    const orderCustomerEmail =
+        input.customerEmail ??
+        (address as { email?: string | null })
+            .email ??
+        null;
+
+    /*
+     * ==========================================
      * DATABASE TRANSACTION
      * ==========================================
      */
 
-    const result = await prisma.$transaction(
-        async (tx) => {
+    let result: CreatedCheckout;
+
+    try {
+        result = await prisma.$transaction(
+            async (tx) => {
             let checkoutItems:
                 CheckoutItem[] = [];
 
@@ -1239,27 +1539,30 @@ export async function createCheckoutOrder(
             if (
                 mode === "CART"
             ) {
-                const cart =
-                    await tx.cart.findUnique(
-                        {
-                            where: {
-                                userId:
-                                    input.userId,
-                            },
+                /*
+                 * Cart lookup goes through the BUYER SCOPE (session cart
+                 * OR anonymous guest cart), so the same handler serves
+                 * both without ever reading another buyer's cart.
+                 */
+                const cart = cartWhere
+                    ? await tx.cart.findUnique(
+                          {
+                              where: cartWhere,
 
-                            include: {
-                                items: {
-                                    include: {
-                                        product:
-                                            true,
+                              include: {
+                                  items: {
+                                      include: {
+                                          product:
+                                              true,
 
-                                        variant:
-                                            true,
-                                    },
-                                },
-                            },
-                        }
-                    );
+                                          variant:
+                                              true,
+                                      },
+                                  },
+                              },
+                          }
+                      )
+                    : null;
 
                 if (
                     !cart ||
@@ -1534,7 +1837,9 @@ export async function createCheckoutOrder(
                         voucherItems,
                         input.userId,
                         orderCampaignId,
-                        tx
+                        tx,
+                        // Per-identity cap scope (user or hashed guest).
+                        ownerKey
                     );
 
                 if (
@@ -1590,7 +1895,8 @@ export async function createCheckoutOrder(
                 const newUsageCount = await incrementVoucherUserUsage(
                     tx,
                     voucherId,
-                    input.userId
+                    input.userId,
+                    ownerKey
                 );
 
                 // Post-increment validation: fetch limit and check
@@ -1659,7 +1965,16 @@ export async function createCheckoutOrder(
                         const usedByUser =
                             await tx.order.count({
                                 where: {
-                                    userId: input.userId,
+                                    ...(input.userId
+                                        ? {
+                                              userId:
+                                                  input.userId,
+                                          }
+                                        : {
+                                              guestIdentityKey:
+                                                  guestIdentityKey ??
+                                                  undefined,
+                                          }),
                                     shippingDiscountId:
                                         shippingDiscountResult.shippingDiscountId,
                                     status: {
@@ -1728,9 +2043,14 @@ export async function createCheckoutOrder(
                     },
                 });
 
+                /*
+                 * Ownership is checked against the SPIN SCOPE, so a
+                 * guest reward can only be redeemed by the guest who won
+                 * it (and a logged-in reward by its owner).
+                 */
                 if (
                     !spinRecord ||
-                    spinRecord.userId !== input.userId
+                    spinRecord.ownerKey !== ownerKey
                 ) {
                     throw new Error(
                         "Reward spin wheel tidak valid."
@@ -1900,7 +2220,10 @@ export async function createCheckoutOrder(
                         tx,
                         fsId,
                         input.userId,
-                        item.quantity
+                        item.quantity,
+                        // Purchase-limit scope: user id OR hashed guest
+                        // identity. Without it the cap would be skipped.
+                        ownerKey
                     );
 
                     /*
@@ -1936,11 +2259,95 @@ export async function createCheckoutOrder(
             // Combine voucher discount + spin wheel discount
             const totalDiscount = discount + spinWheelDiscount;
 
+            /*
+             * ==========================================
+             * COD ABUSE CONTROL (review gate)
+             * ==========================================
+             *
+             * A high-risk COD order (high value, or a guest with too
+             * many COD orders still open) is FLAGGED and its shipment is
+             * HELD until an admin approves. It is never auto-cancelled
+             * and its paymentStatus stays UNPAID — flagging only defers
+             * the Mengantar shipment creation.
+             */
+            let requiresCodReview = false;
+            let codReviewReasons: string[] = [];
+
+            if (input.paymentMethod === "COD") {
+                const activeCodOrders =
+                    isGuest && guestIdentityKey
+                        ? await countActiveGuestCodOrders(
+                              tx,
+                              guestIdentityKey
+                          )
+                        : 0;
+
+                const codRisk = assessCodRisk({
+                    total: grossAmount,
+                    activeCodOrders,
+                    isGuest,
+                });
+
+                requiresCodReview =
+                    codRisk.requiresReview;
+                codReviewReasons = codRisk.reasons;
+
+                if (requiresCodReview) {
+                    logCheckoutEvent(
+                        "COD_REVIEW_REQUIRED",
+                        {
+                            orderNumber,
+                            total: grossAmount,
+                            activeCodOrders,
+                            reasons: codReviewReasons,
+                        }
+                    );
+                }
+            }
+
             const order =
                 await tx.order.create({
                     data: {
                         userId:
-                            input.userId,
+                            input.userId ??
+                            null,
+
+                        /*
+                         * Guest buyer identity.
+                         *
+                         * customerEmail is the authoritative email for
+                         * this order (used as the iPaymu buyerEmail when
+                         * there is no session).
+                         */
+                        customerEmail:
+                            orderCustomerEmail,
+
+                        /*
+                         * Only the HASH and its expiry window are
+                         * persisted; the raw token never is.
+                         */
+                        guestAccessTokenHash:
+                            guestAccessTokenHash ??
+                            undefined,
+
+                        guestAccessTokenExpiresAt:
+                            guestAccessTokenExpiresAt ??
+                            undefined,
+
+                        guestIdentityKey:
+                            guestIdentityKey ??
+                            undefined,
+
+                        idempotencyKey:
+                            input.idempotencyKey ??
+                            undefined,
+
+                        requiresCodReview,
+
+                        codReviewStatus:
+                            requiresCodReview
+                                ? "PENDING"
+                                : null,
 
                         orderNumber,
 
@@ -2165,10 +2572,16 @@ export async function createCheckoutOrder(
              * double-submitted checkout can never create two jobs.
              * Scoped to COD only - the NON-COD settlement trigger in
              * the payment webhooks is unchanged.
+             *
+             * COD REVIEW GATE: a FLAGGED (high-risk) COD order gets NO
+             * shipment job here. Nothing is dispatched until an admin
+             * approves it, at which point the approve endpoint enqueues
+             * the job. The order itself is never cancelled.
              */
             if (
                 shippingProvider === "MENGANTAR" &&
-                input.paymentMethod === "COD"
+                input.paymentMethod === "COD" &&
+                !requiresCodReview
             ) {
                 await enqueueShipmentJobTx(tx, order.id);
             }
@@ -2329,18 +2742,78 @@ export async function createCheckoutOrder(
                     );
 
                 /*
-                 * SELF-REFERRAL PREVENTION:
-                 * Affiliate cannot refer themselves.
-                 * If affiliate.userId === order userId,
-                 * skip commission entirely.
+                 * SELF-REFERRAL PREVENTION.
+                 *
+                 * The original guard compared `affiliate.userId` with
+                 * `input.userId`, which is NULL for a guest buyer — so it
+                 * silently stopped working the moment checkout became
+                 * guest-capable and an affiliate could farm commission
+                 * from their own guest purchases.
+                 *
+                 * Now the affiliate's OWN contact details are compared
+                 * against the buyer's, using the same normalized + keyed
+                 * hashes as the guest identity scope (lib/guest-identity):
+                 *
+                 *   1. session identity (legacy userId match), and
+                 *   2. a shared email OR phone fingerprint between the
+                 *      affiliate's account and the buyer's contact.
+                 *
+                 * Matching is by HASH only — raw contact values are never
+                 * read into this comparison or logged.
                  */
-                if (affiliate && affiliate.userId === input.userId) {
+                const buyerFingerprints =
+                    contactFingerprints({
+                        email: orderCustomerEmail,
+                        phone: address.phone,
+                    });
+
+                let selfReferral = Boolean(
+                    affiliate &&
+                        input.userId &&
+                        affiliate.userId === input.userId
+                );
+
+                if (
+                    !selfReferral &&
+                    affiliate &&
+                    buyerFingerprints.length > 0
+                ) {
+                    const affiliateUser =
+                        await tx.user.findUnique({
+                            where: {
+                                id: affiliate.userId,
+                            },
+                            select: {
+                                email: true,
+                                phone: true,
+                            },
+                        });
+
+                    if (affiliateUser) {
+                        const affiliateFingerprints =
+                            contactFingerprints({
+                                email: affiliateUser.email,
+                                phone: affiliateUser.phone,
+                            });
+
+                        selfReferral =
+                            affiliateFingerprints.some(
+                                (fingerprint) =>
+                                    buyerFingerprints.includes(
+                                        fingerprint
+                                    )
+                            );
+                    }
+                }
+
+                if (affiliate && selfReferral) {
                     logCheckoutEvent(
                         "SELF_REFERRAL_BLOCKED",
                         {
                             affiliateId: affiliate.id,
                             affiliateCode: affiliate.affiliateCode,
                             orderId: order.id,
+                            guestOrder: isGuest,
                         }
                     );
                 } else if (affiliate) {
@@ -2413,14 +2886,41 @@ export async function createCheckoutOrder(
              */
 
             if (spinWheelSpinId) {
-                await tx.spinWheelSpin.update({
-                    where: { id: spinWheelSpinId },
-                    data: {
-                        status: "USED",
-                        usedAt: new Date(),
-                        orderId: order.id,
-                    },
-                });
+                /*
+                 * ATOMIC SINGLE-USE REDEMPTION (CAS).
+                 *
+                 * The availability check above is a plain read, so two
+                 * CONCURRENT checkouts that present the same spin id
+                 * would both pass it and both receive the discount
+                 * (double-spending one reward) if this were a plain
+                 * `update`. The conditional updateMany makes the state
+                 * transition the guard: only the first transaction flips
+                 * AVAILABLE → USED, and the loser is rejected — which
+                 * rolls the whole checkout back, so no order, stock or
+                 * discount is granted twice.
+                 *
+                 * `ownerKey` is re-asserted here so the CAS cannot be
+                 * used to redeem a reward that belongs to someone else.
+                 */
+                const redeemed =
+                    await tx.spinWheelSpin.updateMany({
+                        where: {
+                            id: spinWheelSpinId,
+                            ownerKey,
+                            status: "AVAILABLE",
+                        },
+                        data: {
+                            status: "USED",
+                            usedAt: new Date(),
+                            orderId: order.id,
+                        },
+                    });
+
+                if (redeemed.count === 0) {
+                    throw new Error(
+                        "Reward spin wheel sudah digunakan atau kedaluwarsa."
+                    );
+                }
 
                 logCheckoutEvent(
                     "SPIN_WHEEL_REWARD_APPLIED",
@@ -2451,14 +2951,43 @@ export async function createCheckoutOrder(
                 grossAmount,
 
                 cartId,
-            };
-        },
-        {
-            timeout: 15000,
 
-            maxWait: 10000,
+                requiresCodReview,
+            };
+            },
+            {
+                timeout: 15000,
+
+                maxWait: 10000,
+            }
+        );
+    } catch (error) {
+        /*
+         * CONCURRENT DUPLICATE.
+         *
+         * Two requests with the SAME idempotency key can pass the
+         * lookup above at the same instant. The unique index on
+         * `Order.idempotencyKey` stops the second order from being
+         * created (P2002), so the loser simply returns the winner's
+         * order instead of a 500.
+         */
+        if (
+            input.idempotencyKey &&
+            (error as { code?: string })?.code ===
+                "P2002"
+        ) {
+            const replay =
+                await findOrderByIdempotencyKey(
+                    input.idempotencyKey
+                );
+
+            if (replay) {
+                return buildIdempotentReplay(replay);
+            }
         }
-    );
+
+        throw error;
+    }
 
     /*
      * ==========================================
@@ -2480,12 +3009,21 @@ export async function createCheckoutOrder(
      */
     if (
         shippingProvider === "MENGANTAR" &&
-        input.paymentMethod === "COD"
+        input.paymentMethod === "COD" &&
+        !result.requiresCodReview
     ) {
         await scheduleShipmentProcessing();
     }
 
-    return result;
+    /*
+     * Expose the RAW guest access token (never the hash) so the caller
+     * can set the httpOnly cookie / build the one-time token link.
+     */
+    return {
+        ...result,
+        guestAccessToken,
+        requiresCodReview: result.requiresCodReview,
+    };
 }
 
 /*
@@ -2524,94 +3062,259 @@ export async function rollbackCheckoutOrder(
         options?.allowCodCancellation ?? false;
 
     return prisma.$transaction(
-        async (tx) => {            /*
-             * ==========================================
-             * ATOMIC CAS: CANCEL ORDER (BUG #1/#4 FIX)
-             * ==========================================
-             *
-             * Transition PENDING/PROCESSING -> CANCELLED
-             * atomically. Only one concurrent caller will
-             * see affectedRows === 1.
-             *
-             * If already CANCELLED/PAID/SHIPPED/COMPLETED,
-             * affectedRows === 0 -> skip all restores.
-             */
-            const affectedRows =
-                await tx.$executeRaw`
-                UPDATE \`order\`
-                SET status = 'CANCELLED',
-                    paymentStatus = 'FAILED'
-                WHERE id = ${orderId}
-                  AND status IN ('PENDING', 'PROCESSING')
-                  AND (${allowCodCancellation ? 1 : 0} = 1 OR paymentMethod <> 'COD')
-            `;
+        (tx) =>
+            cancelOrderForReservations(tx, orderId, {
+                restoreCart,
+                allowCodCancellation,
+            }),
+        {
+            timeout: 15000,
 
-            if (affectedRows === 0) {
-                return;
-            }
+            maxWait: 10000,
+        }
+    );
+}
 
-            const order =
-                await tx.order.findUnique({
-                    where: {
-                        id: orderId,
-                    },
+/*
+ * ==========================================
+ * ATOMIC ORDER CANCELLATION (SHARED PRIMITIVE)
+ * ==========================================
+ *
+ * The safe-cancellation lifecycle, unchanged:
+ *   1. CAS PENDING/PROCESSING -> CANCELLED (paymentStatus FAILED),
+ *      which is both the idempotency guard and the atomicity
+ *      guarantee — a second caller sees affectedRows === 0 and
+ *      releases NOTHING,
+ *   2. restore reserved stock (regular + flash-sale) and the
+ *      flash-sale purchase record,
+ *   3. restore voucher quota AND the per-scope usage bucket, so a
+ *      guest and a logged-in buyer release exactly what they
+ *      consumed,
+ *   4. release the spin-wheel reward, and
+ *   5. cancel the affiliate commission.
+ *
+ * It runs inside the CALLER's transaction so a flow that must make
+ * its own state change atomic with the cancellation can include it in
+ * the same commit (COD REJECT & CANCEL keeps the review decision and
+ * the release in one transaction — there is no window in which an
+ * order is rejected but still holds stock, or cancelled but still
+ * pending review).
+ *
+ * @returns true when THIS call performed the cancellation.
+ */
+export async function cancelOrderForReservations(
+    tx: Prisma.TransactionClient,
+    orderId: number,
+    options?: {
+        /** Restore a logged-in COD buyer's cart (guest orders: no-op). */
+        restoreCart?: boolean;
+        /**
+         * COD orders stay PENDING/UNPAID until the courier collects
+         * the cash, so only an EXPLICIT cancellation opts in.
+         */
+        allowCodCancellation?: boolean;
+    }
+): Promise<boolean> {
+    const restoreCart =
+        options?.restoreCart ?? true;
 
-                    include: {
-                        items: true,
-                    },
-                });
+    const allowCodCancellation =
+        options?.allowCodCancellation ?? false;
 
-            if (!order) {
-                return;
-            }
+                /*
+                 * ==========================================
+                 * ATOMIC CAS: CANCEL ORDER (BUG #1/#4 FIX)
+                 * ==========================================
+                 *
+                 * Transition PENDING/PROCESSING -> CANCELLED
+                 * atomically. Only one concurrent caller will
+                 * see affectedRows === 1.
+                 *
+                 * If already CANCELLED/PAID/SHIPPED/COMPLETED,
+                 * affectedRows === 0 -> skip all restores.
+                 */
+                const affectedRows =
+                    await tx.$executeRaw`
+                    UPDATE \`order\`
+                    SET status = 'CANCELLED',
+                        paymentStatus = 'FAILED'
+                    WHERE id = ${orderId}
+                      AND status IN ('PENDING', 'PROCESSING')
+                      AND (${allowCodCancellation ? 1 : 0} = 1 OR paymentMethod <> 'COD')
+                `;
 
-            /*
-             * ==========================================
-             * RESTORE CART
-             * ==========================================
-             *
-             * Hanya dilakukan untuk order
-             * yang sebelumnya memang
-             * menghapus cart.
-             *
-             * Midtrans sekarang TIDAK
-             * menghapus cart.
-             */
+                if (affectedRows === 0) {
+                    return false;
+                }
 
-            if (
-                restoreCart &&
-                order.paymentMethod ===
-                    "COD"
-            ) {
-                const cart =
-                    await tx.cart.findUnique(
-                        {
-                            where: {
-                                userId:
-                                    order.userId,
-                            },
-                        }
-                    );
+                const order =
+                    await tx.order.findUnique({
+                        where: {
+                            id: orderId,
+                        },
 
-                let targetCartId =
-                    cart?.id ?? null;
+                        include: {
+                            items: true,
+                        },
+                    });
 
+                if (!order) {
+                    return false;
+                }
+
+                /*
+                 * ==========================================
+                 * RESTORE CART
+                 * ==========================================
+                 *
+                 * Hanya dilakukan untuk order
+                 * yang sebelumnya memang
+                 * menghapus cart.
+                 *
+                 * Midtrans sekarang TIDAK
+                 * menghapus cart.
+                 */
+
+                /*
+                 * GUEST ORDERS: an order placed by a guest has no server-side
+                 * user cart to restore into (the guest cart is scoped by an
+                 * anonymous cookie, not by the order), so this step is a
+                 * no-op for them. Stock / voucher / spin release below still
+                 * runs, which is what actually matters financially.
+                 */
                 if (
-                    !targetCartId
+                    restoreCart &&
+                    order.paymentMethod ===
+                        "COD" &&
+                    order.userId
                 ) {
-                    const createdCart =
-                        await tx.cart.create(
+                    const cart =
+                        await tx.cart.findUnique(
                             {
-                                data: {
+                                where: {
                                     userId:
                                         order.userId,
                                 },
                             }
                         );
 
-                    targetCartId =
-                        createdCart.id;
+                    let targetCartId =
+                        cart?.id ?? null;
+
+                    if (
+                        !targetCartId
+                    ) {
+                        const createdCart =
+                            await tx.cart.create(
+                                {
+                                    data: {
+                                        userId:
+                                            order.userId,
+                                    },
+                                }
+                            );
+
+                        targetCartId =
+                            createdCart.id;
+                    }
+
+                    for (
+                        const item of
+                            order.items
+                    ) {
+                        if (
+                            item.variantId ===
+                            null
+                        ) {
+                            // Variant was deleted (onDelete: SetNull).
+                            // Cannot restore to cart without a valid variantId.
+                            // Stock was already released when variant was deleted.
+                            continue;
+                        }
+
+                        if (
+                            item.productId ===
+                            null
+                        ) {
+                            // Product was deleted (onDelete: SetNull).
+                            // Cannot restore to cart without a valid productId.
+                            continue;
+                        }
+
+                        const existingCartItem =
+                            await tx.cartItem.findFirst(
+                                {
+                                    where: {
+                                        cartId:
+                                            targetCartId,
+
+                                        productId:
+                                            item.productId,
+
+                                        variantId:
+                                            item.variantId,
+                                    },
+                                }
+                            );
+
+                        if (
+                            existingCartItem
+                        ) {
+                            await tx.cartItem.update(
+                                {
+                                    where: {
+                                        id:
+                                            existingCartItem.id,
+                                    },
+
+                                    data: {
+                                        quantity: {
+                                            increment:
+                                                item.quantity,
+                                        },
+                                    },
+                                }
+                            );
+                        } else {
+                            await tx.cartItem.create(
+                                {
+                                    data: {
+                                        cartId:
+                                            targetCartId,
+
+                                        productId:
+                                            item.productId,
+
+                                        variantId:
+                                            item.variantId,
+
+                                        quantity:
+                                            item.quantity,
+                                    },
+                                }
+                            );
+                        }
+                    }
                 }
+
+                /*
+                 * ==========================================
+                 * RESTORE STOCK + SOLD
+                 * ==========================================
+                 *
+                 * Flash-sale items: restore flash-sale
+                 * stock (saleStock / soldCount). Skip
+                 * regular ProductVariant.stock because
+                 * flash-sale items never reserved it.
+                 *
+                 * Regular items: restore ProductVariant
+                 * stock and Product.sold as before.
+                 *
+                 * We identify flash-sale items by checking
+                 * if a FlashSale record exists for the
+                 * variantId (unique constraint on variantId).
+                 * OrderItem has no flashSaleId field.
+                 */
 
                 for (
                     const item of
@@ -2622,8 +3325,17 @@ export async function rollbackCheckoutOrder(
                         null
                     ) {
                         // Variant was deleted (onDelete: SetNull).
-                        // Cannot restore to cart without a valid variantId.
                         // Stock was already released when variant was deleted.
+                        // Restore Product.sold only.
+                        if (
+                            item.productId !== null
+                        ) {
+                            await tx.$executeRaw`
+                                UPDATE product
+                                SET sold = GREATEST(0, sold - ${item.quantity})
+                                WHERE id = ${item.productId}
+                            `;
+                        }
                         continue;
                     }
 
@@ -2632,336 +3344,237 @@ export async function rollbackCheckoutOrder(
                         null
                     ) {
                         // Product was deleted (onDelete: SetNull).
-                        // Cannot restore to cart without a valid productId.
-                        continue;
-                    }
-
-                    const existingCartItem =
-                        await tx.cartItem.findFirst(
-                            {
-                                where: {
-                                    cartId:
-                                        targetCartId,
-
-                                    productId:
-                                        item.productId,
-
-                                    variantId:
-                                        item.variantId,
-                                },
-                            }
-                        );
-
-                    if (
-                        existingCartItem
-                    ) {
-                        await tx.cartItem.update(
+                        // Variant stock still needs restoration.
+                        await tx.productVariant.update(
                             {
                                 where: {
                                     id:
-                                        existingCartItem.id,
+                                        item.variantId,
                                 },
 
                                 data: {
-                                    quantity: {
+                                    stock: {
                                         increment:
                                             item.quantity,
                                     },
                                 },
                             }
                         );
+                        continue;
+                    }
+
+                    /*
+                     * Check if this variant has a flash sale.
+                     * FlashSale has @@unique([variantId]) so
+                     * at most one record per variant.
+                     */
+                    const flashSale =
+                        await tx.flashSale.findFirst({
+                            where: {
+                                variantId:
+                                    item.variantId,
+                            },
+                        });
+
+                    if (flashSale) {
+                        /*
+                         * FLASH SALE ITEM:
+                         * Restore flash-sale stock atomically.
+                         * Do NOT touch regular ProductVariant.stock.
+                         *
+                         * BUG #3 FIX: Use conditional update to prevent
+                         * negative soldCount and saleStock inflation.
+                         */
+                        await tx.$executeRaw`
+                            UPDATE flashsale
+                            SET saleStock = saleStock + ${item.quantity},
+                                soldCount = soldCount - ${item.quantity}
+                            WHERE id = ${flashSale.id}
+                              AND soldCount >= ${item.quantity}
+                        `;
+
+                        /*
+                         * FLASH SALE PURCHASE CLEANUP (BUG T1-1 FIX):
+                         * Delete FlashSalePurchase record so the user
+                         * can re-attempt if they want to.
+                         * Without this, the user is permanently blocked
+                         * from buying this flash sale (purchaseLimit
+                         * already consumed).
+                         */
+                        await tx.flashSalePurchase.deleteMany({
+                            where: {
+                                flashSaleId: flashSale.id,
+                                userId: order.userId,
+                            },
+                        });
                     } else {
-                        await tx.cartItem.create(
+                        /*
+                         * REGULAR ITEM or FLASH SALE DELETED:
+                         * Restore regular stock.
+                         *
+                         * If the flash sale was deleted before
+                         * rollback, the item falls through to
+                         * regular stock restoration. This is
+                         * acceptable because deleteFlashSale
+                         * now rejects deletion when pending
+                         * orders exist (defense-in-depth).
+                         */
+                        await tx.productVariant.update(
                             {
-                                data: {
-                                    cartId:
-                                        targetCartId,
-
-                                    productId:
-                                        item.productId,
-
-                                    variantId:
+                                where: {
+                                    id:
                                         item.variantId,
+                                },
 
-                                    quantity:
-                                        item.quantity,
+                                data: {
+                                    stock: {
+                                        increment:
+                                            item.quantity,
+                                    },
                                 },
                             }
                         );
                     }
-                }
-            }
 
-            /*
-             * ==========================================
-             * RESTORE STOCK + SOLD
-             * ==========================================
-             *
-             * Flash-sale items: restore flash-sale
-             * stock (saleStock / soldCount). Skip
-             * regular ProductVariant.stock because
-             * flash-sale items never reserved it.
-             *
-             * Regular items: restore ProductVariant
-             * stock and Product.sold as before.
-             *
-             * We identify flash-sale items by checking
-             * if a FlashSale record exists for the
-             * variantId (unique constraint on variantId).
-             * OrderItem has no flashSaleId field.
-             */
-
-            for (
-                const item of
-                    order.items
-            ) {
-                if (
-                    item.variantId ===
-                    null
-                ) {
-                    // Variant was deleted (onDelete: SetNull).
-                    // Stock was already released when variant was deleted.
-                    // Restore Product.sold only.
-                    if (
-                        item.productId !== null
-                    ) {
-                        await tx.$executeRaw`
-                            UPDATE product
-                            SET sold = GREATEST(0, sold - ${item.quantity})
-                            WHERE id = ${item.productId}
-                        `;
-                    }
-                    continue;
-                }
-
-                if (
-                    item.productId ===
-                    null
-                ) {
-                    // Product was deleted (onDelete: SetNull).
-                    // Variant stock still needs restoration.
-                    await tx.productVariant.update(
-                        {
-                            where: {
-                                id:
-                                    item.variantId,
-                            },
-
-                            data: {
-                                stock: {
-                                    increment:
-                                        item.quantity,
-                                },
-                            },
-                        }
-                    );
-                    continue;
-                }
-
-                /*
-                 * Check if this variant has a flash sale.
-                 * FlashSale has @@unique([variantId]) so
-                 * at most one record per variant.
-                 */
-                const flashSale =
-                    await tx.flashSale.findFirst({
-                        where: {
-                            variantId:
-                                item.variantId,
-                        },
-                    });
-
-                if (flashSale) {
                     /*
-                     * FLASH SALE ITEM:
-                     * Restore flash-sale stock atomically.
-                     * Do NOT touch regular ProductVariant.stock.
-                     *
-                     * BUG #3 FIX: Use conditional update to prevent
-                     * negative soldCount and saleStock inflation.
+                     * Restore sold count for both types.
+                     * BUG #3 FIX: Use GREATEST to prevent negative sold.
                      */
                     await tx.$executeRaw`
-                        UPDATE flashsale
-                        SET saleStock = saleStock + ${item.quantity},
-                            soldCount = soldCount - ${item.quantity}
-                        WHERE id = ${flashSale.id}
-                          AND soldCount >= ${item.quantity}
+                        UPDATE product
+                        SET sold = GREATEST(0, sold - ${item.quantity})
+                        WHERE id = ${item.productId}
                     `;
+                }
 
+                /*
+                 * ==========================================
+                 * RESTORE VOUCHER QUOTA
+                 * ==========================================
+                 */
+
+                if (
+                    typeof order.voucherId ===
+                    "number"
+                ) {
                     /*
-                     * FLASH SALE PURCHASE CLEANUP (BUG T1-1 FIX):
-                     * Delete FlashSalePurchase record so the user
-                     * can re-attempt if they want to.
-                     * Without this, the user is permanently blocked
-                     * from buying this flash sale (purchaseLimit
-                     * already consumed).
+                     * Restore global usedCount
                      */
-                    await tx.flashSalePurchase.deleteMany({
-                        where: {
-                            flashSaleId: flashSale.id,
-                            userId: order.userId,
-                        },
-                    });
-                } else {
-                    /*
-                     * REGULAR ITEM or FLASH SALE DELETED:
-                     * Restore regular stock.
-                     *
-                     * If the flash sale was deleted before
-                     * rollback, the item falls through to
-                     * regular stock restoration. This is
-                     * acceptable because deleteFlashSale
-                     * now rejects deletion when pending
-                     * orders exist (defense-in-depth).
-                     */
-                    await tx.productVariant.update(
+                    await tx.voucher.updateMany(
                         {
                             where: {
                                 id:
-                                    item.variantId,
+                                    order.voucherId,
+
+                                usedCount: {
+                                    gt: 0,
+                                },
                             },
 
                             data: {
-                                stock: {
-                                    increment:
-                                        item.quantity,
+                                usedCount: {
+                                    decrement: 1,
                                 },
                             },
                         }
                     );
+
+                    /*
+                     * Restore per-scope usage count.
+                     *
+                     * The scope is derived from the ORDER (userId for a
+                     * logged-in buyer, hashed guest identity for a guest
+                     * order) so the release always hits the same bucket that
+                     * consumed it.
+                     */
+                    const rollbackScope = orderOwnerKey(order);
+
+                    const userUsage = rollbackScope
+                        ? await tx.voucherUserUsage.findUnique({
+                              where: {
+                                  voucherId_ownerKey: {
+                                      voucherId: order.voucherId,
+                                      ownerKey: rollbackScope,
+                                  },
+                              },
+                          })
+                        : null;
+
+                    if (
+                        userUsage &&
+                        userUsage.usageCount > 0
+                    ) {
+                        await tx.voucherUserUsage.update({
+                            where: {
+                                id: userUsage.id,
+                            },
+                            data: {
+                                usageCount: {
+                                    decrement: 1,
+                                },
+                            },
+                        });
+                    }            }
+
+                /*
+                 * ==========================================
+                 * RESTORE SPIN WHEEL REWARD
+                 * ==========================================
+                 *
+                 * If the order had a spin wheel reward applied,
+                 * restore it to AVAILABLE so the user can reuse it.
+                 */
+
+                const spinRecord =
+                    await tx.spinWheelSpin.findUnique({
+                        where: { orderId: order.id },
+                    });
+
+                if (spinRecord) {
+                    await tx.spinWheelSpin.update({
+                        where: { id: spinRecord.id },
+                        data: {
+                            status: "AVAILABLE",
+                            usedAt: null,
+                            orderId: null,
+                        },
+                    });
                 }
 
                 /*
-                 * Restore sold count for both types.
-                 * BUG #3 FIX: Use GREATEST to prevent negative sold.
+                 * ==========================================
+                 * CANCEL ORDER
+                 * ==========================================
                  */
-                await tx.$executeRaw`
-                    UPDATE product
-                    SET sold = GREATEST(0, sold - ${item.quantity})
-                    WHERE id = ${item.productId}
-                `;
-            }
 
-            /*
-             * ==========================================
-             * RESTORE VOUCHER QUOTA
-             * ==========================================
-             */
-
-            if (
-                typeof order.voucherId ===
-                "number"
-            ) {
-                /*
-                 * Restore global usedCount
-                 */
-                await tx.voucher.updateMany(
-                    {
-                        where: {
-                            id:
-                                order.voucherId,
-
-                            usedCount: {
-                                gt: 0,
-                            },
-                        },
-
-                        data: {
-                            usedCount: {
-                                decrement: 1,
-                            },
-                        },
-                    }
-                );
-
-                /*
-                 * Restore per-user usage count
-                 */
-                const userUsage =
-                    await tx.voucherUserUsage.findUnique({
-                        where: {
-                            voucherId_userId: {
-                                voucherId: order.voucherId,
-                                userId: order.userId,
-                            },
-                        },
-                    });
-
-                if (
-                    userUsage &&
-                    userUsage.usageCount > 0
-                ) {
-                    await tx.voucherUserUsage.update({
-                        where: {
-                            id: userUsage.id,
-                        },
-                        data: {
-                            usageCount: {
-                                decrement: 1,
-                            },
-                        },
-                    });
-                }            }
-
-            /*
-             * ==========================================
-             * RESTORE SPIN WHEEL REWARD
-             * ==========================================
-             *
-             * If the order had a spin wheel reward applied,
-             * restore it to AVAILABLE so the user can reuse it.
-             */
-
-            const spinRecord =
-                await tx.spinWheelSpin.findUnique({
-                    where: { orderId: order.id },
-                });
-
-            if (spinRecord) {
-                await tx.spinWheelSpin.update({
-                    where: { id: spinRecord.id },
+                await tx.order.update({
+                    where: {
+                        id: order.id,
+                    },
                     data: {
-                        status: "AVAILABLE",
-                        usedAt: null,
-                        orderId: null,
+                        status: "CANCELLED",
+                        paymentStatus: "FAILED",
                     },
                 });
-            }
 
-            /*
-             * ==========================================
-             * CANCEL ORDER
-             * ==========================================
-             */
+                /*
+                 * AFFILIATE COMMISSION CANCELLATION:
+                 * Cancel commission when checkout rollback.
+                 */
+                const { cancelCommissionForOrder } =
+                    await import("@/lib/affiliate/cancel-commission");
+                await cancelCommissionForOrder(
+                    tx,
+                    order.id,
+                    "ORDER_PAYMENT_FAILED"
+                );
 
-            await tx.order.update({
-                where: {
-                    id: order.id,
-                },
-                data: {
-                    status: "CANCELLED",
-                    paymentStatus: "FAILED",
-                },
-            });
-
-            /*
-             * AFFILIATE COMMISSION CANCELLATION:
-             * Cancel commission when checkout rollback.
-             */
-            const { cancelCommissionForOrder } =
-                await import("@/lib/affiliate/cancel-commission");
-            await cancelCommissionForOrder(
-                tx,
-                order.id,
-                "ORDER_PAYMENT_FAILED"
-            );
-        },
-        {
-            timeout: 15000,
-
-            maxWait: 10000,
-        }
-    );
+    /*
+     * Reached only when the CAS above actually transitioned the
+     * order, i.e. every reservation has just been released exactly
+     * once.
+     */
+    return true;
 }
 
 /*
@@ -2994,7 +3607,12 @@ export async function rollbackCheckoutOrder(
  */
 
 export async function cancelOwnPendingOrder(
-    userId: string,
+    /**
+     * Session user id. NULL means the caller is a GUEST whose ownership
+     * of THIS order was already proven with a guest access token by the
+     * route (see authorizeOrderRequest) — so it is not an unowned order.
+     */
+    userId: string | null,
     orderId: number
 ): Promise<
     | { ok: true }
@@ -3005,10 +3623,9 @@ export async function cancelOwnPendingOrder(
      * their own order.
      */
     const order = await prisma.order.findFirst({
-        where: {
-            id: orderId,
-            userId,
-        },
+        where: userId
+            ? { id: orderId, userId }
+            : { id: orderId },
         select: {
             id: true,
             status: true,
@@ -3053,17 +3670,38 @@ export async function cancelOwnPendingOrder(
  */
 
 export async function clearCart(
-    userId: string,
+    scope:
+        | string
+        | {
+              userId?: string | null;
+              guestTokenHash?: string | null;
+          },
     orderId?: number
 ) {
+    /*
+     * Works for both cart scopes: a logged-in cart (userId) and an
+     * anonymous guest cart (hashed cookie token).
+     */
+    const where =
+        typeof scope === "string"
+            ? { userId: scope }
+            : scope.userId
+              ? { userId: scope.userId }
+              : scope.guestTokenHash
+                ? {
+                      guestTokenHash:
+                          scope.guestTokenHash,
+                  }
+                : null;
+
+    if (!where) {
+        return;
+    }
+
     const cart =
-        await prisma.cart.findUnique(
-            {
-                where: {
-                    userId,
-                },
-            }
-        );
+        await prisma.cart.findFirst({
+            where,
+        });
 
     if (!cart) {
         return;

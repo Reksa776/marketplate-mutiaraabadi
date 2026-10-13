@@ -22,12 +22,18 @@ export { getNotificationQueue } from "./queue";
 export {
     onOrderStatusChanged,
     onShipmentStatusChanged,
+    sendRawNotificationNow,
 } from "./order-status-handler";
+export {
+    isRawMessagePayload,
+} from "./types";
 export type {
     NotificationChannel,
     NotificationType,
+    NotificationPayload,
     NotificationStatus,
     OrderStatusChangedEvent,
+    RawMessageNotificationPayload,
     SendNotificationPayload,
     SendNotificationResult,
 } from "./types";

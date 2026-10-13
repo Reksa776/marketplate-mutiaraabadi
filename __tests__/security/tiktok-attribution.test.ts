@@ -579,8 +579,27 @@ describe("Customer request metadata boundary", () => {
 
         const request = new Request("https://shop.test/", {
             headers: {
+                "x-forwarded-for": "203.0.113.7",
+            },
+        });
+
+        expect(resolveClientIp(request)).toBe(
+            "203.0.113.7"
+        );
+    });
+
+    test("ignores a client-supplied x-forwarded-for prefix", () => {
+        process.env.TRUSTED_PROXY = "1";
+
+        /*
+         * The client fabricated `1.2.3.4`; our proxy appended the
+         * address it actually observed (203.0.113.7), which is the only
+         * trustworthy entry — and the value recorded for attribution.
+         */
+        const request = new Request("https://shop.test/", {
+            headers: {
                 "x-forwarded-for":
-                    "203.0.113.7, 10.0.0.1",
+                    "1.2.3.4, 203.0.113.7",
             },
         });
 

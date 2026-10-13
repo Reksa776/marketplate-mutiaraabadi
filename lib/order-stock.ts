@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { orderOwnerKey } from "@/lib/guest-identity";
 
 /* ==========================================
  * RELEASE STOCK + VOUCHER FOR ORDER
@@ -104,15 +105,25 @@ export async function releaseStockAndVoucherForOrder(
             data: { usedCount: { decrement: 1 } },
         });
 
-        // Decrement per-user usage
-        const userUsage = await tx.voucherUserUsage.findUnique({
-            where: {
-                voucherId_userId: {
-                    voucherId: order.voucherId,
-                    userId: order.userId,
-                },
-            },
-        });
+        /*
+         * Decrement per-scope usage.
+         *
+         * The scope is derived from the ORDER (userId for a logged-in
+         * buyer, hashed guest identity for a guest order), so release is
+         * always applied to the same bucket that consumed it.
+         */
+        const voucherScope = orderOwnerKey(order);
+
+        const userUsage = voucherScope
+            ? await tx.voucherUserUsage.findUnique({
+                  where: {
+                      voucherId_ownerKey: {
+                          voucherId: order.voucherId,
+                          ownerKey: voucherScope,
+                      },
+                  },
+              })
+            : null;
 
         if (userUsage && userUsage.usageCount > 0) {
             await tx.voucherUserUsage.update({

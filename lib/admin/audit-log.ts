@@ -42,6 +42,10 @@ export type AuditAction =
     | "ORDER_TRACKING_ASSIGNED"
     | "SHIPMENT_CREATED"
     | "SHIPMENT_PAID"
+    // High-risk COD orders are held for admin review; these record the
+    // decision that releases (or withholds) the shipment.
+    | "COD_REVIEW_APPROVED"
+    | "COD_REVIEW_REJECTED"
     // Provider explicitly deleted the shipment; local state was cleared
     // and intentionally NOT auto-recreated (system actor).
     | "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY"
