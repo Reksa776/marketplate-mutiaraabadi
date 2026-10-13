@@ -30,17 +30,43 @@ import type {
 type NotificationServiceOptions = {
     provider: NotificationProvider;
     channel: NotificationChannel;
+    /**
+     * Provider for `channel: "email"` payloads (the guest recovery OTP
+     * sent by mail). Optional: without it an email payload fails
+     * closed with CHANNEL_NOT_SUPPORTED instead of silently going out
+     * over the default (WhatsApp) transport.
+     */
+    emailProvider?: NotificationProvider;
 };
 
 export class NotificationService {
     private provider: NotificationProvider;
     private channel: NotificationChannel;
+    private emailProvider?: NotificationProvider;
 
     constructor(
         options: NotificationServiceOptions
     ) {
         this.provider = options.provider;
         this.channel = options.channel;
+        this.emailProvider = options.emailProvider;
+    }
+
+    /**
+     * Resolve the provider for a payload's CHANNEL.
+     *
+     * The channel is what decides the transport — never the caller's
+     * intent — so an "email" OTP can not accidentally leave through
+     * WhatsApp (or the reverse).
+     */
+    private providerFor(
+        channel: NotificationChannel
+    ): NotificationProvider | null {
+        if (channel === "email") {
+            return this.emailProvider ?? null;
+        }
+
+        return this.provider;
     }
 
     /**
@@ -362,15 +388,44 @@ export class NotificationService {
         console.log(
             `[NOTIFICATION] Processing | ` +
                 `ID: ${notificationId} | ` +
-                `Order: ${payload.orderNumber}`
+                `Order: ${payload.orderNumber} | ` +
+                `Channel: ${payload.channel}`
         );
+
+        /**
+         * ==========================================
+     * SELECT PROVIDER BY CHANNEL
+         * ==========================================
+         */
+        const provider = this.providerFor(
+            payload.channel
+        );
+
+        if (!provider) {
+            /*
+             * No transport for this channel → FAIL CLOSED. Never fall
+             * back to another channel: that would deliver an OTP over
+             * a medium the buyer did not choose (and may not own).
+             */
+            await this.markFailed(
+                notificationId,
+                "CHANNEL_NOT_SUPPORTED",
+                `Provider tidak tersedia untuk channel ${payload.channel}`
+            );
+
+            return {
+                success: false,
+                errorCode: "CHANNEL_NOT_SUPPORTED",
+                errorMessage: `Provider tidak tersedia untuk channel ${payload.channel}`,
+            };
+        }
 
         /**
          * ==========================================
      * VALIDATE PROVIDER
          * ==========================================
          */
-        if (!this.provider.isConfigured()) {
+        if (!provider.isConfigured()) {
             await this.markFailed(
                 notificationId,
                 "PROVIDER_NOT_CONFIGURED",
@@ -390,8 +445,7 @@ export class NotificationService {
      * SEND VIA PROVIDER
          * ==========================================
          */
-        const result =
-            await this.provider.send(payload);
+        const result = await provider.send(payload);
 
         if (result.success) {
             /**

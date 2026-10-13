@@ -35,6 +35,17 @@ import {
  *   - the order number (printed on the confirmation page), AND
  *   - a contact detail captured at checkout (email OR phone).
  *
+ * DELIVERY CHANNEL
+ * ----------------
+ * The buyer chooses where the code goes:
+ *   - "whatsapp" (default) → the checkout phone on the order, or
+ *   - "email"              → the checkout email on the order, which
+ *                            additionally requires the EMAIL factor to
+ *                            match (a phone-only match may not open an
+ *                            email delivery).
+ * The recipient is always read from the ORDER, never from the request
+ * body, so the code can only reach a contact the buyer already used.
+ *
  * WHY THIS IS ONLY PHASE 1
  * ------------------------
  * Order number + contact is KNOWLEDGE, not proof of ownership: both sit
@@ -50,8 +61,8 @@ import {
  *    endpoint is not an order-existence oracle.
  *  - Rate limited per IP AND per hashed identity, so neither one IP nor
  *    one buyer's contact can grind order numbers.
- *  - FAIL CLOSED: if the code cannot be handed to the WhatsApp
- *    provider, the request fails and the challenge is burned — no
+ *  - FAIL CLOSED: if the code cannot be handed to the provider for the
+ *    chosen channel, the request fails and the challenge is burned — no
  *    undelivered code is ever usable.
  *  - Raw contact values and identity hashes are NEVER returned, and the
  *    code itself never appears in a response or a log line.
@@ -67,6 +78,15 @@ const recoverSchema = z.object({
     /* At least one contact detail is required. */
     email: z.string().trim().max(191).optional(),
     phone: z.string().trim().max(32).optional(),
+
+    /*
+     * Where the code should be sent. Optional so an older client keeps
+     * the original WhatsApp behaviour.
+     */
+    channel: z
+        .enum(["email", "whatsapp"])
+        .optional()
+        .default("whatsapp"),
 });
 
 export async function POST(request: Request) {
@@ -176,7 +196,14 @@ export async function POST(request: Request) {
             orderNumber: parsed.data.orderNumber,
             email,
             phone,
+            channel: parsed.data.channel,
         });
+
+        /* Copy that names the channel the buyer actually chose. */
+        const channelLabel =
+            parsed.data.channel === "email"
+                ? "email"
+                : "WhatsApp";
 
         if (!result.ok) {
             /*
@@ -220,8 +247,7 @@ export async function POST(request: Request) {
             return NextResponse.json(
                 {
                     success: false,
-                    message:
-                        "Kode verifikasi gagal dikirim ke WhatsApp. Coba lagi beberapa saat lagi.",
+                    message: `Kode verifikasi gagal dikirim ke ${channelLabel}. Coba lagi beberapa saat lagi.`,
                 },
                 { status: 502 }
             );
@@ -230,9 +256,12 @@ export async function POST(request: Request) {
         return NextResponse.json({
             success: true,
             message:
-                "Kode verifikasi telah dikirim ke nomor WhatsApp yang terdaftar pada pesanan.",
+                parsed.data.channel === "email"
+                    ? "Kode verifikasi telah dikirim ke email yang terdaftar pada pesanan."
+                    : "Kode verifikasi telah dikirim ke nomor WhatsApp yang terdaftar pada pesanan.",
             data: {
                 challengeId: result.challengeId,
+                channel: parsed.data.channel,
                 expiresInSeconds: Math.round(
                     RECOVERY_CODE_TTL_MS / 1000
                 ),

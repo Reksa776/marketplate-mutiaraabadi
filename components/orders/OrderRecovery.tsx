@@ -15,33 +15,60 @@ import toast from "react-hot-toast";
  * restores access in TWO steps:
  *
  *   1. order number + the email/phone used at checkout → the server
- *      sends a one-time code to the phone on the order, and
+ *      sends a one-time code to the contact on the order, over the
+ *      channel the buyer picked (Email or WhatsApp), and
  *   2. the code (plus the same contact, kept in component state so the
  *      buyer never retypes it) → the server mints a fresh access token
  *      into an httpOnly cookie and the list reloads.
  *
  * The token is never issued before the code verifies, so this form can
  * never hand an order to someone who merely knows the order number.
+ *
+ * The channel is only a CHOICE OF TRANSPORT: the email option always
+ * mails the address stored on the order (never the typed one), and
+ * both options share the same code, expiry and attempt rules.
  */
+
+/** Where the one-time code is delivered. */
+type RecoveryChannel = "email" | "whatsapp";
+
 export default function OrderRecovery() {
     const [orderNumber, setOrderNumber] =
         useState("");
     const [contact, setContact] = useState("");
     const [code, setCode] = useState("");
+    const [channel, setChannel] =
+        useState<RecoveryChannel>("whatsapp");
     const [challengeId, setChallengeId] =
         useState<string | null>(null);
+    /*
+     * The channel the ACTIVE challenge was sent over — kept separately
+     * from the selector so the phase-2 copy can never describe a
+     * different transport than the one the code actually used.
+     */
+    const [sentChannel, setSentChannel] =
+        useState<RecoveryChannel>("whatsapp");
     const [loading, setLoading] =
         useState(false);
 
+    const isEmailChannel = channel === "email";
+
     /*
-     * One field accepts either contact type: an "@" means email,
-     * anything else is treated as a phone number. Both are normalized
-     * again — and bound to the challenge — on the server.
+     * For the email channel the field is an email, full stop.
+     *
+     * On WhatsApp the single field keeps its original dual meaning: an
+     * "@" means email, anything else is treated as a phone number. Both
+     * are normalized again — and bound to the challenge — on the
+     * server.
      */
     function contactPayload() {
-        const isEmail = contact.includes("@");
+        if (isEmailChannel) {
+            return { email: contact.trim() };
+        }
 
-        return isEmail
+        const looksLikeEmail = contact.includes("@");
+
+        return looksLikeEmail
             ? { email: contact.trim() }
             : { phone: contact.trim() };
     }
@@ -53,7 +80,22 @@ export default function OrderRecovery() {
 
         if (!orderNumber.trim() || !contact.trim()) {
             toast.error(
-                "Isi nomor pesanan dan email atau nomor telepon."
+                isEmailChannel
+                    ? "Isi nomor pesanan dan email."
+                    : "Isi nomor pesanan dan email atau nomor telepon."
+            );
+
+            return;
+        }
+
+        if (
+            isEmailChannel &&
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+                contact.trim()
+            )
+        ) {
+            toast.error(
+                "Masukkan alamat email yang valid."
             );
 
             return;
@@ -73,6 +115,7 @@ export default function OrderRecovery() {
                     body: JSON.stringify({
                         orderNumber:
                             orderNumber.trim(),
+                        channel,
                         ...contactPayload(),
                     }),
                 }
@@ -101,6 +144,7 @@ export default function OrderRecovery() {
             }
 
             setChallengeId(nextChallengeId);
+            setSentChannel(channel);
             setCode("");
 
             toast.success(
@@ -202,12 +246,57 @@ export default function OrderRecovery() {
             {!challengeId ? (
                 <>
                     <p className="mt-1.5 text-xs leading-5 text-gray-500">
-                        Masukkan nomor pesanan dan email
-                        atau nomor telepon yang Anda
-                        gunakan saat checkout. Kami akan
-                        mengirim kode verifikasi ke nomor
-                        WhatsApp pada pesanan tersebut.
+                        Masukkan nomor pesanan dan kontak
+                        yang Anda gunakan saat checkout.
+                        {isEmailChannel
+                            ? " Kami akan mengirim kode verifikasi ke email pada pesanan tersebut."
+                            : " Kami akan mengirim kode verifikasi ke nomor WhatsApp pada pesanan tersebut."}
                     </p>
+
+                    {/*
+                     * Transport selector. Both options run the SAME
+                     * challenge flow — this only decides where the
+                     * code is delivered.
+                     */}
+                    <div
+                        role="group"
+                        aria-label="Pilih metode pengiriman kode"
+                        className="mt-3 flex flex-wrap gap-2"
+                    >
+                        <button
+                            type="button"
+                            aria-pressed={isEmailChannel}
+                            disabled={loading}
+                            onClick={() => {
+                                setChannel("email");
+                                setContact("");
+                            }}
+                            className={`h-9 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-60 ${
+                                isEmailChannel
+                                    ? "border-gray-900 bg-gray-900 text-white"
+                                    : "border-gray-300 bg-white text-gray-600 hover:border-gray-500"
+                            }`}
+                        >
+                            Pulihkan via Email
+                        </button>
+
+                        <button
+                            type="button"
+                            aria-pressed={!isEmailChannel}
+                            disabled={loading}
+                            onClick={() => {
+                                setChannel("whatsapp");
+                                setContact("");
+                            }}
+                            className={`h-9 rounded-lg border px-3 text-xs font-semibold transition disabled:opacity-60 ${
+                                !isEmailChannel
+                                    ? "border-gray-900 bg-gray-900 text-white"
+                                    : "border-gray-300 bg-white text-gray-600 hover:border-gray-500"
+                            }`}
+                        >
+                            Pulihkan via WhatsApp
+                        </button>
+                    </div>
 
                     <form
                         onSubmit={requestCode}
@@ -234,7 +323,9 @@ export default function OrderRecovery() {
 
                         <label className="block">
                             <span className="text-xs font-medium text-gray-600">
-                                Email atau nomor telepon
+                                {isEmailChannel
+                                    ? "Email"
+                                    : "Email atau nomor telepon"}
                             </span>
 
                             <input
@@ -245,7 +336,16 @@ export default function OrderRecovery() {
                                             .value
                                     )
                                 }
-                                placeholder="nama@email.com / 0812..."
+                                type={
+                                    isEmailChannel
+                                        ? "email"
+                                        : "text"
+                                }
+                                placeholder={
+                                    isEmailChannel
+                                        ? "nama@email.com"
+                                        : "nama@email.com / 0812..."
+                                }
                                 autoComplete="off"
                                 className="mt-1 h-10 w-full rounded-lg border border-gray-300 px-3 text-sm text-gray-800 outline-none transition focus:border-gray-500"
                             />
@@ -266,7 +366,10 @@ export default function OrderRecovery() {
                 <>
                     <p className="mt-1.5 text-xs leading-5 text-gray-500">
                         Kami mengirim kode 6 digit ke
-                        nomor WhatsApp pada pesanan{" "}
+                        {sentChannel === "email"
+                            ? " email"
+                            : " nomor WhatsApp"}{" "}
+                        pada pesanan{" "}
                         <span className="font-semibold text-gray-700">
                             {orderNumber.trim()}
                         </span>

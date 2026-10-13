@@ -22,6 +22,7 @@ import { prisma } from "@/lib/prisma";
 import { shipmentStatusToEventKey } from "@/lib/mengantar/status";
 import { NotificationService } from "./service";
 import { MockNotificationProvider } from "./mock-provider";
+import { EmailNotificationProvider } from "./email-provider";
 import { getNotificationQueue } from "./queue";
 import type { OrderStatusChangedEvent } from "./types";
 import type { SendNotificationPayload } from "./types";
@@ -75,6 +76,38 @@ async function createProvider(): Promise<NotificationProvider> {
 }
 
 /**
+ * Lazily create the provider for the EMAIL channel.
+ *
+ * Selection mirrors the WhatsApp branch, with one twist: when
+ * NOTIFICATION_PROVIDER=mock (the development default) the email
+ * channel is mocked as well, so local runs and the E2E harness never
+ * touch a real mailbox. With any real provider selected, the email
+ * channel uses EmailNotificationProvider — and if the SMTP mailbox is
+ * not provisioned, `isConfigured()` is false and the send FAILS
+ * CLOSED (never a silent success).
+ *
+ * EmailNotificationProvider itself is safe to import statically: it
+ * reaches nodemailer only through a dynamic import() in lib/mailer.ts,
+ * so the SMTP client stays out of the static dependency graph.
+ */
+async function createEmailProvider(): Promise<NotificationProvider> {
+    const providerType =
+        process.env.NOTIFICATION_PROVIDER || "mock";
+
+    if (providerType === "mock") {
+        console.log(
+            "[NOTIFICATION] Using MockNotificationProvider (email channel)"
+        );
+        return new MockNotificationProvider();
+    }
+
+    console.log(
+        "[NOTIFICATION] Using EmailNotificationProvider"
+    );
+    return new EmailNotificationProvider();
+}
+
+/**
  * Initialize the singleton NotificationService.
  *
  * Uses async provider creation to support
@@ -83,10 +116,13 @@ async function createProvider(): Promise<NotificationProvider> {
 async function initializeService(): Promise<NotificationService> {
     if (!notificationService) {
         const provider = await createProvider();
+        const emailProvider =
+            await createEmailProvider();
 
         notificationService = new NotificationService({
             provider,
             channel: "whatsapp",
+            emailProvider,
         });
     }
 

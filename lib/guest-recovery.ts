@@ -38,8 +38,25 @@ import { sendRawNotificationNow } from "@/lib/notification/order-status-handler"
  * checkout. Both must match the order. That alone is NOT ownership —
  * both values are things an attacker who read an old confirmation
  * email could hold — so it only ever results in a ONE-TIME CODE being
- * sent to the phone number captured on the order. NO access token is
+ * sent to a contact captured on the order. NO access token is
  * rotated, issued or revealed at this point.
+ *
+ * ----------------------------------------------------------------
+ * DELIVERY CHANNEL
+ * ----------------------------------------------------------------
+ * The code can go out over either channel, and the buyer chooses:
+ *
+ *   "whatsapp" (default) — to the checkout phone on the order.
+ *   "email"             — to the checkout EMAIL on the order. This
+ *                          channel additionally requires the email
+ *                          factor itself to match (a phone-only match
+ *                          may not open an email delivery), and the
+ *                          recipient is always the address STORED ON
+ *                          THE ORDER, never one typed into the form.
+ *
+ * Both channels share one challenge model: same code, same hashing,
+ * same TTL, same attempt limit, same single-use redemption, same
+ * contact binding and the same burn-on-delivery-failure rule.
  *
  * ----------------------------------------------------------------
  * PHASE 2 — CONFIRM   (confirmGuestRecovery)
@@ -76,10 +93,26 @@ export const RECOVERY_CODE_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the challenge is burned. */
 export const RECOVERY_CODE_MAX_ATTEMPTS = 5;
 
+/** TTL in whole minutes, as quoted in the message copy. */
+const RECOVERY_TTL_MINUTES = Math.round(
+    RECOVERY_CODE_TTL_MS / 60000
+);
+
 /** Digits in the OTP. */
 export const RECOVERY_CODE_LENGTH = 6;
 
-const RECOVERY_CHANNEL = "whatsapp" as const;
+/**
+ * How the one-time code reaches the buyer. Both are transports for the
+ * SAME challenge model — only the delivery endpoint differs.
+ */
+export type RecoveryChannel = "whatsapp" | "email";
+
+/**
+ * WhatsApp remains the default, so an unchanged caller (and any older
+ * client) keeps the exact behaviour it had before email existed.
+ */
+export const DEFAULT_RECOVERY_CHANNEL: RecoveryChannel =
+    "whatsapp";
 
 export type StartRecoveryResult =
     | { ok: true; challengeId: string }
@@ -117,7 +150,16 @@ export async function startGuestRecovery(input: {
     orderNumber: string;
     email?: unknown;
     phone?: unknown;
+    /** Delivery channel; defaults to WhatsApp. */
+    channel?: RecoveryChannel;
 }): Promise<StartRecoveryResult> {
+    /*
+     * Normalized once, so an unknown/absent value can only ever fall
+     * back to the original WhatsApp behaviour.
+     */
+    const channel: RecoveryChannel =
+        input.channel === "email" ? "email" : "whatsapp";
+
     const order = await findOrderBySecondFactor({
         orderNumber: input.orderNumber,
         email: input.email,
@@ -143,25 +185,13 @@ export async function startGuestRecovery(input: {
     }
 
     /*
-     * The delivery phone is the checkout phone stored on the order —
-     * never a value supplied by the caller. Without one there is no
-     * channel to prove ownership over, so recovery must not proceed.
+     * The delivery endpoints are the contacts STORED ON THE ORDER —
+     * never values supplied by the caller. Without one for the chosen
+     * channel there is nothing to prove ownership over, so recovery
+     * must not proceed.
      */
     const deliveryPhone = normalizePhone(order.phone);
-
-    if (!deliveryPhone) {
-        /*
-         * No channel to prove ownership over → fail closed, exactly as
-         * for a delivery failure. Never fall back to handing out a
-         * token on contact knowledge alone.
-         */
-        console.error(
-            "[GUEST RECOVERY] Order has no usable delivery phone | order:",
-            order.orderNumber
-        );
-
-        return { ok: false, reason: "DELIVERY_FAILED" };
-    }
+    const storedEmail = normalizeEmail(order.customerEmail);
 
     /*
      * Which checkout contact did the buyer actually match on? Recorded
@@ -172,13 +202,61 @@ export async function startGuestRecovery(input: {
     const phone = normalizePhone(input.phone);
 
     const matchedEmail = Boolean(
-        email && order.customerEmail && email === normalizeEmail(order.customerEmail)
+        email &&
+            storedEmail &&
+            email === storedEmail
     );
-    const matchedPhone = Boolean(phone && phone === deliveryPhone);
+    const matchedPhone = Boolean(
+        phone && phone === deliveryPhone
+    );
 
     if (!matchedEmail && !matchedPhone) {
         /* Unreachable via findOrderBySecondFactor — fail closed anyway. */
         return { ok: false, reason: "NOT_FOUND" };
+    }
+
+    /*
+     * ==========================================
+     * CHANNEL-SPECIFIC RECIPIENT
+     * ==========================================
+     *
+     * The recipient is DERIVED FROM THE ORDER, so "email penerima harus
+     * cocok dengan email yang tersimpan pada order" holds by
+     * construction rather than by trusting the form.
+     *
+     * The email channel is additionally gated on the EMAIL factor
+     * having matched: knowing the phone (or the order number) must not
+     * be enough to make the server mail a code out. A caller that
+     * cannot prove the email gets the same uniform NOT_FOUND as a
+     * wrong order number, so this is not an email-existence oracle.
+     */
+    let recipient: string | null;
+
+    if (channel === "email") {
+        if (!matchedEmail) {
+            return { ok: false, reason: "NOT_FOUND" };
+        }
+
+        recipient = storedEmail;
+    } else {
+        recipient = deliveryPhone;
+    }
+
+    if (!recipient) {
+        /*
+         * No usable endpoint for this channel → FAIL CLOSED, exactly as
+         * for a delivery failure. Never fall back to another channel:
+         * the code must only travel where the buyer asked, and never
+         * hand out a token on contact knowledge alone.
+         */
+        console.error(
+            "[GUEST RECOVERY] Order has no usable delivery contact | order:",
+            order.orderNumber,
+            "| channel:",
+            channel
+        );
+
+        return { ok: false, reason: "DELIVERY_FAILED" };
     }
 
     const challengeId = crypto.randomUUID();
@@ -208,7 +286,8 @@ export async function startGuestRecovery(input: {
                 id: challengeId,
                 orderId: order.id,
                 orderNumber: order.orderNumber,
-                channel: RECOVERY_CHANNEL,
+                /** Transport used for this challenge's code. */
+                channel,
                 contactChannel: matchedEmail
                     ? "email"
                     : "phone",
@@ -228,24 +307,31 @@ export async function startGuestRecovery(input: {
     });
 
     /*
-     * Deliver through the EXISTING WhatsApp notification pipeline
-     * (same provider selection, same Notification table), but
+     * Deliver through the EXISTING notification pipeline (same provider
+     * selection, same Notification table, now channel-aware), but
      * SYNCHRONOUSLY: the buyer must be told the truth about whether a
      * code was actually sent, and an undelivered code must never look
      * like a usable one.
      */
     const delivery = await sendRawNotificationNow({
         orderId: order.id,
-        channel: RECOVERY_CHANNEL,
+        channel,
         notificationType: "GUEST_RECOVERY_OTP",
-        recipient: deliveryPhone,
+        /* Order-derived for the chosen channel (see above). */
+        recipient,
         orderNumber: order.orderNumber,
         /* One key per challenge: a re-request is a new message. */
         idempotencyKey: `notif_recovery_otp_${challengeId}`,
-        rawMessage: buildRecoveryMessage({
-            code,
-            orderNumber: order.orderNumber,
-        }),
+        rawMessage:
+            channel === "email"
+                ? buildRecoveryEmail({
+                      code,
+                      orderNumber: order.orderNumber,
+                  })
+                : buildRecoveryMessage({
+                      code,
+                      orderNumber: order.orderNumber,
+                  }),
     });
 
     if (!delivery.success) {
@@ -266,6 +352,8 @@ export async function startGuestRecovery(input: {
         console.error(
             "[GUEST RECOVERY] OTP delivery failed | order:",
             order.orderNumber,
+            "| channel:",
+            channel,
             "| code:",
             delivery.errorCode ?? "UNKNOWN"
         );
@@ -286,6 +374,8 @@ export async function startGuestRecovery(input: {
         order.orderNumber,
         "| challenge:",
         challengeId,
+        "| channel:",
+        channel,
         "| expires:",
         expiresAt.toISOString()
     );
@@ -510,9 +600,7 @@ function buildRecoveryMessage(input: {
     code: string;
     orderNumber: string;
 }): string {
-    const minutes = Math.round(
-        RECOVERY_CODE_TTL_MS / 60000
-    );
+    const minutes = RECOVERY_TTL_MINUTES;
 
     return [
         "*Kode Verifikasi Akses Pesanan*",
@@ -523,5 +611,32 @@ function buildRecoveryMessage(input: {
         `Kode berlaku ${minutes} menit dan hanya dapat dipakai sekali.`,
         "",
         "Jika Anda tidak meminta kode ini, abaikan pesan ini. Jangan bagikan kode kepada siapa pun, termasuk yang mengaku sebagai tim kami.",
+    ].join("\n");
+}
+
+/**
+ * The EMAIL body (plain text; the provider renders the HTML part).
+ *
+ * Same single-use / expiry warning as WhatsApp, without the messaging
+ * markdown. The code is the only sensitive part and this string is
+ * handed straight to the mailer — never logged or persisted.
+ */
+function buildRecoveryEmail(input: {
+    code: string;
+    orderNumber: string;
+}): string {
+    const minutes = RECOVERY_TTL_MINUTES;
+
+    return [
+        "Kode Verifikasi Akses Pesanan",
+        "",
+        `Kode: ${input.code}`,
+        "",
+        `Pesanan: ${input.orderNumber}`,
+        `Kode berlaku ${minutes} menit dan hanya dapat dipakai sekali.`,
+        "",
+        "Jika Anda tidak meminta kode ini, abaikan email ini. Jangan bagikan kode kepada siapa pun, termasuk yang mengaku sebagai tim kami.",
+        "",
+        "Email ini dikirim otomatis. Mohon tidak membalas.",
     ].join("\n");
 }
