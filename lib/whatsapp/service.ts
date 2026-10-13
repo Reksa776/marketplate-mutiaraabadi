@@ -34,6 +34,8 @@ import makeWASocket, {
     Browsers,
     WASocket,
     ConnectionState,
+    WAMessage,
+    MessageUpsertType,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import path from "path";
@@ -336,6 +338,25 @@ class WhatsAppService {
 
             this.socket.ev.on("creds.update", saveCreds);
 
+            /*
+             * ==========================================
+             * INCOMING MESSAGES → AUTO-REPLY BOT
+             * ==========================================
+             *
+             * Registered on the SAME socket as every other listener
+             * above, so the bot shares this exact session (auth dir,
+             * reconnect logic, lifecycle) — there is no second socket
+             * and no second QR session.
+             *
+             * This handler never throws into the emitter: the inbound
+             * pipeline reports its own failures internally, and a
+             * broken/down bot degrades to "no reply", never to a
+             * disturbed WhatsApp session.
+             */
+            this.socket.ev.on("messages.upsert", (event) => {
+                this.handleIncomingMessages(event);
+            });
+
             this.initializing = false;
 
             console.log("[WHATSAPP] Connecting...");
@@ -354,6 +375,42 @@ class WhatsAppService {
 
             console.error("[WHATSAPP] Initialization error:", error);
         }
+    }
+
+    // ==========================================
+    // HANDLE INCOMING MESSAGES (AUTO-REPLY)
+    // ==========================================
+    //
+    // Delegates to the inbound pipeline through a DYNAMIC import for the
+    // same reason the notification provider does: Baileys must stay out
+    // of the static graph, and the bot must never be able to break the
+    // session by failing to load.
+    //
+    // Both upsert types are forwarded. "append" carries messages that
+    // were queued while the session was down (e.g. a PM2 reload), and
+    // the pipeline drops anything older than its freshness window, so
+    // history replay is filtered there rather than silently lost here.
+
+    private handleIncomingMessages(event: {
+        messages?: WAMessage[];
+        type?: MessageUpsertType;
+    }): void {
+        const messages = event?.messages;
+
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return;
+        }
+
+        void import("./inbound/handler")
+            .then(({ handleIncomingMessages }) =>
+                handleIncomingMessages(messages)
+            )
+            .catch((error) => {
+                console.error(
+                    "[WHATSAPP] Auto-reply handler unavailable:",
+                    error instanceof Error ? error.message : error
+                );
+            });
     }
 
     // ==========================================

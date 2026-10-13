@@ -49,6 +49,11 @@ export type AuditAction =
     // Provider explicitly deleted the shipment; local state was cleared
     // and intentionally NOT auto-recreated (system actor).
     | "MENGANTAR_SHIPMENT_DELETED_EXTERNALLY"
+    // WhatsApp auto-reply bot handed a chat over to a human admin.
+    // These rows ARE the "Menunggu Admin" inbox on /admin/whatsapp —
+    // deliberately the whole handoff mechanism (no separate ticket
+    // system), and they never carry the customer's message content.
+    | "WHATSAPP_HANDOFF"
     // Refund
     | "REFUND_REQUESTED"
     | "REFUND_APPROVED"
@@ -72,7 +77,10 @@ export type EntityType =
     | "Order"
     | "Refund"
     | "StoreSetting"
-    | "System";
+    | "System"
+    // A WhatsApp chat with no order bound (the customer asked for a
+    // human before identifying an order). Only a MASKED label is kept.
+    | "WhatsAppChat";
 
 interface AuditLogParams {
     adminId: string;

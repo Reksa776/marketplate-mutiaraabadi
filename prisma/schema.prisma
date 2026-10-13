@@ -498,6 +498,105 @@ model ShipmentJob {
   @@map("shipmentjob")
 }
 
+// ============================================================
+// WhatsApp auto-reply bot — CONVERSATION STATE (ONE ROW PER CHAT)
+// ============================================================
+//
+// The bot answers customers on the SAME Baileys session the admin
+// linked by QR. That conversation needs a little memory, and it must
+// survive a process restart / PM2 reload — otherwise a handoff (bot
+// paused for a human admin) would silently re-enable itself after
+// every deploy and a duplicate inbound message could be answered
+// twice.
+//
+// DELIBERATELY NOT MEMORY-ONLY, AND DELIBERATELY NOT A TICKET SYSTEM:
+//   * one row per chat (chatId = the sender JID),
+//   * DISPOSABLE — no order/user relation and no foreign key, so a
+//     stale row can never block (or cascade into) order data,
+//   * every window is an explicit timestamp, so nothing depends on
+//     wall-clock-free "sessions".
+//
+// state        → IDLE | MENU | AWAITING_ORDER | VERIFIED_TRACKING |
+//                VERIFIED_DELIVERED | HANDOFF
+// verifiedOrderId → order the chat is BOUND to. Only ever set after the
+//                sender's WhatsApp number matched that order's checkout
+//                phone (see lib/whatsapp/inbound/identity.ts).
+// pendingIntent → TRACK | STATUS — which service the customer asked for
+//                BEFORE the order number arrived.
+// pauseUntil   → HANDOFF window: the bot stays silent until this time.
+// blockedUntil → temporary lockout after repeated FAILED order bindings.
+// replyCount / windowStartedAt → per-chat reply budget (anti-flood).
+//
+// NOTHING SENSITIVE IS STORED HERE: no message body, no token, no
+// address. Only control state and counters.
+model WhatsAppChatState {
+  id     Int    @id @default(autoincrement())
+  /// Sender JID, e.g. "6281234567890@s.whatsapp.net".
+  chatId String @unique
+
+  state           String    @default("IDLE")
+  verifiedOrderId Int?
+  verifiedAt      DateTime?
+  pendingIntent   String?
+
+  pauseUntil DateTime?
+
+  blockedUntil       DateTime?
+  failedBindAttempts Int       @default(0)
+
+  replyCount      Int       @default(0)
+  windowStartedAt DateTime?
+
+  lastActivityAt DateTime  @default(now())
+  lastReplyAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([pauseUntil])
+  @@index([lastActivityAt])
+  @@map("whatsapp_chat_state")
+}
+
+// ============================================================
+// WhatsApp auto-reply bot — INBOUND MESSAGE DEDUPE
+// ============================================================
+//
+// WhatsApp re-delivers messages: Baileys replays a batch after a
+// reconnect, and a process restart can re-emit a message that was
+// already handled. `messageId` (Baileys `key.id`) is the idempotency
+// key, and it is claimed BEFORE any reply is sent so one message can
+// never produce two replies.
+//
+// TWO-PHASE ON PURPOSE (status is what makes this safe):
+//   PROCESSING → claimed, reply in flight
+//   DONE       → reply accepted by the provider; a re-delivery is
+//                ignored
+//   FAILED     → claiming/replying broke. A re-delivery IS allowed to
+//                try again, so a message is never lost permanently
+//                just because its id was already recorded. A FAILED
+//                row past `maxAttempts` is marked DONE (give up) so a
+//                permanently broken message cannot loop forever.
+//
+// Rows are disposable: cleanup is opportunistic (no cron needed).
+model WhatsAppInboundMessage {
+  id        Int    @id @default(autoincrement())
+  /// Baileys `key.id` — the idempotency key.
+  messageId String @unique
+  chatId    String
+
+  /// PROCESSING | DONE | FAILED
+  status      String    @default("PROCESSING")
+  attempts    Int       @default(1)
+  lastError   String?   @db.Text
+  receivedAt  DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  processedAt DateTime?
+
+  @@index([receivedAt])
+  @@index([status, receivedAt])
+  @@map("whatsapp_inbound_message")
+}
+
 model StoreSetting {
   id        Int     @id @default(1)
   storeName String

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
 // ==========================================
@@ -25,9 +25,42 @@ type StatusData = {
 };
 
 // ==========================================
+// HANDOFF INBOX TYPES
+// ==========================================
+
+type HandoffItem = {
+    id: number;
+    orderNumber: string | null;
+    /** Masked chat label written at handoff time (never a raw number). */
+    chat: string | null;
+    reason: string | null;
+    createdAt: string;
+};
+
+// ==========================================
 // POLLING INTERVAL
 // ==========================================
 const POLL_INTERVAL_MS = 1500;
+
+/**
+ * The handoff inbox hits the database, so it is polled far more slowly
+ * than the session status above.
+ */
+const HANDOFF_POLL_INTERVAL_MS = 10000;
+
+function formatHandoffTime(iso: string): string {
+    try {
+        return new Date(iso).toLocaleString("id-ID", {
+            timeZone: "Asia/Jakarta",
+            day: "numeric",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+    } catch {
+        return iso;
+    }
+}
 
 // ==========================================
 // COMPONENT
@@ -38,6 +71,8 @@ export default function WhatsAppDashboard() {
     const [qr, setQr] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [handoffs, setHandoffs] = useState<HandoffItem[]>([]);
+    const [handoffsError, setHandoffsError] = useState<string | null>(null);
 
     // ==========================================
     // FETCH STATUS
@@ -86,6 +121,26 @@ export default function WhatsAppDashboard() {
     }, []);
 
     // ==========================================
+    // FETCH HANDOFFS (WAITING FOR A HUMAN ADMIN)
+    // ==========================================
+    const fetchHandoffs = useCallback(async () => {
+        try {
+            const res = await fetch("/api/admin/whatsapp/handoffs", {
+                credentials: "include",
+                cache: "no-store",
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                setHandoffs(data.data ?? []);
+                setHandoffsError(null);
+            }
+        } catch {
+            setHandoffsError("Gagal memuat daftar handoff.");
+        }
+    }, []);
+
+    // ==========================================
     // DERIVED STATE (before refs/hooks that use it)
     // ==========================================
     const currentStatus = status?.status || "DISCONNECTED";
@@ -96,21 +151,43 @@ export default function WhatsAppDashboard() {
     // ==========================================
     // POLLING LOOP
     // ==========================================
-    const statusRef = useRef(currentStatus);
-    statusRef.current = currentStatus;
-
     useEffect(() => {
-        // Initial fetch
-        fetchStatus();
-        fetchQr();
+        /*
+         * Polling subscription. The initial fetch is scheduled on a
+         * timer rather than called directly in the effect body, so this
+         * effect only ever sets state from a callback (no synchronous
+         * setState during render/commit).
+         */
+        const initial = setTimeout(() => {
+            fetchStatus();
+            fetchQr();
+        }, 0);
 
         const interval = setInterval(() => {
             fetchStatus();
             fetchQr();
         }, POLL_INTERVAL_MS);
 
-        return () => clearInterval(interval);
+        return () => {
+            clearTimeout(initial);
+            clearInterval(interval);
+        };
     }, [fetchStatus, fetchQr]);
+
+    useEffect(() => {
+        // Same subscription shape as the status polling above.
+        const initial = setTimeout(fetchHandoffs, 0);
+
+        const interval = setInterval(
+            fetchHandoffs,
+            HANDOFF_POLL_INTERVAL_MS
+        );
+
+        return () => {
+            clearTimeout(initial);
+            clearInterval(interval);
+        };
+    }, [fetchHandoffs]);
 
     // ==========================================
     // CONNECT
@@ -331,6 +408,66 @@ export default function WhatsAppDashboard() {
                             </button>
                         )}
                     </div>
+                </div>
+
+                {/* ==========================================
+                    MENUNGGU ADMIN (HANDOFF INBOX)
+                    ========================================== */}
+                <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+                    <div className="mb-4 flex items-center justify-between">
+                        <h2 className="text-base font-semibold text-gray-900">
+                            Menunggu Admin
+                        </h2>
+                        <span className="inline-flex items-center rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700">
+                            {handoffs.length}
+                        </span>
+                    </div>
+
+                    {handoffsError && (
+                        <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">
+                            {handoffsError}
+                        </div>
+                    )}
+
+                    {handoffs.length === 0 ? (
+                        <p className="text-sm text-gray-500">
+                            Tidak ada chat yang menunggu admin.
+                        </p>
+                    ) : (
+                        <ul className="space-y-3">
+                            {handoffs.map((handoff) => (
+                                <li
+                                    key={handoff.id}
+                                    className="rounded-xl border border-gray-100 bg-gray-50 p-3"
+                                >
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm font-medium text-gray-900">
+                                            {handoff.orderNumber ??
+                                                "Tanpa nomor pesanan"}
+                                        </span>
+                                        <span className="text-xs text-gray-500">
+                                            {formatHandoffTime(
+                                                handoff.createdAt
+                                            )}
+                                        </span>
+                                    </div>
+                                    <div className="mt-1 text-xs text-gray-600">
+                                        Chat: {handoff.chat ?? "-"} ·{" "}
+                                        {handoff.reason === "COMPLAINT"
+                                            ? "Kendala pesanan"
+                                            : "Minta bantuan admin"}
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+
+                    <p className="mt-4 text-xs text-gray-500">
+                        Balas langsung dari aplikasi WhatsApp pada nomor
+                        yang terhubung. Balasan otomatis berhenti untuk
+                        chat tersebut selama 2 jam, atau sampai customer
+                        mengetik <em>menu</em>.
+                    </p>
                 </div>
             </div>
         </div>
