@@ -21,7 +21,13 @@
  *     status written inside that draft is deliberately IGNORED: it is a
  *     snapshot from the moment the customer pressed the button, not the
  *     order's current state.
+ *   * An interactive BUTTON TAP is classified here too, from its stable
+ *     id (see ./interactive), so a tap and the equivalent typed digit
+ *     produce ONE identical intent — the tap is never a parallel,
+ *     less-guarded path into the flow.
  */
+
+import { digitFromButton } from "./interactive";
 
 /** Menu keys the bot accepts. */
 export type MenuDigit = "0" | "1" | "2" | "3";
@@ -61,6 +67,12 @@ export type ParsedInbound = {
     confirmDraft: boolean;
     /** True when the message carried no readable text at all. */
     nonText: boolean;
+    /**
+     * True when a DIGIT came from an interactive BUTTON TAP rather than
+     * from typed text. The decision is identical either way; this only
+     * records which interface the customer used.
+     */
+    viaButton?: boolean;
 };
 
 /** Words that EXPLICITLY ask for the menu (they re-arm after a handoff). */
@@ -361,19 +373,43 @@ export function readDraftOrderNumber(
  *
  * Precedence is fixed here and nowhere else:
  *
- *   1. confirmation draft   (an explicit, structured message)
- *   2. a bare order number  (an explicit lookup request)
- *   3. a single menu key
- *   4. menu / cancel keywords
- *   5. complaint routing
- *   6. anything else
+ *   1. a button tap        (an explicit, machine-identified selection)
+ *   2. confirmation draft   (an explicit, structured message)
+ *   3. a bare order number  (an explicit lookup request)
+ *   4. a single menu key
+ *   5. menu / cancel keywords
+ *   6. complaint routing
+ *   7. anything else
  *
  * Menu keys are checked AFTER the draft/number so a customer who pastes
  * an order number that happens to end in "1" is not read as "menu 1".
+ *
+ * A button tap is checked FIRST because the id is unambiguous: it is a
+ * value we generated, not something the customer typed. An id we do not
+ * recognize is not guessed at — it falls through to the text rules.
  */
 export function parseInboundMessage(
-    text: string | null
+    text: string | null,
+    buttonId?: string | null
 ): ParsedInbound {
+    /*
+     * `digitFromButton` maps an ID (or an echoed label) — not an
+     * envelope. Reading a tap OFF a message is `readButtonDigit` in
+     * ./interactive, which the handler uses for that.
+     */
+    const buttonDigit = digitFromButton(buttonId);
+
+    if (buttonDigit) {
+        return {
+            command: "DIGIT",
+            digit: buttonDigit,
+            confirmDraft: false,
+            explicitMenu: false,
+            nonText: false,
+            viaButton: true,
+        };
+    }
+
     if (text === null || text === undefined) {
         return {
             command: "OTHER",

@@ -15,11 +15,23 @@
  *                            reply is a `fromMe` message, which is what
  *                            keeps the bot from interrupting a human)
  *   3. age filter        — replayed history is never answered
- *   4. intent parsing    — pure text classification
+ *   4. intent parsing    — pure text classification, PLUS an interactive
+ *                          button tap mapped by its stable id onto the
+ *                          SAME digit the customer could have typed
  *   5. dedupe claim      — BEFORE any reply, keyed by message id
  *   6. decision          — state machine + order lookup
- *   7. send              — through the existing singleton service
+ *   7. send              — plain text, and (only when explicitly
+ *                          enabled) an interactive menu as an ADDITION
  *   8. persist           — state only after the provider ACCEPTED it
+ *
+ * INTERACTIVE BUTTONS ARE ADDITIVE AND OFF BY DEFAULT
+ *
+ *   Baileys 7.x has no supported send-side API for interactive
+ *   messages, so buttons are attempted only when
+ *   WHATSAPP_INTERACTIVE_BUTTONS is explicitly enabled, and the
+ *   numbered text menu is still the interface: every menu message
+ *   carries the full numbered list, and a refused/failed interactive
+ *   send silently degrades to that text.
  *
  * FAIL-CLOSED POSTURE
  *
@@ -53,6 +65,7 @@ import {
     type MenuDigit,
     type ParsedInbound,
 } from "./parse";
+import * as interactive from "./interactive";
 import * as menu from "./menu";
 import {
     buildHistoryReply,
@@ -113,6 +126,18 @@ export type SendResult = {
  */
 export type BotDeps = {
     send: (jid: string, text: string) => Promise<SendResult>;
+    /**
+     * OPTIONAL interactive (native flow) sender.
+     *
+     * Absent → the pipeline simply never attempts a button, which is the
+     * default posture. Present → it is used only when the feature flag is
+     * explicitly enabled, and any non-success answer falls back to
+     * `send`.
+     */
+    sendInteractive?: (
+        jid: string,
+        content: interactive.WhatsAppInteractiveContent
+    ) => Promise<SendResult>;
     now: () => Date;
     loadTracking: (
         order: Parameters<typeof loadTrackingView>[0],
@@ -141,6 +166,16 @@ const defaultDeps: BotDeps = {
         );
 
         return getWhatsAppService().sendMessage(jid, text);
+    },
+    async sendInteractive(jid, content) {
+        const { getWhatsAppService } = await import(
+            "@/lib/whatsapp/service"
+        );
+
+        return getWhatsAppService().sendInteractiveMessage(
+            jid,
+            content
+        );
     },
     now: () => new Date(),
     loadTracking: (order, options) =>
@@ -284,7 +319,13 @@ export async function handleIncomingMessage(
 
     /* ---- 4. intent ---- */
     const parsed = parseInboundMessage(
-        extractText(envelope?.message)
+        extractText(envelope?.message),
+        /*
+         * A tap carries the id WE generated, so it is read from the
+         * envelope and mapped onto the identical menu digit — the click
+         * is not a second, less-guarded way into the flow.
+         */
+        interactive.readButtonId(envelope?.message)
     );
 
     /* ---- 5. dedupe claim (before any reply) ---- */
@@ -405,7 +446,11 @@ async function process(input: {
         return "SUPPRESSED";
     }
 
-    const sent = await deps.send(chatId, decision.reply);
+    const sent = await deliver({
+        deps,
+        chatId,
+        reply: decision.reply,
+    });
 
     if (!sent?.success) {
         /*
@@ -441,6 +486,60 @@ async function process(input: {
     }
 
     return "REPLIED";
+}
+
+/* ==========================================
+ * DELIVERY (TEXT ALWAYS, BUTTONS OPTIONALLY)
+ * ========================================== */
+
+/**
+ * Deliver one reply through the existing singleton session.
+ *
+ * The numbered text is ALWAYS the customer's safety net, so:
+ *
+ *   flag off                          → plain text (default),
+ *   flag on + accepted               → interactive menu (whose body IS
+ *                                       the complete numbered text),
+ *   flag on + refused/failed/absent  → plain text.
+ *
+ * An interactive attempt is never retried and never throws: a button
+ * WhatsApp refuses must not become a repeated message in the chat, and
+ * must not fail the inbound message (the customer still gets the menu).
+ */
+async function deliver(input: {
+    deps: BotDeps;
+    chatId: string;
+    reply: string;
+}): Promise<SendResult> {
+    const { deps, chatId, reply } = input;
+
+    const menu = interactive.menuKindForReply(reply);
+
+    if (
+        menu &&
+        deps.sendInteractive &&
+        interactive.isInteractiveButtonsEnabled()
+    ) {
+        let attempt: SendResult | null = null;
+
+        try {
+            attempt = await deps.sendInteractive(
+                chatId,
+                interactive.buildInteractiveContent({
+                    menu,
+                    bodyText: reply,
+                })
+            );
+        } catch (error) {
+            logInfraError(error);
+        }
+
+        if (attempt?.success) {
+            return attempt;
+        }
+    }
+
+    return deps.send(chatId, reply);
 }
 
 /* ==========================================

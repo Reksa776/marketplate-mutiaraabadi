@@ -36,10 +36,14 @@ import makeWASocket, {
     ConnectionState,
     WAMessage,
     MessageUpsertType,
+    generateWAMessageFromContent,
+    proto,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
 import path from "path";
 import fs from "fs";
+
+import type { WhatsAppInteractiveContent } from "./inbound/interactive";
 
 // ==========================================
 // TYPES
@@ -67,6 +71,18 @@ export type SendMessageResult = {
     messageId?: string;
     errorCode?: string;
     errorMessage?: string;
+};
+
+/**
+ * How an interactive send ended.
+ *
+ * `UNSUPPORTED` is a first-class outcome, not a failure to hide: Baileys
+ * 7.x cannot build an interactive message itself, so the caller MUST keep
+ * the numbered text menu as the real interface.
+ */
+export type SendInteractiveResult = SendMessageResult & {
+    /** True only when WhatsApp accepted the interactive message. */
+    interactive?: boolean;
 };
 
 // ==========================================
@@ -254,6 +270,84 @@ class WhatsAppService {
                 errorCode: "SEND_FAILED",
                 errorMessage:
                     error instanceof Error ? error.message : "Send failed",
+            };
+        }
+    }
+
+    // ==========================================
+    // SEND INTERACTIVE MESSAGE (OPT-IN, BEST EFFORT)
+    // ==========================================
+    //
+    // Sends an `interactiveMessage` (native flow buttons) over the SAME
+    // socket as every other send — `relayMessage` is used because
+    // Baileys' own `sendMessage` has no supported way to express an
+    // interactive message.
+    //
+    // A rejection here is EXPECTED behaviour, not an incident: the
+    // greeting/customer pipeline treats a non-success result as "use the
+    // numbered text menu" and never retries the interactive form.
+
+    async sendInteractiveMessage(
+        jid: string,
+        content: WhatsAppInteractiveContent
+    ): Promise<SendInteractiveResult> {
+        if (this.status !== "CONNECTED") {
+            return {
+                success: false,
+                interactive: false,
+                errorCode: "NOT_CONNECTED",
+                errorMessage: `WhatsApp is ${this.status.toLowerCase()}`,
+            };
+        }
+
+        if (!this.socket) {
+            return {
+                success: false,
+                interactive: false,
+                errorCode: "NO_SOCKET",
+                errorMessage: "Socket not available",
+            };
+        }
+
+        try {
+            /*
+             * The cast is structural, not a widening escape hatch: the
+             * payload above mirrors `proto.Message.InteractiveMessage`
+             * field for field, but proto marks every member optional
+             * (`T | null`), which our literal builder does not.
+             */
+            const generated = generateWAMessageFromContent(
+                jid,
+                content as unknown as proto.IMessage,
+                { userJid: jid }
+            );
+
+            const message = generated?.message;
+            const messageId = generated?.key?.id ?? undefined;
+
+            if (!message) {
+                return {
+                    success: false,
+                    interactive: false,
+                    errorCode: "INTERACTIVE_BUILD_FAILED",
+                    errorMessage: "Interactive message could not be built",
+                };
+            }
+
+            await this.socket.relayMessage(jid, message, {
+                ...(messageId ? { messageId } : {}),
+            });
+
+            return { success: true, interactive: true, messageId };
+        } catch (error) {
+            return {
+                success: false,
+                interactive: false,
+                errorCode: "INTERACTIVE_SEND_FAILED",
+                errorMessage:
+                    error instanceof Error
+                        ? error.message
+                        : "Interactive send failed",
             };
         }
     }

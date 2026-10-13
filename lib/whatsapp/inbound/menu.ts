@@ -9,8 +9,11 @@
  * DESIGN RULES
  *
  *   * Plain text only. Baileys 7.x has no supported send-side API for
- *     interactive buttons (see the review report), so the numbered menu
- *     IS the interface — never a fallback that "should" be buttons.
+ *     interactive buttons, so the numbered text menu IS the interface.
+ *     The opt-in native-flow buttons in ./interactive are attached as an
+ *     ADDITION (only when explicitly enabled) and their payload body is
+ *     this very text — so the numbered menu remains complete and usable
+ *     even when WhatsApp draws no button at all.
  *   * No URL, token, OTP, order id or any other credential. A customer
  *     asking for their order is pointed at the website, never handed a
  *     link that carries access material.
