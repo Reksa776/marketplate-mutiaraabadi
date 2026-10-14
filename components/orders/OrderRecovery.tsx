@@ -32,9 +32,23 @@ import toast from "react-hot-toast";
 /** Where the one-time code is delivered. */
 type RecoveryChannel = "email" | "whatsapp";
 
-export default function OrderRecovery() {
+type Props = {
+    /**
+     * Prefill for the order-number field.
+     *
+     * Used by the public tracking page (`/lacak`), where the bot already
+     * put the order number in the link. It is ONLY a convenience: nothing
+     * is unlocked by it — the two-phase OTP below still has to verify
+     * against the contact stored on the order.
+     */
+    defaultOrderNumber?: string;
+};
+
+export default function OrderRecovery({
+    defaultOrderNumber = "",
+}: Props = {}) {
     const [orderNumber, setOrderNumber] =
-        useState("");
+        useState(defaultOrderNumber);
     const [contact, setContact] = useState("");
     const [code, setCode] = useState("");
     const [channel, setChannel] =

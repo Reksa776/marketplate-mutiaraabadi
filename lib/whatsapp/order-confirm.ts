@@ -130,6 +130,62 @@ export function buildOrderConfirmMessage(input: {
 }
 
 /**
+ * The draft a customer sends when they need HELP WITH A PROBLEM, from
+ * the tracking page (see app/lacak).
+ *
+ * Deliberately minimal: only the order number, which the customer is
+ * already looking at on that page (and which the chat flow already
+ * carries).
+ *
+ * No name, status, address, phone, email, token or payment reference is
+ * added: a `wa.me` url is readable by the receiving app, lands in browser
+ * history and can be forwarded, so it is treated as public and carries
+ * nothing that would be new exposure.
+ */
+export function buildOrderProblemMessage(input: {
+    orderNumber: string;
+}): string {
+    const orderNumber = sanitizeConfirmField(
+        input.orderNumber,
+        WHATSAPP_CONFIRM_MAX_ORDER_NUMBER
+    );
+
+    return [
+        "Halo Admin, saya butuh bantuan untuk pesanan saya.",
+        "",
+        `Nomor Pesanan: ${orderNumber || "-"}`,
+        "",
+        "Mohon dibantu pengecekannya. Terima kasih.",
+    ].join("\n");
+}
+
+/**
+ * Problem-report variant of the hand-off link. Same destination rules as
+ * the confirmation link: the number must already be a normalized
+ * international number or the caller gets null instead of a link.
+ */
+export function buildWhatsAppProblemUrl(input: {
+    adminPhoneNumber: string | null | undefined;
+    orderNumber: string;
+}): string | null {
+    const phoneNumber = (
+        input.adminPhoneNumber ?? ""
+    ).trim();
+
+    if (!isWaMeCompatibleNumber(phoneNumber)) {
+        return null;
+    }
+
+    const message = buildOrderProblemMessage({
+        orderNumber: input.orderNumber,
+    });
+
+    return `${WHATSAPP_ME_BASE_URL}/${phoneNumber}?text=${encodeURIComponent(
+        message
+    )}`;
+}
+
+/**
  * `wa.me` accepts only the international form WITHOUT "+", spaces or
  * dashes ("6281234567890") — exactly what `normalizePhone()` produces.
  * Anything else is refused: this is the last gate before a link is

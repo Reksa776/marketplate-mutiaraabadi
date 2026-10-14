@@ -31,6 +31,15 @@
 process.env.AUTH_SECRET =
     process.env.AUTH_SECRET || "whatsapp-interactive-test-secret";
 
+/*
+ * Same environment pin as whatsapp-autoreply.test.ts: this suite
+ * compares replies against `menu.*` builders called with no url, which
+ * is the documented text-only fallback. Jest shares `process.env`
+ * across test files in a worker, so the value is cleared here rather
+ * than depended on.
+ */
+delete process.env.NEXT_PUBLIC_APP_URL;
+
 /* ==========================================
  * IN-MEMORY PRISMA FAKE
  * ========================================== */

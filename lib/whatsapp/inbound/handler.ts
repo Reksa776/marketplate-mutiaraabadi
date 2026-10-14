@@ -17,7 +17,9 @@
  *   3. age filter        — replayed history is never answered
  *   4. intent parsing    — pure text classification, PLUS an interactive
  *                          button tap mapped by its stable id onto the
- *                          SAME digit the customer could have typed
+ *                          SAME digit the customer could have typed,
+ *                          PLUS the plain tracking words ("resi",
+ *                          "lacak", "tracking") mapped onto menu key 1
  *   5. dedupe claim      — BEFORE any reply, keyed by message id
  *   6. decision          — state machine + order lookup
  *   7. send              — plain text, and (only when explicitly
@@ -43,7 +45,10 @@
  *     customer is redirected to the website instead of being shown
  *     anything.
  *   * Tracking is READ-ONLY: no order/shipment field is ever written by
- *     this pipeline.
+ *     this pipeline. The official tracking page link (./tracking-url)
+ *     does not weaken that: it carries at most an order-number PREFILL
+ *     hint, and only on a path where this chat was already matched to
+ *     the order.
  *   * Nothing here throws to the Baileys emitter: every failure is
  *     caught, counted and (at most) logged with a short code — never
  *     with the customer's message body.
@@ -81,6 +86,7 @@ import {
 } from "./tracking";
 import * as chatState from "./state";
 import { CHAT_STATE } from "./state";
+import { buildOrderTrackingUrl } from "./tracking-url";
 
 /* ==========================================
  * ACTOR / LIMITS
@@ -143,6 +149,17 @@ export type BotDeps = {
         order: Parameters<typeof loadTrackingView>[0],
         options?: { useCache?: boolean }
     ) => Promise<TrackingView>;
+    /**
+     * Official tracking page link for a reply.
+     *
+     * Absent → the real builder (./tracking-url) is used, which returns
+     * null whenever no trustworthy origin is configured and then leaves
+     * every reply with its previous text-only wording. Callers pass an
+     * order number ONLY after `bindOrder` proved the sender owns it.
+     */
+    trackingUrl?: (
+        orderNumber?: string | null
+    ) => string | null;
     audit: typeof createAuditLog;
 };
 
@@ -180,8 +197,33 @@ const defaultDeps: BotDeps = {
     now: () => new Date(),
     loadTracking: (order, options) =>
         loadTrackingView(order, options),
+    trackingUrl: (orderNumber) =>
+        buildOrderTrackingUrl(orderNumber),
     audit: createAuditLog,
 };
+
+/**
+ * Resolve the tracking page link through the injected seam so tests can
+ * drive both the linked and the unlinked wording without touching the
+ * environment.
+ */
+function trackingLinkFor(
+    deps: BotDeps,
+    orderNumber?: string | null
+): string | null {
+    const resolve = deps.trackingUrl ?? buildOrderTrackingUrl;
+
+    try {
+        return resolve(orderNumber) ?? null;
+    } catch {
+        /*
+         * A link is a nice-to-have: if building it ever fails, the reply
+         * must still be sent (text-only) instead of dropping the
+         * customer's message.
+         */
+        return null;
+    }
+}
 
 /* ==========================================
  * THROTTLED INFRASTRUCTURE LOGGING
@@ -705,6 +747,19 @@ async function decide(
         });
     }
 
+    /* ---- Plain tracking words ("resi", "lacak", "tracking") ---- */
+    if (parsed.command === "TRACK") {
+        /*
+         * Identical to menu key "1": the same binding requirement, the
+         * same pending intent and the same reply builder. A typed word is
+         * therefore not a second, less-guarded route into tracking data.
+         *
+         * parse.ts classifies COMPLAINT before TRACK, so a problem report
+         * that happens to mention a resi still reaches a human.
+         */
+        return handleDigit(input, "1");
+    }
+
     /* ---- Everything else ---- */
     if (parsed.nonText) {
         return {
@@ -789,7 +844,12 @@ async function handleDigit(
             );
 
             return {
-                reply: buildHistoryReply(boundOrder, view),
+                reply: buildHistoryReply(boundOrder, view, {
+                    trackUrl: trackingLinkFor(
+                        input.deps,
+                        boundOrder.orderNumber
+                    ),
+                }),
                 patch: patchOf(resumePatch, {
                     state: CHAT_STATE.VERIFIED_DELIVERED,
                     verifiedOrderId: boundOrder.id,
@@ -844,7 +904,12 @@ async function handleDigit(
         }
 
         return {
-            reply: buildStatusReply(boundOrder),
+            reply: buildStatusReply(boundOrder, {
+                trackUrl: trackingLinkFor(
+                    input.deps,
+                    boundOrder.orderNumber
+                ),
+            }),
             patch: patchOf(resumePatch, {
                 state: state.state === CHAT_STATE.VERIFIED_DELIVERED
                     ? CHAT_STATE.VERIFIED_DELIVERED
@@ -865,7 +930,13 @@ function askForOrderNumber(
     intent: chatState.PendingIntent = "TRACK"
 ): Decision {
     return {
-        reply: menu.askOrderNumber(),
+        /*
+         * Nothing is verified for this chat yet, so the link is the BARE
+         * tracking page: no order number may be attached to it.
+         */
+        reply: menu.askOrderNumber(
+            trackingLinkFor(input.deps)
+        ),
         patch: patchOf(resumePatch, {
             state: CHAT_STATE.AWAITING_ORDER,
             pendingIntent: intent,
@@ -897,7 +968,12 @@ async function handleOrderNumber(
 
         if (intent === "STATUS") {
             return {
-                reply: buildStatusReply(bind.order),
+                reply: buildStatusReply(bind.order, {
+                    trackUrl: trackingLinkFor(
+                        input.deps,
+                        bind.order.orderNumber
+                    ),
+                }),
                 patch: patchOf(resumePatch, {
                     state: CHAT_STATE.VERIFIED_TRACKING,
                     verifiedOrderId: bind.order.id,
@@ -923,7 +999,9 @@ async function handleOrderNumber(
      */
     if (input.senderPhones.length === 0) {
         return {
-            reply: menu.unverifiableSender(),
+            reply: menu.unverifiableSender(
+                trackingLinkFor(input.deps)
+            ),
             patch: patchOf(resumePatch, {
                 state: CHAT_STATE.MENU,
                 pendingIntent: null,
@@ -941,7 +1019,14 @@ async function handleOrderNumber(
     }
 
     return {
-        reply: menu.orderNotFound(),
+        /*
+         * Ownership was NOT proven for the submitted order number, so the
+         * link stays bare: attaching that number to the page URL would
+         * turn the reply into a hint about somebody else's order.
+         */
+        reply: menu.orderNotFound(
+            trackingLinkFor(input.deps)
+        ),
         patch: patchOf(
             resumePatch,
             {
@@ -1010,7 +1095,12 @@ async function trackingDecision(
           });
 
     return {
-        reply: buildTrackingReply(order, view),
+        reply: buildTrackingReply(order, view, {
+            trackUrl: trackingLinkFor(
+                input.deps,
+                order.orderNumber
+            ),
+        }),
         patch: patchOf(resumePatch, {
             state:
                 isDelivered(order) ||

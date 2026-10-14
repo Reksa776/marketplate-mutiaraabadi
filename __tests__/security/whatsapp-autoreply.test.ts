@@ -32,6 +32,21 @@
 process.env.AUTH_SECRET =
     process.env.AUTH_SECRET || "whatsapp-autoreply-test-secret";
 
+/*
+ * PIN THE LINK FALLBACK.
+ *
+ * Several assertions below compare a reply against a `menu.*` builder
+ * called with NO url, which is exactly the documented behaviour when no
+ * storefront origin is configured. Jest does not reset `process.env`
+ * between test FILES in the same worker, so a suite that sets
+ * NEXT_PUBLIC_APP_URL could otherwise leak in here and make these
+ * assertions fail for a reason that has nothing to do with the code
+ * under test. Deleting it here pins the fallback (text only) on
+ * purpose — the linked wording is covered by
+ * whatsapp-tracking-link.test.ts.
+ */
+delete process.env.NEXT_PUBLIC_APP_URL;
+
 /* ==========================================
  * IN-MEMORY PRISMA FAKE
  * ========================================== */
@@ -298,6 +313,7 @@ import {
     TRACKING_UPDATE_UNAVAILABLE_NOTE,
     type TrackingView,
 } from "@/lib/whatsapp/inbound/tracking";
+import { resetTrackingUrlWarningThrottle } from "@/lib/whatsapp/inbound/tracking-url";
 
 const mockedMengantar =
     getMengantarOrderByTracking as unknown as jest.Mock;
@@ -2129,5 +2145,136 @@ describe("mengantar tracking reader", () => {
         );
         expect(view.trackingNumber).toBe("JNE999");
         expect(view.history).toEqual([]);
+    });
+});
+
+/* ==========================================
+ * 10. OFFICIAL TRACKING PAGE LINK
+ * ==========================================
+ *
+ * The bot's half of the WhatsApp → website hand-off. These are the only
+ * tests in this suite that enable an origin, and they pin the rule that
+ * decides whether a link may carry the order number.
+ */
+
+describe("the official tracking page link", () => {
+    const ORIGIN = "https://mutiaraabadisnack.com";
+    const BARE = `${ORIGIN}/lacak`;
+
+    beforeEach(() => {
+        process.env.NEXT_PUBLIC_APP_URL = ORIGIN;
+        resetTrackingUrlWarningThrottle();
+    });
+
+    afterEach(() => {
+        /*
+         * Never leak the origin into another suite: Jest shares
+         * process.env between test files in a worker.
+         */
+        delete process.env.NEXT_PUBLIC_APP_URL;
+        resetTrackingUrlWarningThrottle();
+    });
+
+    test("a phone-verified order gets a link prefilled with ITS number", async () => {
+        const { deps, sent } = makeDeps();
+
+        mockDb.orders.push(orderRow());
+
+        const result = await deliver(
+            waMessage({ id: "LINK-1", text: ORDER_NUMBER }),
+            deps
+        );
+
+        expect(result).toBe("REPLIED");
+        expect(sent[0].text).toContain(
+            `${BARE}?pesanan=${ORDER_NUMBER}`
+        );
+    });
+
+    test("an order the sender does NOT own never gets its number in a link", async () => {
+        const { deps, sent } = makeDeps();
+
+        mockDb.orders.push(
+            orderRow({ phone: "089999999999" })
+        );
+
+        const result = await deliver(
+            waMessage({ id: "LINK-2", text: ORDER_NUMBER }),
+            deps
+        );
+
+        expect(result).toBe("REPLIED");
+        expect(sent[0].text).toBe(menu.orderNotFound(BARE));
+        expect(sent[0].text).not.toContain("?pesanan=");
+        expect(sentTexts(sent)).not.toContain(ORDER_NUMBER);
+        expect(sentTexts(sent)).not.toContain("JNE1234567890");
+    });
+
+    test("a chat that cannot be phone-verified is pointed at the bare page", async () => {
+        const { deps, sent } = makeDeps();
+
+        const result = await deliver(
+            waMessage({
+                id: "LINK-3",
+                jid: "123456789012345@lid",
+                text: ORDER_NUMBER,
+            }),
+            deps
+        );
+
+        expect(result).toBe("REPLIED");
+        expect(sent[0].text).toBe(
+            menu.unverifiableSender(BARE)
+        );
+        expect(sent[0].text).not.toContain("?pesanan=");
+    });
+
+    test('typing "resi" reaches the tracking flow and the same link', async () => {
+        const { deps, sent } = makeDeps();
+
+        mockDb.orders.push(orderRow());
+        seedVerifiedState();
+
+        const result = await deliver(
+            waMessage({ id: "LINK-4", text: "resi" }),
+            deps
+        );
+
+        expect(result).toBe("REPLIED");
+        expect(sent[0].text).toContain(
+            "Nomor Resi: JNE1234567890"
+        );
+        expect(sent[0].text).toContain(
+            `${BARE}?pesanan=${ORDER_NUMBER}`
+        );
+    });
+
+    test("with no configured origin every reply stays text only", async () => {
+        delete process.env.NEXT_PUBLIC_APP_URL;
+
+        const { deps, sent } = makeDeps();
+
+        mockDb.orders.push(orderRow());
+
+        await deliver(
+            waMessage({ id: "LINK-5", text: ORDER_NUMBER }),
+            deps
+        );
+
+        expect(sent[0].text).not.toContain("http");
+    });
+
+    test("adding a link still never writes an order", async () => {
+        const { deps } = makeDeps();
+
+        mockDb.orders.push(orderRow());
+
+        await deliver(
+            waMessage({ id: "LINK-6", text: ORDER_NUMBER }),
+            deps
+        );
+
+        expect(prisma.order.update).not.toHaveBeenCalled();
+        expect(prisma.order.create).not.toHaveBeenCalled();
     });
 });

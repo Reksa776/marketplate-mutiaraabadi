@@ -83,6 +83,18 @@ export function getAppOrigin(request: NextRequest): string {
 }
 
 /**
+ * The hostnames this application considers its own.
+ *
+ * Exported so OTHER features that must point a customer at the official
+ * storefront — e.g. the WhatsApp auto-reply tracking link
+ * (lib/whatsapp/inbound/tracking-url.ts) — compare against the exact
+ * same list instead of growing a second, drifting copy.
+ */
+export function getAllowedAppHosts(): Set<string> {
+    return buildAllowedHosts();
+}
+
+/**
  * Build the set of allowed hostnames.
  *
  * Sources:

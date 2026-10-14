@@ -41,6 +41,12 @@ export type InboundCommand =
     | "DIGIT"
     /** An order number to look up (hint only) */
     | "ORDER_NUMBER"
+    /**
+     * The customer asked to track a parcel in words ("resi", "lacak",
+     * "tracking"). Equivalent to menu key "1" — same flow, same
+     * guards, no second path into the tracking data.
+     */
+    | "TRACK"
     /** Customer is reporting a problem / asking for a human */
     | "COMPLAINT"
     /** Anything else */
@@ -109,6 +115,27 @@ const GREETING_KEYWORDS = new Set([
 const MENU_KEYWORDS = new Set([
     ...EXPLICIT_MENU_KEYWORDS,
     ...GREETING_KEYWORDS,
+]);
+
+/**
+ * Words that ask to TRACK a parcel in plain language.
+ *
+ * Deliberately a closed list of short phrases (not a loose
+ * "contains" match) and deliberately checked AFTER the complaint rules:
+ * a customer writing "resi belum saya terima" is reporting a problem,
+ * and the human hand-off must win over the self-service answer.
+ */
+const TRACK_KEYWORDS = new Set([
+    "resi",
+    "cek resi",
+    "lacak",
+    "lacak resi",
+    "lacak paket",
+    "cek paket",
+    "posisi paket",
+    "status resi",
+    "tracking",
+    "track",
 ]);
 
 /** Words that leave the current flow. */
@@ -379,7 +406,12 @@ export function readDraftOrderNumber(
  *   4. a single menu key
  *   5. menu / cancel keywords
  *   6. complaint routing
- *   7. anything else
+ *   7. a tracking word      ("resi", "lacak", "tracking")
+ *   8. anything else
+ *
+ * The tracking word is LAST among the recognized intents on purpose: a
+ * problem report that happens to mention a resi must still reach a
+ * human (see the precedence requirement in TRACK_KEYWORDS).
  *
  * Menu keys are checked AFTER the draft/number so a customer who pastes
  * an order number that happens to end in "1" is not read as "menu 1".
@@ -456,7 +488,12 @@ export function parseInboundMessage(
             .replace(bareOrderNumber.toLowerCase(), "")
             .trim();
 
-        if (!remainder || isMenuOrCancelKeyword(remainder)) {
+        /*
+         * "resi ORD-…" is an order lookup too: the flow keywords are
+         * accepted as the remainder so the customer's parcel word is
+         * not read as an unknown command.
+         */
+        if (!remainder || isFlowKeyword(remainder)) {
             return {
                 command: "ORDER_NUMBER",
                 orderNumber: bareOrderNumber,
@@ -511,6 +548,15 @@ export function parseInboundMessage(
         };
     }
 
+    if (TRACK_KEYWORDS.has(normalized)) {
+        return {
+            command: "TRACK",
+            confirmDraft: false,
+            explicitMenu: false,
+            nonText: false,
+        };
+    }
+
     return {
         command: "OTHER",
         confirmDraft: false,
@@ -535,10 +581,11 @@ export function readMenuDigit(
     return null;
 }
 
-function isMenuOrCancelKeyword(normalized: string): boolean {
+function isFlowKeyword(normalized: string): boolean {
     return (
         MENU_KEYWORDS.has(normalized) ||
-        CANCEL_KEYWORDS.has(normalized)
+        CANCEL_KEYWORDS.has(normalized) ||
+        TRACK_KEYWORDS.has(normalized)
     );
 }
 

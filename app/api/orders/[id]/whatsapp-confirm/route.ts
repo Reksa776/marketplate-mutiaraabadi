@@ -5,6 +5,7 @@ import { authorizeOrderRequest } from "@/lib/guest-order-access";
 import { resolveAdminWhatsAppTarget } from "@/lib/whatsapp/admin-number";
 import {
     buildWhatsAppConfirmUrl,
+    buildWhatsAppProblemUrl,
     getOrderConfirmStatusLabel,
 } from "@/lib/whatsapp/order-confirm";
 
@@ -24,8 +25,10 @@ export const dynamic = "force-dynamic";
  *    order is indistinguishable from a missing one (404), so the
  *    sequential order id is not an enumeration oracle.
  *  - the destination number is taken ONLY from the connected session.
- *    The request's query string is never read, so a caller cannot point
- *    the link at an arbitrary number.
+ *    The sole query value read is `intent`, a fixed two-value enum that
+ *    only swaps the pre-filled DRAFT (`problem` = report a problem with
+ *    this order, anything else = the confirmation draft). A caller
+ *    therefore still cannot point the link at an arbitrary number.
  *  - only orderNumber / recipientName / status are selected, so no guest
  *    access token, OTP, email, phone, address or payment reference can
  *    reach the URL.
@@ -57,6 +60,17 @@ export async function GET(
                 { status: 400 }
             );
         }
+
+        /*
+         * `intent` is an enum, never a destination and never customer
+         * text: an unknown or hostile value falls back to the
+         * confirmation draft.
+         */
+        const intent =
+            new URL(request.url).searchParams.get("intent") ===
+            "problem"
+                ? "problem"
+                : "confirm";
 
         const access = await authorizeOrderRequest(
             request,
@@ -119,14 +133,24 @@ export async function GET(
             );
         }
 
-        const url = buildWhatsAppConfirmUrl({
-            adminPhoneNumber: target.phoneNumber,
-            orderNumber: order.orderNumber,
-            customerName: order.recipientName,
-            statusLabel: getOrderConfirmStatusLabel(
-                order.status
-            ),
-        });
+        const url =
+            intent === "problem"
+                ? /*
+                   * Minimal draft: the customer asked for help with a
+                   * problem, so only the order number is pre-filled.
+                   */
+                  buildWhatsAppProblemUrl({
+                      adminPhoneNumber: target.phoneNumber,
+                      orderNumber: order.orderNumber,
+                  })
+                : buildWhatsAppConfirmUrl({
+                      adminPhoneNumber: target.phoneNumber,
+                      orderNumber: order.orderNumber,
+                      customerName: order.recipientName,
+                      statusLabel: getOrderConfirmStatusLabel(
+                          order.status
+                      ),
+                  });
 
         /*
          * The resolver already validated the number, so a null here is

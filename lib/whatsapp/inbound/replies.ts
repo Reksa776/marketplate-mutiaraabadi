@@ -27,7 +27,10 @@
  */
 
 import type { TrackingView } from "./tracking";
-import { postDeliveryMenu } from "./menu";
+import {
+    postDeliveryMenu,
+    trackingLinkSection,
+} from "./menu";
 
 /**
  * The order fields the bot is allowed to read. Deliberately narrow: no
@@ -48,6 +51,20 @@ export type BotOrder = {
     trackingUrl: string | null;
     shipmentStatus: string | null;
     shippingPaymentStatus: string | null;
+};
+
+/**
+ * Optional official tracking page link.
+ *
+ * `trackUrl` is produced by ./tracking-url AFTER the sender's number was
+ * matched against the order (or without an order number on the
+ * unverified paths). When it is absent — no valid `NEXT_PUBLIC_APP_URL`,
+ * or an older caller — every builder below keeps its previous text-only
+ * output, including the in-chat history, so the fallback is never a
+ * downgrade for the customer.
+ */
+export type TrackingReplyOptions = {
+    trackUrl?: string | null;
 };
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
@@ -239,6 +256,40 @@ function historySection(
 }
 
 /**
+ * The provider-failure disclosure on its own (no history list).
+ *
+ * Shown whether or not a tracking page link exists: a failed provider
+ * read must always be admitted, never hidden.
+ */
+function providerNoteSection(
+    view: TrackingView | null
+): string[] {
+    return view?.note ? ["", `ℹ️ ${view.note}`] : [];
+}
+
+/**
+ * What every tracking answer ends with.
+ *
+ * The full manifest moved to the official tracking page (§ requirement
+ * "riwayat lengkap di website"), so:
+ *
+ *   link available   → provider note + link,
+ *   link unavailable → provider note + the previous in-chat history.
+ */
+function sharedTail(
+    view: TrackingView | null,
+    options: TrackingReplyOptions
+): string[] {
+    const link = trackingLinkSection(options.trackUrl);
+
+    return [
+        ...providerNoteSection(view),
+        ...(link.length > 0 ? [] : historySection(view)),
+        ...link,
+    ];
+}
+
+/**
  * ==========================================================
  * LACAK RESI
  * ==========================================================
@@ -249,7 +300,8 @@ function historySection(
  */
 export function buildTrackingReply(
     order: BotOrder,
-    view: TrackingView | null
+    view: TrackingView | null,
+    options: TrackingReplyOptions = {}
 ): string {
     const shipment = String(
         order.shipmentStatus ?? ""
@@ -270,6 +322,7 @@ export function buildTrackingReply(
             "Status: Pesanan Dibatalkan",
             "",
             "Pesanan ini sudah dibatalkan dan tidak memiliki pengiriman aktif.",
+            ...sharedTail(view, options),
             "",
             "Ketik 0 untuk kembali ke Menu Utama.",
         ].join("\n");
@@ -285,6 +338,7 @@ export function buildTrackingReply(
             "",
             "Data pengiriman pesanan ini tidak lagi tersedia. Silakan",
             "hubungi admin kami (ketik 3) untuk pengecekan lebih lanjut.",
+            ...sharedTail(view, options),
         ].join("\n");
     }
 
@@ -298,7 +352,7 @@ export function buildTrackingReply(
             "",
             "Ekspedisi menandai paket ini dikembalikan ke pengirim.",
             "Silakan hubungi admin kami (ketik 3) untuk tindak lanjut.",
-            ...historySection(view),
+            ...sharedTail(view, options),
         ].join("\n");
     }
 
@@ -312,7 +366,7 @@ export function buildTrackingReply(
             "",
             "Ekspedisi menandai paket ini gagal diantar.",
             "Silakan hubungi admin kami (ketik 3) agar dibantu penjadwalan ulang.",
-            ...historySection(view),
+            ...sharedTail(view, options),
         ].join("\n");
     }
 
@@ -325,7 +379,7 @@ export function buildTrackingReply(
             "Status: Terkirim",
             "",
             "Terima kasih sudah berbelanja di Mutiara Abadi! 🎉",
-            ...historySection(view),
+            ...sharedTail(view, options),
             "",
             postDeliveryMenu(),
         ].join("\n");
@@ -340,7 +394,7 @@ export function buildTrackingReply(
             "Status: Selesai",
             "",
             "Terima kasih sudah berbelanja di Mutiara Abadi! 🎉",
-            ...historySection(view),
+            ...sharedTail(view, options),
             "",
             postDeliveryMenu(),
         ].join("\n");
@@ -383,6 +437,7 @@ export function buildTrackingReply(
             "Status: Resi belum tersedia",
             "",
             reason,
+            ...sharedTail(view, options),
             "",
             "Ketik 2 untuk melihat status pesanan, atau 0 untuk Menu Utama.",
         ].join("\n");
@@ -399,7 +454,7 @@ export function buildTrackingReply(
         "",
         ...lines,
         `Status: ${statusLine}`,
-        ...historySection(view),
+        ...sharedTail(view, options),
         "",
         "Ketik 2 untuk melihat status pesanan, atau 0 untuk Menu Utama.",
     ].join("\n");
@@ -413,7 +468,10 @@ export function buildTrackingReply(
  * Three independent axes, always labelled separately so a successful
  * payment can never be read as "shipped".
  */
-export function buildStatusReply(order: BotOrder): string {
+export function buildStatusReply(
+    order: BotOrder,
+    options: TrackingReplyOptions = {}
+): string {
     const resi = order.trackingNumber;
     const courier =
         order.providerCourier ?? order.shippingCourier ?? null;
@@ -437,6 +495,12 @@ export function buildStatusReply(order: BotOrder): string {
         );
     }
 
+    const link = trackingLinkSection(options.trackUrl);
+
+    if (link.length > 0) {
+        lines.push(...link);
+    }
+
     lines.push(
         "",
         "Ketik 1 untuk melacak resi, atau 0 untuk Menu Utama."
@@ -449,12 +513,20 @@ export function buildStatusReply(order: BotOrder): string {
  * "1. Lihat Riwayat Pengiriman" — only called AFTER the customer asks
  * for it, so a finished shipment does not cost a provider call on every
  * unrelated message.
+ *
+ * With a tracking page link, the full manifest is NOT dumped into the
+ * chat any more: the customer receives the same identity + status lines
+ * plus the link (§ requirement "riwayat lengkap pindah ke website").
+ * Without a usable link the previous in-chat list is printed instead,
+ * so the fallback is never a downgrade.
  */
 export function buildHistoryReply(
     order: BotOrder,
-    view: TrackingView | null
+    view: TrackingView | null,
+    options: TrackingReplyOptions = {}
 ): string {
     const entries = view?.history ?? [];
+    const link = trackingLinkSection(options.trackUrl);
 
     const lines = [
         "🚚 RIWAYAT PENGIRIMAN",
@@ -467,7 +539,9 @@ export function buildHistoryReply(
         lines.push("", `ℹ️ ${view.note}`);
     }
 
-    if (entries.length === 0) {
+    if (link.length > 0) {
+        lines.push(...link);
+    } else if (entries.length === 0) {
         lines.push(
             "",
             view?.providerRead

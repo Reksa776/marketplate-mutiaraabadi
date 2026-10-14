@@ -14,9 +14,14 @@
  *     ADDITION (only when explicitly enabled) and their payload body is
  *     this very text — so the numbered menu remains complete and usable
  *     even when WhatsApp draws no button at all.
- *   * No URL, token, OTP, order id or any other credential. A customer
- *     asking for their order is pointed at the website, never handed a
- *     link that carries access material.
+ *   * A URL is allowed, a CREDENTIAL never is. The only link the bot may
+ *     send is the official tracking page on our own origin
+ *     (`/lacak`, built by ./tracking-url) — and it carries at most an
+ *     order-number PREFILL hint, which grants nothing on its own: the
+ *     page still needs the guest access token cookie or the two-phase
+ *     OTP recovery. No access token, OTP, cookie, hash, payment
+ *     reference, order id, phone number or address is ever put in a
+ *     message or in a link.
  *   * Indonesian, short lines, no internal jargon (no "shipmentStatus",
  *     no courier codes, no database ids).
  *   * Nothing here ever states a package has been received unless the
@@ -57,16 +62,61 @@ export function postDeliveryMenu(): string {
     return POST_DELIVERY_MENU_TEXT;
 }
 
+/* ==========================================
+ * OFFICIAL TRACKING PAGE LINK
+ * ==========================================
+ *
+ * The ONLY url this module will ever emit. `url` comes from
+ * ./tracking-url, which already refused anything that is not our own
+ * HTTPS origin, so an empty/absent value simply renders no section — the
+ * reply stays exactly as it was before the link existed.
+ */
+
+/** Label used next to the tracking page link. */
+export const TRACKING_LINK_LABEL =
+    "Lihat detail & riwayat lengkap di halaman tracking resmi:";
+
+/**
+ * Label used when the customer must first prove ownership on the page
+ * (no order is bound to this chat), so the wording must not promise an
+ * immediate result.
+ */
+export const TRACKING_RECOVERY_LINK_LABEL =
+    "Buka halaman tracking resmi (di sana kamu bisa memulihkan akses dengan kode verifikasi):";
+
+export function trackingLinkSection(
+    url?: string | null,
+    label: string = TRACKING_LINK_LABEL
+): string[] {
+    const value =
+        typeof url === "string" ? url.trim() : "";
+
+    if (!value) {
+        return [];
+    }
+
+    return ["", label, value];
+}
+
 /**
  * Asked when the customer picked a service but no order is bound yet.
  * Says nothing about whether any particular order exists.
+ *
+ * The link here is deliberately the BARE page: nothing has been verified
+ * for this chat, so no order number may be attached to it.
  */
-export function askOrderNumber(): string {
+export function askOrderNumber(
+    linkUrl?: string | null
+): string {
     return [
         "Baik, silakan kirim *nomor pesanan* kamu",
         "(contoh: ORD-1234567890-ab12cd34).",
         "",
         "Nomor pesanan ada di halaman pesanan atau pesan konfirmasi dari kami.",
+        ...trackingLinkSection(
+            linkUrl,
+            TRACKING_RECOVERY_LINK_LABEL
+        ),
         "",
         "Ketik 0 untuk kembali ke Menu Utama.",
     ].join("\n");
@@ -78,13 +128,19 @@ export function askOrderNumber(): string {
  * The two cases are indistinguishable on purpose: replying differently
  * would turn this menu into an order-number oracle.
  */
-export function orderNotFound(): string {
+export function orderNotFound(
+    linkUrl?: string | null
+): string {
     return [
         "Mohon maaf, kami tidak menemukan pesanan dengan nomor tersebut",
         "untuk nomor WhatsApp ini.",
         "",
         "Pastikan nomor pesanan sudah benar, atau gunakan nomor WhatsApp",
         "yang kamu pakai saat memesan.",
+        ...trackingLinkSection(
+            linkUrl,
+            TRACKING_RECOVERY_LINK_LABEL
+        ),
         "",
         "Ketik 0 untuk kembali ke Menu Utama.",
     ].join("\n");
@@ -107,12 +163,18 @@ export function tooManyAttempts(): string {
  * FAIL-CLOSED answer when the sender's phone number cannot be derived
  * (LID addressing) — no order data of any kind is released.
  */
-export function unverifiableSender(): string {
+export function unverifiableSender(
+    linkUrl?: string | null
+): string {
     return [
         "Mohon maaf, kami belum bisa memverifikasi pesanan dari chat ini.",
         "",
         "Silakan buka website Mutiara Abadi, lalu gunakan menu pemulihan",
         "pesanan (kode verifikasi) untuk melihat pesanan kamu.",
+        ...trackingLinkSection(
+            linkUrl,
+            TRACKING_RECOVERY_LINK_LABEL
+        ),
         "",
         "Ketik 3 jika ingin dibantu admin kami.",
     ].join("\n");
