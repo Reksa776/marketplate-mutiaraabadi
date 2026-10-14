@@ -497,6 +497,17 @@ export async function POST(
  *  - Guest            → ONLY the orders this browser holds a valid
  *                       access token for (verified against the stored
  *                       hash). There is no way to enumerate orders.
+ *
+ * PRIVACY: the projection is an explicit ALLOWLIST of the fields the
+ * order card renders. Address, phone, recipient name, e-mail, payment
+ * instruction (VA / QRIS payload) and every token/identity column are
+ * deliberately absent, so a customer list can never expose personal data
+ * the card does not need — and a field added to the model later cannot
+ * leak in by itself.
+ *
+ * NOTE: this list is NOT a search surface. Recovery or knowing a phone
+ * number never widens it; each order still has to carry its own valid
+ * guest access cookie (see lib/guest-order-access.ts).
  */
 export async function GET() {
     try {
@@ -537,15 +548,26 @@ export async function GET() {
                             "desc",
                     },
 
-                    include: {
-                        voucher: {
-                            select: {
-                                id: true,
-                                code: true,
-                                type: true,
-                                value: true,
-                            },
-                        },
+                    select: {
+                        id: true,
+                        orderNumber: true,
+                        createdAt: true,
+
+                        status: true,
+                        paymentStatus: true,
+                        paymentMethod: true,
+
+                        subtotal: true,
+                        shippingCost: true,
+                        total: true,
+
+                        /* Shipment facts the order card shows. */
+                        shippingProvider: true,
+                        providerCourier: true,
+                        shippingCourier: true,
+                        shippingService: true,
+                        trackingNumber: true,
+                        shipmentStatus: true,
 
                         items: {
                             take: 1,

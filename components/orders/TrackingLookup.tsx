@@ -19,17 +19,24 @@
  *      (zero friction for the customer who ordered on this phone).
  *   3. No match → the SAME two-phase OTP recovery the order history page
  *      uses, pre-filled with the order number. Nothing is unlocked until
- *      the code sent to the checkout contact verifies.
+ *      the code sent to the checkout contact verifies — and once it
+ *      does, the buyer is AUTOMATICALLY sent on to the existing order
+ *      detail route for that order. The redirect carries the order id
+ *      only: the OTP, the guest token, the email and the phone number
+ *      stay out of the URL, and access keeps travelling in the httpOnly
+ *      cookie.
  *
  * No order data is fetched, cached or rendered before step 2/3 resolves.
  */
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { FiPackage } from "react-icons/fi";
 
 import OrderRecovery from "./OrderRecovery";
 import ShipmentTrackingPanel from "./ShipmentTrackingPanel";
 import { findAccessibleOrder } from "@/lib/tracking/tracking-page";
+import { orderDetailPath } from "@/lib/guest-order-navigation";
 
 type Props = {
     /** Sanitized `?pesanan=` prefill hint from the page. */
@@ -44,6 +51,8 @@ type ResolvedState =
 export default function TrackingLookup({
     initialOrderNumber,
 }: Props) {
+    const router = useRouter();
+
     /*
      * Without a hint there is nothing to resolve, so no request is made
      * at all: the customer types the order number in the recovery form.
@@ -174,6 +183,20 @@ export default function TrackingLookup({
                 defaultOrderNumber={
                     initialOrderNumber ?? ""
                 }
+                /*
+                 * The code verified and the cookie was proven to unlock
+                 * the order (OrderRecovery does that check before
+                 * calling this). Send the buyer straight to the detail
+                 * page; `replace` keeps the OTP form out of the history
+                 * so a Back tap cannot land on it again.
+                 */
+                onRecovered={(order) => {
+                    const path = orderDetailPath(order.id);
+
+                    if (path) {
+                        router.replace(path);
+                    }
+                }}
             />
         </div>
     );

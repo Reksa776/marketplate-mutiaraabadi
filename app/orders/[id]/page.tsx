@@ -569,7 +569,40 @@ export default function OrderDetailPage() {
                     </div>
 
                     {/* ACTION BUTTONS */}
+
+                    {/*
+                     * NAVIGATION OUT OF THIS ORDER
+                     *
+                     * BOTH destinations are ordinary routes that authorize
+                     * PER REQUEST, never from anything carried in the
+                     * link:
+                     *   * "Lihat Semua Pesanan Saya" → /orders lists ONLY
+                     *     the orders this browser holds a valid guest
+                     *     access cookie for, so recovering ONE order with
+                     *     an OTP does not hand over every order that
+                     *     shares the buyer's phone number.
+                     *   * "Lacak Pesanan Lain" → /lacak, the public
+                     *     tracking surface.
+                     * No token, e-mail, phone number or order number is
+                     * placed in either href.
+                     */}
                     <div className="mt-4 flex flex-wrap gap-3">
+                        <Link
+                            href="/orders"
+                            className="inline-flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                        >
+                            📦 Lihat Semua Pesanan Saya
+                        </Link>
+
+                        <Link
+                            href="/lacak"
+                            className="inline-flex items-center gap-2 rounded-xl border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                        >
+                            🔍 Lacak Pesanan Lain
+                        </Link>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-3">
                         {/* BAYAR LAGI — for failed/expired/pending payment */}
                         {(
                             (order.paymentStatus === "FAILED" ||

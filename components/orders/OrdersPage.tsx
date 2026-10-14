@@ -13,6 +13,10 @@ import {
 import toast from "react-hot-toast";
 
 import OrderRecovery from "./OrderRecovery";
+import {
+    SHIPMENT_STAGE_LABELS,
+    resolveShipmentStage,
+} from "@/lib/tracking/tracking-page";
 
 type OrderItem = {
     id: number;
@@ -37,6 +41,17 @@ type Order = {
 
     shippingCourier: string | null;
     shippingService: string | null;
+
+    /*
+     * Shipment state the card renders. GET /api/orders projects
+     * exactly these fields — never the address, phone, e-mail or
+     * payment instruction — so the list cannot expose personal data a
+     * customer card does not need.
+     */
+    shippingProvider: string | null;
+    providerCourier: string | null;
+    trackingNumber: string | null;
+    shipmentStatus: string | null;
 
     createdAt: string;
 
@@ -157,6 +172,68 @@ function StatusBadge({
             <StatusIcon status={status} />
             {statusLabel(status)}
         </span>
+    );
+}
+
+/**
+ * Status pengiriman + nama ekspedisi + nomor resi (when there is one).
+ *
+ * The stage comes from the SAME pure helper the tracking page uses, so a
+ * list card and the detail page can never describe one parcel
+ * differently. No personal field (address, phone, e-mail) is read here —
+ * the list endpoint does not even send them.
+ */
+function OrderShippingRow({
+    order,
+}: {
+    order: Order;
+}) {
+    const courier =
+        order.providerCourier ?? order.shippingCourier;
+
+    return (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t border-gray-100 px-4 py-3 sm:px-5">
+            <div className="flex min-w-0 items-center gap-2">
+                <FiTruck
+                    size={14}
+                    aria-hidden="true"
+                    className="shrink-0 text-gray-400"
+                />
+
+                <span className="text-xs font-semibold text-gray-700">
+                    {
+                        SHIPMENT_STAGE_LABELS[
+                            resolveShipmentStage(order)
+                        ]
+                    }
+                </span>
+
+                {courier && (
+                    <>
+                        <span className="text-gray-300">•</span>
+
+                        <span className="truncate text-xs text-gray-500 uppercase">
+                            {courier}
+                        </span>
+                    </>
+                )}
+            </div>
+
+            <p className="text-xs text-gray-500">
+                {order.trackingNumber ? (
+                    <>
+                        Resi:{" "}
+                        <span className="font-semibold break-all text-gray-800">
+                            {order.trackingNumber}
+                        </span>
+                    </>
+                ) : (
+                    <span className="text-gray-400">
+                        Resi belum tersedia
+                    </span>
+                )}
+            </p>
+        </div>
     );
 }
 
@@ -404,6 +481,12 @@ export default function OrdersPage() {
                                         )}
                                     </div>
 
+                                    {/* SHIPPING */}
+
+                                    <OrderShippingRow
+                                        order={order}
+                                    />
+
                                     {/* FOOTER */}
                                     <div className="flex flex-col gap-3 border-t border-gray-100 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5">
                                         <div className="flex min-w-0 items-center gap-2">
@@ -448,10 +531,20 @@ export default function OrdersPage() {
                                                 </p>
                                             </div>
 
-                                            <FiChevronRight
-                                                size={18}
-                                                className="text-gray-300 transition group-hover:translate-x-0.5 group-hover:text-gray-500"
-                                            />
+                                            {/*
+                                             * The whole card is the link
+                                             * (so a tap anywhere opens the
+                                             * detail page); this is the
+                                             * explicit affordance for it.
+                                             */}
+                                            <span className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 transition group-hover:border-gray-400 group-hover:bg-gray-50">
+                                                Lihat Detail
+
+                                                <FiChevronRight
+                                                    size={14}
+                                                    className="text-gray-400 transition group-hover:translate-x-0.5 group-hover:text-gray-600"
+                                                />
+                                            </span>
                                         </div>
                                     </div>
                                 </Link>

@@ -4,6 +4,15 @@ import { useState } from "react";
 import { FiKey } from "react-icons/fi";
 import toast from "react-hot-toast";
 
+import {
+    RECOVERY_ACCESS_PENDING_MESSAGE,
+    RECOVERY_ACCESS_RESTORED_MESSAGE,
+    RECOVERY_UNREADABLE_RESULT_MESSAGE,
+    isOrderAccessGranted,
+    parseRecoveredOrder,
+    type RecoveredOrder,
+} from "@/lib/guest-order-navigation";
+
 /**
  * ==========================================
  * GUEST ORDER RECOVERY (TWO-PHASE OTP)
@@ -27,6 +36,22 @@ import toast from "react-hot-toast";
  * The channel is only a CHOICE OF TRANSPORT: the email option always
  * mails the address stored on the order (never the typed one), and
  * both options share the same code, expiry and attempt rules.
+ *
+ * WHAT HAPPENS AFTER THE CODE VERIFIES
+ * ------------------------------------
+ * A 200 is not treated as proof on its own. In order:
+ *
+ *   1. the order reference is read from the response body defensively,
+ *   2. the freshly issued httpOnly cookie is PROVEN to unlock the order
+ *      by re-reading it through the ownership-guarded detail endpoint
+ *      (JavaScript cannot read an httpOnly cookie, so this is the only
+ *      honest way to know), and
+ *   3. only then does the caller navigate — to the existing order detail
+ *      route, carrying the order id and nothing else.
+ *
+ * A failure at step 1 or 2 is reported in place: the buyer is never
+ * redirected into a page that would answer "Pesanan tidak ditemukan",
+ * which is what would produce a redirect loop.
  */
 
 /** Where the one-time code is delivered. */
@@ -42,10 +67,51 @@ type Props = {
      * against the contact stored on the order.
      */
     defaultOrderNumber?: string;
+
+    /**
+     * Called ONCE the code verified AND the newly issued guest cookie was
+     * confirmed to unlock the order. The caller decides where that leads
+     * (the tracking page sends the buyer to the order detail route).
+     *
+     * When omitted, the page simply reloads — the order-history context,
+     * where the list itself is what needs to be re-fetched.
+     */
+    onRecovered?: (order: RecoveredOrder) => void;
 };
+
+/**
+ * Prove that the guest access cookie this browser just received really
+ * opens the order.
+ *
+ * The token lives in an httpOnly cookie, so it is invisible to this
+ * component by design; the ownership-guarded detail endpoint is asked
+ * instead. `no-store` is essential: a cached 404 from before the cookie
+ * existed must never be mistaken for the current answer.
+ */
+async function verifyRecoveredOrderAccess(
+    orderId: number
+): Promise<boolean> {
+    try {
+        const response = await fetch(`/api/orders/${orderId}`, {
+            method: "GET",
+            cache: "no-store",
+            credentials: "same-origin",
+        });
+
+        const body = await response.json().catch(() => null);
+
+        return isOrderAccessGranted({
+            ok: response.ok,
+            body,
+        });
+    } catch {
+        return false;
+    }
+}
 
 export default function OrderRecovery({
     defaultOrderNumber = "",
+    onRecovered,
 }: Props = {}) {
     const [orderNumber, setOrderNumber] =
         useState(defaultOrderNumber);
@@ -223,15 +289,59 @@ export default function OrderRecovery({
                 return;
             }
 
+            /*
+             * STEP 1 — read the order reference. An unusable body is
+             * reported in place: navigating without an order id would
+             * mean guessing a destination.
+             */
+            const recovered = parseRecoveredOrder(
+                data?.data
+            );
+
+            if (!recovered) {
+                toast.error(
+                    RECOVERY_UNREADABLE_RESULT_MESSAGE
+                );
+
+                return;
+            }
+
+            /*
+             * STEP 2 — PROOF OF ACCESS. The confirm endpoint set the
+             * guest access token as an httpOnly cookie; this asks the
+             * ownership-guarded detail endpoint whether that cookie
+             * actually unlocks THIS order. A denial means no navigation,
+             * so the buyer can never be bounced into a locked page.
+             */
+            if (
+                !(await verifyRecoveredOrderAccess(
+                    recovered.id
+                ))
+            ) {
+                toast.error(
+                    RECOVERY_ACCESS_PENDING_MESSAGE
+                );
+
+                return;
+            }
+
             toast.success(
                 data.message ??
-                    "Akses pesanan berhasil dipulihkan."
+                    RECOVERY_ACCESS_RESTORED_MESSAGE
             );
 
             /*
-             * Reload so the list is fetched with the freshly issued
-             * access-token cookie (Next caches client fetches).
+             * STEP 3 — hand the order id (and nothing else) to the
+             * caller. Without a handler the list context stays put and
+             * reloads so it is re-fetched with the fresh cookie (Next
+             * caches client fetches).
              */
+            if (onRecovered) {
+                onRecovered(recovered);
+
+                return;
+            }
+
             window.location.reload();
         } catch (error) {
             console.error(error);

@@ -23,6 +23,7 @@
  *     never an automatic poll.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { FiRefreshCw } from "react-icons/fi";
 import { FaWhatsapp } from "react-icons/fa";
@@ -525,6 +526,35 @@ export default function ShipmentTrackingPanel({
                         </p>
                     )
                 )}
+            </div>
+
+            {/*
+             * NAVIGATION OUT OF THIS ORDER
+             *
+             * The same two options the order detail page offers. Both are
+             * ordinary routes that authorize PER REQUEST — no token,
+             * e-mail, phone number or order number travels in either
+             * href, so knowing one order still opens nothing else.
+             *
+             * "Lacak Pesanan Lain" drops the `?pesanan=` hint, which is
+             * what `TrackingLookup` derives its state from, so this page
+             * returns to the empty lookup form instead of the parcel that
+             * is already on screen.
+             */}
+            <div className="mt-5 flex flex-wrap gap-2.5 border-t border-gray-100 pt-5">
+                <Link
+                    href="/orders"
+                    className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50"
+                >
+                    📦 Lihat Semua Pesanan Saya
+                </Link>
+
+                <Link
+                    href="/lacak"
+                    className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50"
+                >
+                    🔍 Lacak Pesanan Lain
+                </Link>
             </div>
         </section>
     );
