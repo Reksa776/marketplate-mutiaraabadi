@@ -70,7 +70,7 @@ type Order = {
     status: string;
     paymentMethod: string;
 
-    // ---- COD abuse review gate ----
+    // ---- COD abuse review (risk marker; does not gate fulfilment) ----
     requiresCodReview: boolean;
     codReviewStatus: string | null;
     codReviewedAt: string | null;
@@ -185,7 +185,7 @@ const SHIPPING_PAYMENT_LABELS: Record<string, string> = {
 };
 
 /*
- * Why a COD order was held. Codes come from lib/cod-policy.ts
+ * Why a COD order was FLAGGED. Codes come from lib/cod-policy.ts
  * (assessCodRisk) — never invent a reason the server did not report.
  */
 const COD_REVIEW_REASON_LABELS: Record<string, string> = {
@@ -702,13 +702,16 @@ export default function AdminOrderDetailPage() {
      * creates the Mengantar shipment. This page NEVER talks to the
      * provider directly and never creates a shipment itself.
      *
+     * THE REVIEW IS NOT PART OF FULFILMENT: the shipment was already
+     * requested automatically at checkout, so these buttons only record a
+     * business decision (risk marker + audit).
+     *
      * DOUBLE-SUBMIT GUARD: both buttons are disabled while `busy` (the
      * handler also returns early), and the endpoint is idempotent — a
-     * replayed approval enqueues no second job, a replayed rejection
-     * releases nothing twice.
+     * replayed decision releases nothing twice.
      *
-     * REJECT is destructive (it cancels the order, releases stock/voucher
-     * and notifies the buyer), so it always asks for confirmation first.
+     * REJECT may cancel the order (when Mengantar has nothing yet) and
+     * therefore always asks for confirmation first.
      */
     async function reviewCodOrder(
         action: "APPROVE" | "REJECT"
@@ -717,11 +720,11 @@ export default function AdminOrderDetailPage() {
 
         if (action === "REJECT") {
             const confirmed = await dialog.confirm({
-                title: "Tolak & Batalkan Pesanan COD",
+                title: "Tolak Tinjauan COD",
                 message:
-                    "Tolak tinjauan COD ini? Pesanan akan DIBATALKAN, stok/voucher dikembalikan, dan pembeli diberi tahu. Persetujuan tidak dapat dibalik.",
+                    "Tolak tinjauan COD ini? Bila Mengantar BELUM menerima shipment, pesanan dibatalkan, stok/voucher dikembalikan, dan pembeli diberi tahu. Bila shipment sudah ada di Mengantar, pesanan TIDAK dibatalkan otomatis.",
                 variant: "danger",
-                confirmText: "Tolak & Batalkan",
+                confirmText: "Tolak Tinjauan",
             });
 
             if (!confirmed) return;
@@ -753,10 +756,26 @@ export default function AdminOrderDetailPage() {
                 );
             }
 
-            toast.success(
-                result.message ??
-                    "Tinjauan COD diproses."
-            );
+            /*
+             * A rejection that deliberately did NOT cancel anything needs
+             * attention, not a green check: the parcel may be with the
+             * courier already. The server message explains what happened.
+             */
+            if (
+                result.data
+                    ?.providerShipmentPreserved ||
+                result.data?.jobInFlight
+            ) {
+                toast.error(
+                    result.message ??
+                        "Tinjauan COD ditolak tanpa membatalkan pesanan."
+                );
+            } else {
+                toast.success(
+                    result.message ??
+                        "Tinjauan COD diproses."
+                );
+            }
 
             /*
              * Re-read BOTH: the review decision and the shipment/job it
@@ -1529,14 +1548,21 @@ export default function AdminOrderDetailPage() {
                             </div>
                         </div>
 
-                        {/* COD REVIEW GATE */}
+                        {/* COD REVIEW (risk marker + decision + audit) */}
                         {order.requiresCodReview && (
                             <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/40">
                                 <div className="border-b border-amber-100 px-5 py-4">
+                                    {order.codReviewStatus ===
+                                        "PENDING" && (
+                                        <span className="mb-2 inline-block rounded-full border border-amber-300 bg-amber-100 px-2.5 py-0.5 text-[11px] font-semibold tracking-wide text-amber-800">
+                                            COD — RISIKO TERDETEKSI
+                                        </span>
+                                    )}
+
                                     <h2 className="text-sm font-semibold text-gray-900">
                                         {order.codReviewStatus ===
                                         "PENDING"
-                                            ? "COD REVIEW REQUIRED"
+                                            ? "Tinjauan COD (penanda risiko)"
                                             : order.codReviewStatus ===
                                                 "APPROVED"
                                               ? "Tinjauan COD disetujui"
@@ -1544,9 +1570,10 @@ export default function AdminOrderDetailPage() {
                                     </h2>
 
                                     <p className="mt-0.5 text-xs text-gray-500">
-                                        Pesanan COD bernilai/berisiko
-                                        tinggi ditahan sebelum dikirim
-                                        ke Mengantar
+                                        Penanda risiko + jejak audit.
+                                        Shipment Mengantar tetap dibuat
+                                        otomatis saat checkout — tinjauan
+                                        ini TIDAK menahan pengiriman.
                                     </p>
                                 </div>
 
@@ -1665,7 +1692,7 @@ export default function AdminOrderDetailPage() {
                                                 >
                                                     {codReviewBusy
                                                         ? "Memproses..."
-                                                        : "Setujui & Buat Shipment"}
+                                                        : "Setujui Tinjauan COD"}
                                                 </button>
 
                                                 <button
@@ -1682,22 +1709,23 @@ export default function AdminOrderDetailPage() {
                                                 >
                                                     {codReviewBusy
                                                         ? "Memproses..."
-                                                        : "Tolak & Batalkan Pesanan"}
+                                                        : "Tolak Tinjauan COD"}
                                                 </button>
                                             </div>
 
                                             <p className="text-[11px] leading-4 text-gray-500">
-                                                Setujui = tinjauan
-                                                disetujui dan shipment
-                                                Mengantar dibuat
-                                                otomatis melalui
-                                                antrean (satu kali).
-                                                Tolak = pesanan
-                                                dibatalkan permanen;
-                                                stok, voucher, dan
-                                                komisi dikembalikan
-                                                serta pembeli diberi
-                                                tahu.
+                                                Setujui = keputusan
+                                                tinjauan dicatat. Ini
+                                                BUKAN syarat pengiriman:
+                                                shipment sudah diajukan
+                                                otomatis oleh antrean.
+                                                Tolak = pesanan dibatalkan
+                                                HANYA bila Mengantar belum
+                                                menerima shipment; bila
+                                                shipment/resi sudah ada,
+                                                pesanan sengaja TIDAK
+                                                dibatalkan agar data tetap
+                                                sinkron dengan provider.
                                             </p>
                                         </>
                                     )}
@@ -1716,22 +1744,40 @@ export default function AdminOrderDetailPage() {
                                                       "id-ID"
                                                   )}`
                                                 : ""}
-                                            . Shipment Mengantar
-                                            dibuat melalui antrean
-                                            otomatis.
+                                            . Catatan tinjauan saja —
+                                            pengiriman tetap diproses
+                                            otomatis oleh antrean, tidak
+                                            bergantung pada keputusan
+                                            ini.
                                         </p>
                                     )}
 
                                     {order.codReviewStatus ===
-                                        "REJECTED" && (
-                                        <p className="text-xs leading-5 text-gray-600">
-                                            Ditolak — pesanan sudah
-                                            dibatalkan. Persetujuan
-                                            tidak dapat dibalik;
-                                            pembeli dapat memesan
-                                            ulang.
-                                        </p>
-                                    )}
+                                        "REJECTED" &&
+                                        (order.status ===
+                                        "CANCELLED" ? (
+                                            <p className="text-xs leading-5 text-gray-600">
+                                                Ditolak — Mengantar belum
+                                                menerima shipment, sehingga
+                                                pesanan dibatalkan dan
+                                                stok/voucher dikembalikan.
+                                                Persetujuan tidak dapat
+                                                dibalik; pembeli dapat
+                                                memesan ulang.
+                                            </p>
+                                        ) : (
+                                            <p className="text-xs leading-5 text-amber-700">
+                                                Ditolak, TETAPI pesanan
+                                                sengaja tidak dibatalkan:
+                                                shipment/resi sudah ada di
+                                                Mengantar. Selesaikan
+                                                secara operasional (mis.
+                                                lewat Hapus Shipment atau
+                                                koordinasi kurir) supaya
+                                                database tetap sinkron
+                                                dengan provider.
+                                            </p>
+                                        ))}
                                 </div>
                             </div>
                         )}
@@ -1777,20 +1823,21 @@ export default function AdminOrderDetailPage() {
                                 const autoJobActive =
                                     job?.status === "PENDING" ||
                                     job?.status === "PROCESSING";
-                                // COD review hold: while the review is
-                                // not APPROVED the shipment gate in
-                                // lib/mengantar/shipment.ts refuses EVERY
-                                // create path, so offering the manual
-                                // button would only ever return 409. The
-                                // admin releases the hold through the COD
-                                // review panel, not from here.
-                                const reviewBlocked =
-                                    isCod &&
-                                    Boolean(
-                                        order.requiresCodReview
-                                    ) &&
-                                    order.codReviewStatus !==
-                                        "APPROVED";
+                                /*
+                                 * NO COD REVIEW CONDITION HERE. The review
+                                 * is a risk marker, so it must not remove
+                                 * the recovery button: a COD order flagged
+                                 * for review still gets its shipment
+                                 * automatically, and if that attempt ever
+                                 * fails the admin must be able to retry it
+                                 * without first "approving" anything.
+                                 *
+                                 * `autoJobActive` below is what prevents two
+                                 * competing creation paths: while the
+                                 * automatic job is queued/claimed, this
+                                 * manual button is hidden, so the worker is
+                                 * always the single creator.
+                                 */
 
                                 // Manual creation is a RECOVERY path:
                                 //  - a genuine automatic failure, OR
@@ -1799,10 +1846,9 @@ export default function AdminOrderDetailPage() {
                                 //    NOT_CREATED with no auto job.
                                 // Never offered for an unpaid non-COD
                                 // order, nor while auto is still queued,
-                                // nor for a COD order held for review.
+                                // nor while the automatic job is queued.
                                 const canCreate =
                                     !shipmentId &&
-                                    !reviewBlocked &&
                                     (status === "FAILED" ||
                                         ((status ===
                                             "NOT_CREATED" ||
@@ -1861,10 +1907,6 @@ export default function AdminOrderDetailPage() {
                                     resolveCodShipmentLifecycle({
                                         paymentMethod:
                                             order.paymentMethod,
-                                        requiresCodReview:
-                                            order.requiresCodReview,
-                                        codReviewStatus:
-                                            order.codReviewStatus,
                                         shipmentStatus: status,
                                         shipmentJobStatus:
                                             job?.status ?? null,

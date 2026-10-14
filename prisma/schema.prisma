@@ -342,11 +342,16 @@ model Order {
   // COD ABUSE CONTROL — ADDITIVE
   // ==========================================
   //
-  // High-risk COD orders are held for admin review: requiresCodReview
-  // is set at order creation and NO ShipmentJob is enqueued until an
-  // admin approves (codReviewStatus = APPROVED). A flagged order is
-  // never auto-cancelled — it simply waits.
+  // High-risk COD orders are FLAGGED for admin review. This is a RISK
+  // MARKER + audit trail only: a flagged order still gets its
+  // ShipmentJob at checkout and is still shipped automatically, exactly
+  // like an unflagged one. The review never gates fulfilment.
   // codReviewStatus: NULL (not applicable) | PENDING | APPROVED | REJECTED
+  //
+  // A REJECT may cancel the order, but ONLY when Mengantar has nothing
+  // yet (no provider id / resi / handoff status and no job in flight),
+  // so the local state can never disagree with the provider.
+  // See lib/cod-review.ts.
   requiresCodReview    Boolean             @default(false)
   codReviewStatus      String?
   codReviewedAt        DateTime?

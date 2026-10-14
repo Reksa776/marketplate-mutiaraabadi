@@ -1,13 +1,19 @@
 /**
  * ==========================================
- * COD REVIEW GATE — WORKER / RETRY BYPASS TESTS
+ * COD REVIEW IS **NOT** A FULFILMENT GATE — WORKER / RETRY
  * ==========================================
  *
- * A high-risk COD order is held until an authorized admin approves it.
- * The order-creation gate alone is NOT sufficient: a ShipmentJob can be
- * (re)introduced later by the sweeper, a reconcile re-queue or an admin
- * retry. These tests prove the hold is enforced on those paths too, so
- * a REJECTED order can never be shipped by a background process.
+ * REQUIREMENT (owner correction): every successful COD checkout using
+ * the MENGANTAR provider must get a ShipmentJob and be shipped
+ * automatically, INCLUDING a flagged order whose review is still
+ * PENDING. `requiresCodReview` / `codReviewStatus` are a risk marker +
+ * audit trail, never a hold.
+ *
+ * This suite pins that on the BACKGROUND paths, which is where a hold
+ * used to hide: a ShipmentJob can be (re)introduced at any time by the
+ * sweeper, a reconcile re-queue, or the admin retry button. If any of
+ * those consulted the review, a flagged order would silently never ship
+ * — the exact production failure (order #985).
  *
  * The real worker code runs; only prisma and the Mengantar client are
  * mocked (no provider call, no database).
@@ -120,23 +126,105 @@ function armWorkerForOneJob() {
     });
 }
 
+function retryRequest() {
+    return retryPOST(new Request("http://test"), {
+        params: Promise.resolve({
+            id: String(ORDER_ID),
+        }),
+    } as never);
+}
+
 beforeEach(() => {
     jest.clearAllMocks();
 });
 
-describe("Shipment worker honours the COD review hold", () => {
-    test("a REJECTED COD order is never shipped by the sweeper", async () => {
+/* ==========================================
+ * 1 — THE WORKER SHIPS EVERY COD ORDER
+ * ========================================== */
+
+describe("the shipment worker ignores the COD review state", () => {
+    /*
+     * The owner requirement is explicit: Order.status = PENDING and a
+     * PENDING review must not stop the worker. None of these four cases
+     * may be filtered out.
+     */
+    const cases: Array<[string, Record<string, unknown>]> = [
+        ["review PENDING", { codReviewStatus: "PENDING" }],
+        ["review APPROVED", { codReviewStatus: "APPROVED" }],
+        ["review REJECTED", { codReviewStatus: "REJECTED" }],
+        [
+            "no review at all",
+            { requiresCodReview: false, codReviewStatus: null },
+        ],
+    ];
+
+    test.each(cases)(
+        "a COD order with %s IS shipped",
+        async (_label, overrides) => {
+            armWorkerForOneJob();
+            mockedOrder.findUnique.mockResolvedValue(
+                codOrder(overrides)
+            );
+
+            const result = await processShipmentJobs({ limit: 5 });
+
+            expect(result.processed).toBe(1);
+            expect(mockedCreateShipment).toHaveBeenCalledTimes(1);
+            expect(mockedCreateShipment).toHaveBeenCalledWith(
+                ORDER_ID
+            );
+
+            // Nothing may retire the job as "blocked".
+            const cancelled = mockedJob.updateMany.mock.calls.some(
+                (call) =>
+                    call[0]?.data?.status === "CANCELLED"
+            );
+            expect(cancelled).toBe(false);
+        }
+    );
+
+    test("an order still PENDING keeps being processed (no status gate)", async () => {
         armWorkerForOneJob();
         mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "REJECTED" })
+            codOrder({ status: "PENDING" })
         );
 
-        const result = await processShipmentJobs({ limit: 5 });
+        await processShipmentJobs({ limit: 5 });
 
-        expect(result.processed).toBe(1);
+        expect(mockedCreateShipment).toHaveBeenCalledWith(
+            ORDER_ID
+        );
+    });
+
+    test("a REJECTED-flagged non-COD order is not affected either", async () => {
+        armWorkerForOneJob();
+        mockedOrder.findUnique.mockResolvedValue(
+            codOrder({
+                paymentMethod: "QRIS",
+                codReviewStatus: "REJECTED",
+            })
+        );
+
+        await processShipmentJobs({ limit: 5 });
+
+        expect(mockedCreateShipment).toHaveBeenCalledWith(
+            ORDER_ID
+        );
+    });
+
+    test("a cancelled/refunded order is still NEVER shipped", async () => {
+        /*
+         * The guard that must remain: fulfilment is governed by the
+         * order state, not by the review.
+         */
+        armWorkerForOneJob();
+        mockedOrder.findUnique.mockResolvedValue(
+            codOrder({ status: "CANCELLED" })
+        );
+
+        await processShipmentJobs({ limit: 5 });
+
         expect(mockedCreateShipment).not.toHaveBeenCalled();
-
-        // The job is cancelled with a durable reason (no retry loop).
         expect(mockedJob.updateMany).toHaveBeenCalledWith(
             expect.objectContaining({
                 where: expect.objectContaining({
@@ -148,75 +236,15 @@ describe("Shipment worker honours the COD review hold", () => {
             })
         );
     });
-
-    test("a COD order still awaiting review is not shipped either", async () => {
-        armWorkerForOneJob();
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "PENDING" })
-        );
-
-        await processShipmentJobs({ limit: 5 });
-
-        expect(mockedCreateShipment).not.toHaveBeenCalled();
-    });
-
-    test("an APPROVED COD order is shipped normally", async () => {
-        armWorkerForOneJob();
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "APPROVED" })
-        );
-
-        await processShipmentJobs({ limit: 5 });
-
-        expect(mockedCreateShipment).toHaveBeenCalledWith(ORDER_ID);
-    });
-
-    test("non-flagged COD and non-COD orders are unaffected", async () => {
-        armWorkerForOneJob();
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({
-                requiresCodReview: false,
-                codReviewStatus: null,
-            })
-        );
-
-        await processShipmentJobs({ limit: 5 });
-
-        expect(mockedCreateShipment).toHaveBeenCalledWith(ORDER_ID);
-    });
-
-    test("a non-COD order is unaffected even with a stale review flag", async () => {
-        armWorkerForOneJob();
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({
-                paymentMethod: "QRIS",
-                codReviewStatus: "REJECTED",
-            })
-        );
-
-        await processShipmentJobs({ limit: 5 });
-
-        expect(mockedCreateShipment).toHaveBeenCalledWith(ORDER_ID);
-    });
 });
 
-describe("Admin retry cannot bypass a COD review decision", () => {
-    test("retrying a REJECTED COD order is refused before any enqueue", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "REJECTED" })
-        );
+/* ==========================================
+ * 2 — ADMIN RETRY IS A RECOVERY PATH
+ * ========================================== */
 
-        const result = await runShipmentJobForOrder(ORDER_ID);
-
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain("tinjauan");
-        expect(mockedJob.upsert).not.toHaveBeenCalled();
-    });
-
-    test("retrying an APPROVED COD order enqueues and processes", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "APPROVED" })
-        );
+describe("admin retry is not blocked by a COD review", () => {
+    function armRetry() {
+        mockedOrder.findUnique.mockResolvedValue(codOrder());
         mockedJob.upsert.mockResolvedValue({
             id: JOB_ID,
             orderId: ORDER_ID,
@@ -230,6 +258,13 @@ describe("Admin retry cannot bypass a COD review decision", () => {
             attempts: 1,
             maxAttempts: 6,
         });
+    }
+
+    test("retrying a REJECTED COD order enqueues and processes", async () => {
+        armRetry();
+        mockedOrder.findUnique.mockResolvedValue(
+            codOrder({ codReviewStatus: "REJECTED" })
+        );
 
         const result = await runShipmentJobForOrder(ORDER_ID);
 
@@ -237,26 +272,38 @@ describe("Admin retry cannot bypass a COD review decision", () => {
         expect(mockedJob.upsert).toHaveBeenCalled();
     });
 
-    test("the admin retry endpoint surfaces the hold as a 400", async () => {
+    test("retrying a PENDING-review COD order enqueues and processes", async () => {
+        armRetry();
+
+        const result = await runShipmentJobForOrder(ORDER_ID);
+
+        expect(result.ok).toBe(true);
+        expect(mockedJob.upsert).toHaveBeenCalled();
+    });
+
+    test("the admin retry ENDPOINT returns 200 for a flagged COD order", async () => {
+        armRetry();
         mockedAuth.mockResolvedValue({
             user: { id: "admin-1", role: "ADMIN" },
         });
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "REJECTED" })
-        );
 
-        const response = await retryPOST(
-            new Request("http://test"),
-            {
-                params: Promise.resolve({
-                    id: String(ORDER_ID),
-                }),
-            } as never
-        );
+        const response = await retryRequest();
         const body = await response.json();
 
-        expect(response.status).toBe(400);
-        expect(body.success).toBe(false);
+        expect(response.status).toBe(200);
+        expect(body.success).toBe(true);
+        expect(mockedJob.upsert).toHaveBeenCalled();
+    });
+
+    test("a non-admin still cannot retry", async () => {
+        armRetry();
+        mockedAuth.mockResolvedValue({
+            user: { id: "u-1", role: "CUSTOMER" },
+        });
+
+        const response = await retryRequest();
+
+        expect(response.status).toBe(403);
         expect(mockedJob.upsert).not.toHaveBeenCalled();
     });
 });

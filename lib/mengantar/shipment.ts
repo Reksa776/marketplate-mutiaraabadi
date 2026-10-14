@@ -87,13 +87,6 @@ export type ShipmentActionResult = {
     shipmentId?: string | null;
     /** Resolved pickup schedule (persisted by the worker on the job). */
     pickupSchedule?: { date: string; time: string } | null;
-    /**
-     * True when the call was refused by the COD REVIEW gate: a COD order
-     * that is still PENDING review (or was REJECTED) may not be shipped
-     * by ANY caller — the admin route answers 409 for it instead of
-     * pretending the shipment failed for some other reason.
-     */
-    reviewBlocked?: boolean;
 };
 
 function toKilograms(grams: number): number {
@@ -199,8 +192,6 @@ export async function createShipmentForOrder(
             postalCode: true,
             paymentMethod: true,
             paymentStatus: true,
-            requiresCodReview: true,
-            codReviewStatus: true,
             shippingProvider: true,
             providerCourier: true,
             providerShipmentId: true,
@@ -227,35 +218,27 @@ export async function createShipmentForOrder(
     }
 
     /*
-     * ---- COD REVIEW gate (server-authoritative) ----
+     * ---- COD REVIEW IS NOT A GATE (single choke point) ----
      *
-     * A high-risk COD order is HELD until an admin approves it. The hold
-     * is enforced HERE, at the single choke point every caller goes
-     * through (the shipment worker, the admin retry, the reconcile
-     * sweep and the MANUAL "Buat Shipment" button), so no code path can
-     * ship an order whose review has not been approved — including an
-     * order that was explicitly REJECTED.
+     * Every caller goes through HERE (the shipment worker, the admin
+     * retry, the reconcile sweep and the MANUAL "Buat Shipment"
+     * button), which is exactly why the COD review must NOT be
+     * consulted at this choke point:
      *
-     * Approving the review is what unblocks it (see the cod-review
-     * endpoint), which keeps the "who approved this, and when" audit
-     * trail authoritative.
-     */
-    if (
-        order.paymentMethod === "COD" &&
-        order.requiresCodReview &&
-        order.codReviewStatus !== "APPROVED"
-    ) {
-        return {
-            ok: false,
-            changed: false,
-            reviewBlocked: true,
-            reason:
-                order.codReviewStatus === "REJECTED"
-                    ? "Tinjauan COD ditolak. Pesanan ini tidak dapat dikirim."
-                    : "COD menunggu tinjauan admin. Setujui tinjauan COD terlebih dahulu.",
-            shipmentStatus: order.shipmentStatus ?? null,
-        };
-    }
+     *   * A flagged COD order must be shipped automatically. Holding it
+     *     here is what stranded production order #985 (MENGANTAR /
+     *     NOT_CREATED / requiresCodReview=true / no ShipmentJob).
+     *   * A REJECTED review must not block a parcel the courier ALREADY
+     *     has — blocking here would desync the database from Mengantar.
+     *     Whether a rejection may still cancel anything is decided
+     *     safely in lib/cod-review.ts, which refuses any local
+     *     cancellation once provider evidence exists.
+     *
+ * What DOES still protect this path (all below): a cancelled order, an
+ * order whose money was returned (paymentStatus REFUNDED), a
+ * non-Mengantar provider, an intentional admin deletion, and the
+ * idempotent per-order provider claim.
+ */
 
     /*
      * ---- Cancellation / money-returned guard ----

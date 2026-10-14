@@ -3,10 +3,9 @@
  * COD REVIEW — APPROVAL → SHIPMENT FLOW
  * ==========================================
  *
- * Regression tests for the P0 hotfix. The COD review gate (commit
- * 1b5c00f) holds a high-risk COD order by NOT enqueuing a ShipmentJob,
- * and the release path is the admin endpoint
- * `POST /api/admin/orders/:id/cod-review { action: "APPROVE" }`.
+ * Regression tests for the P0 hotfix AFTER the owner's correction: the
+ * COD review is a RISK MARKER, not a fulfilment gate. Every COD +
+ * Mengantar order is shipped automatically, flagged or not.
  *
  * These tests run the REAL endpoint, the REAL ShipmentJob worker
  * (`processShipmentJobs`) and the REAL enqueue helper; only prisma and
@@ -15,16 +14,16 @@
  *
  * Covered:
  *   1. Normal COD + Mengantar  → the worker creates the shipment
- *      automatically (the pre-regression behaviour).
- *   2. Flagged COD             → held: the worker cancels the job and
- *      NEVER creates a shipment.
- *   3. Approved COD            → exactly ONE enqueue and exactly ONE
- *      shipment create.
+ *      automatically.
+ *   2. Flagged COD (review PENDING) → the worker STILL creates the
+ *      shipment; the review does not hold it.
+ *   3. Approve is a decision, not a prerequisite → the shipment is
+ *      created exactly ONCE whether or not anyone approved.
  *   4. Repeated approval       → no second transition, no second job,
  *      no second shipment.
  *   5. Non-Mengantar order     → never enqueued, never shipped.
- *   6. Checkout guard          → COD enqueue requires MENGANTAR and
- *      (source) a non-flagged review.
+ *   6. Checkout enqueue        → COD + Mengantar enqueues with NO
+ *      review condition at all.
  */
 
 jest.mock("@/auth", () => ({ auth: jest.fn() }));
@@ -219,7 +218,7 @@ beforeEach(() => {
 });
 
 /* ==========================================
- * 1 + 2 — AUTOMATIC CREATION vs HOLD
+ * 1 + 2 — AUTOMATIC CREATION IS UNCONDITIONAL (no review hold)
  * ========================================== */
 
 describe("COD + Mengantar auto-shipment", () => {
@@ -238,7 +237,7 @@ describe("COD + Mengantar auto-shipment", () => {
         );
     });
 
-    test("2. a flagged COD order still awaiting review is HELD", async () => {
+    test("2. a flagged COD order with a PENDING review is STILL shipped", async () => {
         armWorkerForOneJob();
         mockedOrder.findUnique.mockResolvedValue(
             workerOrder({
@@ -249,17 +248,19 @@ describe("COD + Mengantar auto-shipment", () => {
 
         await processShipmentJobs({ limit: 5 });
 
-        // Nothing reaches the provider…
-        expect(mockedCreateShipment).not.toHaveBeenCalled();
-
-        // …and the job is retired with a durable reason (no retry loop).
-        expect(mockedJob.updateMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                data: expect.objectContaining({
-                    status: "CANCELLED",
-                }),
-            })
+        // The review is a RISK MARKER, not a hold: the shipment IS made.
+        expect(mockedCreateShipment).toHaveBeenCalledTimes(1);
+        expect(mockedCreateShipment).toHaveBeenCalledWith(
+            ORDER_ID
         );
+
+        // …and no job is retired as if it had been blocked.
+        expect(
+            mockedJob.updateMany.mock.calls.some(
+                (call) =>
+                    call[0]?.data?.status === "CANCELLED"
+            )
+        ).toBe(false);
     });
 });
 
@@ -404,32 +405,53 @@ describe("Non-Mengantar COD orders", () => {
  * 6 — CHECKOUT GUARD (source invariant)
  * ==========================================
  *
- * The automatic COD enqueue lives inside createCheckoutOrder. Running
- * the whole checkout here is not what this regression is about, so the
- * guard itself is pinned instead — exactly how this repo already locks
- * the COD enqueue (see __tests__/security/mengantar-auto-shipment.test.ts).
+ * The automatic COD enqueue lives inside createCheckoutOrder. The
+ * BEHAVIOURAL proof against the real database is
+ * cod-checkout-enqueue.integration.test.ts; here the guard itself is
+ * pinned so a future edit cannot quietly re-introduce a review
+ * condition.
  */
 
 describe("Checkout COD enqueue guard", () => {
     const source = readFileSync("lib/checkout.ts", "utf-8");
 
-    test("6. COD + Mengantar enqueues a job only when the review did not flag it", () => {
+    test("6. COD + Mengantar enqueues a job with NO review condition", () => {
         expect(source).toContain(
             "shippingProvider === \"MENGANTAR\" &&"
         );
         expect(source).toContain(
-            "input.paymentMethod === \"COD\" &&"
+            "input.paymentMethod === \"COD\""
         );
-        expect(source).toContain("!requiresCodReview");
         expect(source).toContain(
             "enqueueShipmentJobTx(tx, order.id)"
         );
+
+        // The review must not be consulted anywhere near the enqueue.
+        expect(source).not.toContain("!requiresCodReview");
+        expect(source).not.toContain(
+            "!result.requiresCodReview"
+        );
     });
 
-    test("the post-response worker nudge uses the same guard", () => {
+    test("the post-response worker nudge has no review condition", () => {
         expect(source).toContain(
             "await scheduleShipmentProcessing();"
         );
-        expect(source).toContain("!result.requiresCodReview");
+        expect(source).not.toContain(
+            "!result.requiresCodReview"
+        );
+    });
+
+    test("no provider call is made inside the checkout transaction", () => {
+        /*
+         * The enqueue writes a ShipmentJob ROW only; Mengantar is
+         * contacted later by the worker.
+         */
+        expect(source).toContain(
+            "enqueueShipmentJobTx(tx, order.id)"
+        );
+        expect(source).not.toMatch(
+            /await createMengantarOrder\(/
+        );
     });
 });

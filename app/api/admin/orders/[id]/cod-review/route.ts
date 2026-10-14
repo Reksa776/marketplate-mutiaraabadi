@@ -21,48 +21,53 @@ type RouteContext = {
  * ==========================================
  *
  * High-risk COD orders are FLAGGED at checkout
- * (`requiresCodReview = true`, `codReviewStatus = "PENDING"`) and
- * deliberately get NO ShipmentJob, so nothing is handed to Mengantar
- * until a human approves it. This endpoint is that human gate.
+ * (`requiresCodReview = true`, `codReviewStatus = "PENDING"`) so an
+ * admin can see the risk and record a decision.
  *
- *   POST { action: "APPROVE" }  → codReviewStatus = APPROVED and the
- *                                 ShipmentJob is enqueued, after which
- *                                 the normal worker creates the
- *                                 Mengantar shipment exactly as it does
- *                                 for every other COD order.
- *   POST { action: "REJECT"  }  → codReviewStatus = REJECTED **and the
- *                                 order is CANCELLED** through the
- *                                 existing safe cancellation lifecycle
- *                                 (lib/cod-review.ts →
- *                                 cancelOrderForReservations): stock and
- *                                 flash-sale reservations released,
- *                                 voucher quota + per-scope usage
- *                                 restored, spin reward released,
- *                                 affiliate commission cancelled,
- *                                 shipment jobs stopped, and the buyer
- *                                 notified. The order row and its
- *                                 history are never deleted.
+ * THE REVIEW IS NOT A FULFILMENT GATE. The shipment is already being
+ * created automatically at checkout (the ShipmentJob is enqueued there
+ * and the worker contacts Mengantar), regardless of the review state —
+ * that automation is the whole point, and making it wait for an admin
+ * click stranded production order #985. This endpoint therefore only
+ * records a business decision about an order that is (or may already
+ * be) on its way:
+ *
+ *   POST { action: "APPROVE" }  → codReviewStatus = APPROVED, audited.
+ *                                 The shipment was already requested and
+ *                                 is NOT affected. Any leftover
+ *                                 CANCELLED/FAILED job from an older
+ *                                 release is re-queued as a safety net
+ *                                 (idempotent, same single worker).
+ *   POST { action: "REJECT"  }  → codReviewStatus = REJECTED, audited,
+ *                                 and the order is cancelled ONLY when
+ *                                 Mengantar has nothing yet (see
+ *                                 lib/cod-review.ts). If the provider
+ *                                 already holds the shipment or a pickup
+ *                                 is scheduled, the local order is left
+ *                                 ALONE so the database never disagrees
+ *                                 with Mengantar; if a worker is
+ *                                 mid-flight the cancellation is
+ *                                 deferred rather than guessed.
  *
  * GUARANTEES
  * ----------
  *  1. ADMIN only (401 unauthenticated, 403 for any other role).
- *  2. ATOMIC: the review transition and the cancellation commit in ONE
- *     transaction, and the transition itself is a conditional
- *     `updateMany`, so two concurrent reviewers cannot both "win" —
- *     exactly one request performs the transition (and therefore
- *     exactly one cancels/enqueues).
+ *  2. ATOMIC: the review decision and (when it is allowed) the
+ *     cancellation commit in ONE transaction, and the decision itself
+ *     is a conditional `updateMany`, so two concurrent reviewers cannot
+ *     both act — the loser is told the authoritative state.
  *  3. IDEMPOTENT: approving an already-APPROVED order returns success
- *     with `changed: false` and no second job; rejecting an
- *     already-REJECTED order converges (stops any lingering shipment
- *     job, finishes the cancellation) without releasing anything twice
- *     — the cancellation CAS guarantees a single release.
- *  4. An APPROVED order is never cancelled: approval is an explicit
- *     release of the hold and this endpoint refuses to reverse it (409).
- *  5. The COD payment lifecycle is untouched: `paymentStatus` stays
- *     UNPAID until the courier collects, exactly as before this flag
- *     existed. A rejection cancels the order, which is the one
- *     intentional exception — and it is a decision an admin makes
- *     explicitly, never an automatic one.
+ *     with `changed: false`; rejecting an already-REJECTED order
+ *     converges (stops any lingering job, finishes a still-safe
+ *     cancellation) without releasing anything twice — the cancellation
+ *     CAS guarantees a single release.
+ *  4. An APPROVED order is never cancelled by this endpoint.
+ *  5. PROVIDER-SAFE: a rejection never cancels an order whose shipment
+ *     Mengantar already holds (or whose pickup is scheduled), and never
+ *     guesses while a worker is mid-flight. See lib/cod-review.ts.
+ *  6. The COD payment lifecycle is untouched: `paymentStatus` stays
+ *     UNPAID until the courier collects. Only an explicit, safe
+ *     rejection cancels an order — never an automatic decision.
  */
 
 const ACTIONS = ["APPROVE", "REJECT"] as const;
@@ -284,12 +289,19 @@ export async function POST(
                 action: "COD_REVIEW_REJECTED",
                 entityType: "Order",
                 entityId: orderId,
-                description: `COD order ${rejected.orderNumber} rejected; order cancelled and reservations released`,
+                description: rejected.cancelled
+                    ? `COD order ${rejected.orderNumber} rejected; NOT yet handed to the provider, order cancelled and reservations released`
+                    : `COD order ${rejected.orderNumber} rejected; fulfilment NOT touched (${rejected.skipReason ?? "already decided"})`,
                 metadata: {
                     orderNumber: rejected.orderNumber,
                     total: Number(order.total),
                     changed: rejected.changed,
                     orderCancelled: rejected.cancelled,
+                    providerShipmentPreserved:
+                        rejected.providerShipmentPreserved,
+                    jobInFlight: rejected.jobInFlight,
+                    skipReason: rejected.skipReason ?? null,
+                    shipmentStatus: rejected.shipmentStatus,
                     shipmentJobsStopped:
                         rejected.shipmentJobsStopped,
                     paymentStatus: rejected.paymentStatus,
@@ -297,16 +309,33 @@ export async function POST(
                 },
             });
 
+            /*
+             * OUTCOME MESSAGE must be honest about what was NOT done: the
+             * admin has to know that a parcel already with the courier was
+             * left alone (so they resolve it operationally) instead of
+             * believing the order was cancelled.
+             */
+            const rejectMessage = rejected.cancelled
+                ? "Tinjauan COD ditolak. Pesanan dibatalkan dan stok dikembalikan."
+                : rejected.providerShipmentPreserved
+                  ? "Tinjauan COD ditolak. Shipment sudah ada di Mengantar, jadi pesanan TIDAK dibatalkan otomatis — selesaikan secara operasional agar data tetap sinkron dengan provider."
+                  : rejected.jobInFlight
+                    ? "Tinjauan COD ditolak. Shipment sedang diproses; pembatalan ditunda agar tidak memutus shipment yang mungkin sudah dikirim ke Mengantar. Coba tolak lagi setelah proses selesai."
+                    : "Tinjauan COD ditolak. Pesanan sudah dalam keadaan dibatalkan.";
+
             return NextResponse.json({
                 success: true,
-                message: rejected.cancelled
-                    ? "Tinjauan COD ditolak. Pesanan dibatalkan dan stok dikembalikan."
-                    : "Tinjauan COD ditolak. Pesanan sudah dalam keadaan dibatalkan.",
+                message: rejectMessage,
                 data: {
                     changed: rejected.changed,
                     codReviewStatus: "REJECTED",
                     shipmentEnqueued: false,
                     orderCancelled: rejected.cancelled,
+                    providerShipmentPreserved:
+                        rejected.providerShipmentPreserved,
+                    jobInFlight: rejected.jobInFlight,
+                    skipReason: rejected.skipReason ?? null,
+                    shipmentStatus: rejected.shipmentStatus,
                     paymentStatus: rejected.paymentStatus,
                 },
             });
@@ -330,7 +359,8 @@ export async function POST(
 
             return NextResponse.json({
                 success: true,
-                message: "Tinjauan COD sudah disetujui.",
+                message:
+                    "Tinjauan COD sudah disetujui. Pengiriman berjalan otomatis.",
                 data: {
                     changed: false,
                     codReviewStatus: "APPROVED",
@@ -409,21 +439,22 @@ export async function POST(
             action: "COD_REVIEW_APPROVED",
             entityType: "Order",
             entityId: orderId,
-            description: `COD order ${order.orderNumber} approved for shipment`,
+            description: `COD order ${order.orderNumber} review approved (risk marker; fulfilment is automatic)`,
             metadata: {
                 orderNumber: order.orderNumber,
                 total: Number(order.total),
                 shippingProvider:
                     order.shippingProvider,
-                shipmentEnqueued: enqueued,
+                shipmentJobRecovered: enqueued,
                 note,
             },
         });
 
         return NextResponse.json({
             success: true,
-            message:
-                "Tinjauan COD disetujui. Shipment akan diproses.",
+            message: enqueued
+                ? "Tinjauan COD disetujui. Antrean shipment yang tertinggal sudah dipulihkan."
+                : "Tinjauan COD disetujui. Pengiriman tetap berjalan otomatis, tidak bergantung pada keputusan ini.",
             data: {
                 changed: true,
                 codReviewStatus: "APPROVED",
@@ -444,15 +475,15 @@ export async function POST(
 }
 
 /**
- * Nudge the EXISTING shipment worker right after an approval enqueued a
- * job.
+ * Nudge the EXISTING shipment worker when a re-queued job was found.
  *
- * Approval is a human action, so the shipment must not wait for an
- * external cron sweep to be picked up — that is exactly the "approved
- * but nothing happened" state this endpoint used to leave behind. This
- * reuses the SAME post-response trigger (`after()` + an idempotent
- * worker claim) that a COD checkout already uses, so nothing new is
- * introduced and a duplicate/replayed approval stays a no-op.
+ * This is ONLY a recovery nudge for an order whose job was left in a
+ * terminal state by an older release (before the review gate was
+ * removed). The shipment is normally requested automatically at
+ * checkout; the review decision plays no part in it. It reuses the SAME
+ * post-response trigger (`after()` + an idempotent worker claim) every
+ * COD checkout already uses, so nothing new is introduced and a
+ * duplicate/replayed call stays a no-op.
  */
 async function nudgeWorker(
     enqueued: boolean
@@ -465,14 +496,22 @@ async function nudgeWorker(
 }
 
 /**
- * Enqueue the shipment job for an approved COD order.
+ * RECOVERY SAFETY NET (not a gate, not a second creation path).
  *
- * Only applies to COD orders shipped through Mengantar, and only when
- * the provider shipment does not already exist — enqueuing an
- * already-fulfilled order would be pointless work for the worker.
+ * The shipment job is enqueued automatically at COD checkout, so this
+ * normally finds an existing job and does nothing. It exists to heal an
+ * order whose job is missing or was left CANCELLED/FAILED by an older
+ * release (the review gate used to cancel jobs, which is what stranded
+ * production order #985).
  *
- * `enqueueShipmentJob` upserts on the unique `ShipmentJob.orderId`, so
- * this is safe to call from a retried or replayed approval.
+ * It writes ONLY the outbox row that the single existing worker
+ * consumes — it never talks to Mengantar and never creates a shipment
+ * itself — and `enqueueShipmentJob` upserts on the unique
+ * `ShipmentJob.orderId`, so a retried or replayed call cannot produce a
+ * second job (or a second shipment).
+ *
+ * Only applies to COD orders shipped through Mengantar, and never for
+ * an order that already has a provider shipment.
  */
 async function ensureShipmentEnqueued(order: {
     id: number;
@@ -509,11 +548,10 @@ async function ensureShipmentEnqueued(order: {
     }
 
     /*
-     * An approval is an explicit RELEASE of a hold, so any terminal
-     * job state left behind by the worker's review gate (CANCELLED),
-     * by a failure, or by a previous sweep is reset to PENDING —
-     * otherwise `enqueueShipmentJob` (upsert with an empty update)
-     * would leave the order never shipped.
+     * A terminal job state left behind by the OLD review gate
+     * (CANCELLED), by a failure, or by a previous sweep is reset to
+     * PENDING — otherwise `enqueueShipmentJob` (upsert with an empty
+     * update) would leave the order never shipped.
      */
     if (
         order.shipmentJob &&

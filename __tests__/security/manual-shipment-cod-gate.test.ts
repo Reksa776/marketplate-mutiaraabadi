@@ -1,28 +1,30 @@
 /**
  * ==========================================
- * MANUAL SHIPMENT — COD REVIEW GATE
+ * MANUAL SHIPMENT — COD REVIEW NO LONGER BLOCKS CREATION
  * ==========================================
  *
- * A high-risk COD order is FLAGGED at checkout and must never be handed
- * to the courier until an authorized admin APPROVES the review. The
- * hold has to survive every path that could create a shipment:
+ * REQUIREMENT (owner correction): a successful COD checkout using
+ * MENGANTAR must result in an automatic shipment/pickup request, even
+ * while the COD review is PENDING. `requiresCodReview` /
+ * `codReviewStatus` are a risk marker + audit trail — NOT a gate.
  *
- *   - the automatic worker / sweeper          (cod-review-gate.test.ts)
- *   - the admin "retry" button               (cod-review-gate.test.ts)
- *   - the MANUAL "Buat Shipment" button      (THIS suite)
+ * This suite proves the removal at the single server choke point every
+ * create path goes through (`createShipmentForOrder`), and through the
+ * manual admin route:
  *
- * These tests run the REAL gate in lib/mengantar/shipment.ts, through
- * the REAL admin shipment route, with only prisma, auth, the audit log
- * and the notification handler mocked. Neither Mengantar nor the
- * database is touched: a gate-blocked order returns before any provider
- * call, and an approved order stops at the pickup-configuration check.
+ *   review PENDING  → NOT refused by the review (proceeds)
+ *   review REJECTED → NOT refused by the review (proceeds)
+ *   review APPROVED → proceeds (unchanged)
+ *   no review flag  → proceeds (unchanged)
  *
- * Expected behaviour
- * ------------------
- *   PENDING  review → 409, no provider call
- *   REJECTED review → 409, no provider call (the order was cancelled)
- *   APPROVED review → the gate OPENS (any later failure is unrelated)
- *   no review flag  → the gate never applies (COD lifecycle unchanged)
+ * "Proceeds" is proven by the call reaching the NEXT real guard: with no
+ * pickup configuration available it stops on "Konfigurasi pickup …"
+ * instead of a review refusal — i.e. the review is no longer consulted,
+ * and the remaining guards (cancelled / refunded / not-Mengantar /
+ * intentional deletion) still are.
+ *
+ * Only prisma, auth, the audit log and the notification handler are
+ * mocked; neither Mengantar nor the database is touched.
  */
 
 process.env.AUTH_SECRET =
@@ -45,21 +47,17 @@ jest.mock("@/lib/prisma", () => ({
     },
 }));
 
-const mockAudit = jest.fn(
-    async (..._args: unknown[]) => undefined
-);
-
+/*
+ * Side effects are stubbed so this suite stays provider- and
+ * notification-free. Neither is asserted here: the point of the suite
+ * is that the COD review no longer reaches the create path at all.
+ */
 jest.mock("@/lib/admin/audit-log", () => ({
-    createAuditLog: (...args: unknown[]) => mockAudit(...args),
+    createAuditLog: jest.fn(async () => undefined),
 }));
 
-const mockShipmentNotification = jest.fn(
-    async (..._args: unknown[]) => undefined
-);
-
 jest.mock("@/lib/notification/order-status-handler", () => ({
-    onShipmentStatusChanged: (...args: unknown[]) =>
-        mockShipmentNotification(...args),
+    onShipmentStatusChanged: jest.fn(async () => undefined),
 }));
 
 import { readFileSync } from "fs";
@@ -136,66 +134,38 @@ beforeEach(() => {
 });
 
 /* ==========================================
- * THE GATE ITSELF (server-authoritative)
+ * 1 — THE CHOKE POINT NO LONGER CONSULTS THE REVIEW
  * ========================================== */
 
-describe("createShipmentForOrder honours the COD review hold", () => {
-    test("a COD order awaiting review is refused with reviewBlocked", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "PENDING" })
-        );
+describe("createShipmentForOrder ignores the COD review state", () => {
+    test.each([
+        ["PENDING", "PENDING"],
+        ["REJECTED", "REJECTED"],
+        ["APPROVED", "APPROVED"],
+    ])(
+        "a COD order with a %s review is NOT refused by the review",
+        async (_label, reviewStatus) => {
+            mockedOrder.findUnique.mockResolvedValue(
+                codOrder({ codReviewStatus: reviewStatus })
+            );
 
-        const result = await createShipmentForOrder(ORDER_ID, {
-            allowDeleted: true,
-        });
+            const result = await createShipmentForOrder(ORDER_ID, {
+                allowDeleted: true,
+            });
 
-        expect(result.ok).toBe(false);
-        expect(result.reviewBlocked).toBe(true);
-        expect(result.reason).toContain("tinjauan admin");
+            /*
+             * It stops on the REAL next guard (missing pickup
+             * configuration), which is only reachable if the review did
+             * not return early.
+             */
+            expect(result.reason).toContain(
+                "Konfigurasi pickup"
+            );
+            expect(mockStoreSetting.findUnique).toHaveBeenCalled();
+        }
+    );
 
-        // The hold is decided from the ORDER, before anything is
-        // resolved or sent: no pickup config read, no provider call.
-        expect(
-            mockStoreSetting.findUnique
-        ).not.toHaveBeenCalled();
-    });
-
-    test("a REJECTED COD order is refused for good", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "REJECTED" })
-        );
-
-        const result = await createShipmentForOrder(ORDER_ID, {
-            allowDeleted: true,
-        });
-
-        expect(result.ok).toBe(false);
-        expect(result.reviewBlocked).toBe(true);
-        expect(result.reason).toContain("ditolak");
-        expect(
-            mockStoreSetting.findUnique
-        ).not.toHaveBeenCalled();
-    });
-
-    test("an APPROVED COD order passes the gate", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "APPROVED" })
-        );
-
-        const result = await createShipmentForOrder(ORDER_ID, {
-            allowDeleted: true,
-        });
-
-        // It stops later on missing pickup configuration — which is
-        // exactly what proves the REVIEW gate is no longer blocking it.
-        expect(result.reviewBlocked).toBeUndefined();
-        expect(result.reason).toContain(
-            "Konfigurasi pickup"
-        );
-        expect(mockStoreSetting.findUnique).toHaveBeenCalled();
-    });
-
-    test("the hold only applies to FLAGGED COD orders", async () => {
+    test("an unflagged COD order behaves identically", async () => {
         mockedOrder.findUnique.mockResolvedValue(
             codOrder({
                 requiresCodReview: false,
@@ -207,86 +177,68 @@ describe("createShipmentForOrder honours the COD review hold", () => {
             allowDeleted: true,
         });
 
-        expect(result.reviewBlocked).toBeUndefined();
-        expect(mockStoreSetting.findUnique).toHaveBeenCalled();
+        expect(result.reason).toContain("Konfigurasi pickup");
+    });
 
-        // A stale REJECTED flag on a non-COD order must not block it.
+    test("the other guards still hold: a CANCELLED order is refused", async () => {
         mockedOrder.findUnique.mockResolvedValue(
-            codOrder({
-                paymentMethod: "QRIS",
-                codReviewStatus: "REJECTED",
-            })
+            codOrder({ status: "CANCELLED" })
         );
 
-        const other = await createShipmentForOrder(ORDER_ID, {
+        const result = await createShipmentForOrder(ORDER_ID, {
             allowDeleted: true,
         });
 
-        expect(other.reviewBlocked).toBeUndefined();
-        expect(other.reason).toContain("Konfigurasi pickup");
+        expect(result.ok).toBe(false);
+        expect(result.reason).not.toContain("Konfigurasi pickup");
+    });
+
+    test("the other guards still hold: a non-Mengantar order is refused", async () => {
+        mockedOrder.findUnique.mockResolvedValue(
+            codOrder({ shippingProvider: null })
+        );
+
+        const result = await createShipmentForOrder(ORDER_ID, {
+            allowDeleted: true,
+        });
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain("Mengantar");
     });
 });
 
 /* ==========================================
- * THE MANUAL BUTTON
+ * 2 — THE MANUAL ADMIN BUTTON
  * ========================================== */
 
 describe("POST /api/admin/orders/[id]/shipment", () => {
-    test("a PENDING review answers 409 and creates nothing", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "PENDING" })
-        );
+    test.each([
+        ["PENDING", "PENDING"],
+        ["REJECTED", "REJECTED"],
+    ])(
+        "a %s review is NOT answered with a review refusal",
+        async (_label, reviewStatus) => {
+            mockedOrder.findUnique.mockResolvedValue(
+                codOrder({ codReviewStatus: reviewStatus })
+            );
 
-        const response = await shipmentPOST(
-            shipmentRequest(),
-            CONTEXT
-        );
-        const body = await response.json();
+            const response = await shipmentPOST(
+                shipmentRequest(),
+                CONTEXT
+            );
+            const body = await response.json();
 
-        expect(response.status).toBe(409);
-        expect(body.data.codReviewBlocked).toBe(true);
-        expect(body.message).toContain("tinjauan");
+            /*
+             * 400 (a real provider/config failure), never a 409 named
+             * after the review: the review no longer blocks the button.
+             */
+            expect(response.status).toBe(400);
+            expect(body.data).toBeUndefined();
+            expect(body.message).toContain("Konfigurasi pickup");
+        }
+    );
 
-        // Nothing was audited or announced: no shipment happened.
-        expect(mockAudit).not.toHaveBeenCalled();
-        expect(
-            mockShipmentNotification
-        ).not.toHaveBeenCalled();
-    });
-
-    test("a REJECTED review answers 409", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "REJECTED" })
-        );
-
-        const response = await shipmentPOST(
-            shipmentRequest(),
-            CONTEXT
-        );
-        const body = await response.json();
-
-        expect(response.status).toBe(409);
-        expect(body.data.codReviewBlocked).toBe(true);
-        expect(mockAudit).not.toHaveBeenCalled();
-    });
-
-    test("a non-review failure stays a 400 (no false hold signal)", async () => {
-        mockedOrder.findUnique.mockResolvedValue(
-            codOrder({ codReviewStatus: "APPROVED" })
-        );
-
-        const response = await shipmentPOST(
-            shipmentRequest(),
-            CONTEXT
-        );
-        const body = await response.json();
-
-        expect(response.status).toBe(400);
-        expect(body.data).toBeUndefined();
-        expect(body.message).toContain("Konfigurasi pickup");
-    });
-
-    test("an unauthenticated caller cannot reach the gate at all", async () => {
+    test("an unauthenticated caller never reaches the create path", async () => {
         mockedAuth.mockResolvedValue(null);
 
         const response = await shipmentPOST(
@@ -314,40 +266,62 @@ describe("POST /api/admin/orders/[id]/shipment", () => {
 });
 
 /* ==========================================
- * SINGLE CHOKE POINT
+ * 3 — NO HIDDEN REVIEW GUARD REMAINS
  * ========================================== */
 
-describe("every shipment path goes through the one gate", () => {
-    test("the gate lives in createShipmentForOrder, not in a caller", () => {
-        const lib = readFile("lib/mengantar/shipment.ts");
+/**
+ * Strip block and line comments so the assertions below can only be
+ * satisfied by real CODE — a review guard documented in a comment must
+ * still count as "no guard", while one written as an `if` must not.
+ */
+function stripComments(source: string): string {
+    return source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
 
-        expect(lib).toContain("reviewBlocked: true");
-        expect(lib).toMatch(
-            /order\.requiresCodReview &&\s*order\.codReviewStatus !== "APPROVED"/
-        );
+/*
+ * The three files below are the COMPLETE set of code paths that can
+ * create a Mengantar shipment, so a hidden review guard would HAVE to
+ * read one of the review columns in one of them. The assertion is
+ * therefore deliberately broad: after comments are stripped, neither
+ * column may appear AT ALL. Matching one exact legacy line instead
+ * would let a differently shaped gate slip through.
+ */
+describe("no create path consults the COD review", () => {
+    const lib = readFile("lib/mengantar/shipment.ts");
+    const worker = readFile("lib/mengantar/shipment-worker.ts");
+    const manual = readFile(
+        "app/api/admin/orders/[id]/shipment/route.ts"
+    );
 
-        /*
-         * The automatic worker and the manual route are the only two
-         * callers, and the worker's own pre-check mirrors the gate
-         * rather than replacing it — so a job introduced by a sweeper
-         * or a reconcile re-queue still lands on the same decision.
-         */
-        const worker = readFile(
-            "lib/mengantar/shipment-worker.ts"
-        );
+    /* The anchors prove each file was really read (not a stale empty
+       string, which would make "does not contain" pass vacuously). */
+    test("the shipment choke point has no review condition", () => {
+        expect(lib).toContain("createShipmentForOrder");
+        expect(lib).not.toContain("reviewBlocked");
 
+        const code = stripComments(lib);
+        expect(code).not.toContain("requiresCodReview");
+        expect(code).not.toContain("codReviewStatus");
+    });
+
+    test("the worker has no review condition on any path", () => {
         expect(worker).toContain("createShipmentForOrder(");
-        expect(worker).toMatch(
-            /requiresCodReview &&[\s\S]{0,80}codReviewStatus !== "APPROVED"/
-        );
+        expect(worker).not.toContain("reviewBlocked");
 
-        const manual = readFile(
-            "app/api/admin/orders/[id]/shipment/route.ts"
-        );
+        const code = stripComments(worker);
+        expect(code).not.toContain("requiresCodReview");
+        expect(code).not.toContain("codReviewStatus");
+    });
 
-        expect(manual).toContain(
-            "createShipmentForOrder(orderId"
-        );
-        expect(manual).toContain("result.reviewBlocked");
+    test("the manual route has no review branch", () => {
+        expect(manual).toContain("createShipmentForOrder(orderId");
+        expect(manual).not.toContain("reviewBlocked");
+        expect(manual).not.toContain("codReviewBlocked");
+
+        const code = stripComments(manual);
+        expect(code).not.toContain("requiresCodReview");
+        expect(code).not.toContain("codReviewStatus");
     });
 });

@@ -3,40 +3,37 @@
  * COD CHECKOUT → SHIPMENT ENQUEUE — REAL DATABASE INTEGRATION
  * ==========================================
  *
- * The P0 regression is "COD stopped creating a Mengantar shipment":
- * before the COD review gate existed, a normal COD order was handed to
- * the shipment pipeline automatically, and after the gate was added the
- * held path leaked into the normal path (order #985: MENGANTAR /
- * NOT_CREATED / requiresCodReview=true / PENDING / providerShipmentId
- * NULL / ShipmentJob []).
+ * REQUIREMENT (owner correction): EVERY successful COD checkout using the
+ * MENGANTAR provider must enqueue a ShipmentJob so the existing worker
+ * requests the shipment/pickup automatically — INCLUDING a flagged order
+ * whose COD review is still PENDING, and while Order.status is still
+ * PENDING. An admin must never have to click Approve for a parcel to be
+ * requested.
  *
  * A mocked Prisma client cannot prove the fix, because the whole bug was
- * about WHAT ACTUALLY GOT PERSISTED. So these tests run the REAL
+ * about WHAT ACTUALLY GOT PERSISTED (order #985: MENGANTAR /
+ * NOT_CREATED / requiresCodReview=true / PENDING / providerShipmentId
+ * NULL / ShipmentJob []). So these tests run the REAL
  * `createCheckoutOrder` and the REAL admin review endpoint against the
- * REAL MariaDB (database `toko`), and assert on the rows the database
+ * REAL MariaDB (database `toko`), and assert the rows the database
  * really holds:
  *
- *   1. a NORMAL COD order (unflagged, Mengantar) leaves the transaction
- *      with exactly ONE PENDING ShipmentJob and the post-response worker
- *      nudge fired — i.e. it ships WITHOUT an admin click;
+ *   1. a NORMAL COD order leaves the transaction with exactly ONE
+ *      PENDING ShipmentJob and the post-response worker nudge fired;
  *   2. a FLAGGED COD order (HIGH_VALUE, and separately
- *      TOO_MANY_OPEN_COD) leaves with NO ShipmentJob and no nudge — the
- *      hold is real, not just a flag;
- *   3. the COD quota RELEASES a slot when the parcel is DELIVERED, and
- *      still counts a legacy NULL shipmentStatus (the SQL
- *      `NULL NOT IN (...)` trap) — the exact regression the quota fix
- *      addresses;
- *   4. approving a flagged order THROUGH THE REAL ENDPOINT transitions
- *      the review, creates exactly ONE ShipmentJob and nudges the
- *      worker; a repeat approval creates no second job and never touches
- *      the buyer's paymentStatus (still UNPAID for COD).
+ *      TOO_MANY_OPEN_COD) leaves with EXACTLY THE SAME job — the review
+ *      is a risk marker, not a hold;
+ *   3. Order.status stays PENDING and does not stop that;
+ *   4. the COD quota still counts a legacy NULL shipmentStatus and still
+ *      RELEASES a slot when the parcel is DELIVERED;
+ *   5. APPROVING later is a decision only: it cannot create a second job
+ *      and does not touch the buyer's paymentStatus (UNPAID for COD).
  *
- * PROVIDER NOTE: no Mengantar / payment call is ever made. The only
- * outbound seams mocked are the Mengantar shipping ESTIMATE (re-priced
- * locally) and the shipment creation helper; the worker itself is never
- * invoked (the post-response nudge is a spy). Everything else —
- * validation, reservation, order create, enqueue, the review
- * transition — runs for real.
+ * PROVIDER-NEUTRAL BY CONSTRUCTION: no Mengantar / payment call is ever
+ * made. The only outbound seams mocked are the Mengantar shipping
+ * ESTIMATE (re-priced locally) and the provider create/pay helpers, all
+ * of which THROW if called — so "the checkout never calls the provider
+ * inside its database transaction" is enforced, not just asserted.
  *
  * Every seeded row carries a unique suffix and is deleted in afterAll.
  */
@@ -67,6 +64,22 @@ jest.mock("@/lib/mengantar/shipping", () => ({
 jest.mock("@/lib/mengantar/shipment-worker", () => ({
     ...jest.requireActual("@/lib/mengantar/shipment-worker"),
     scheduleShipmentProcessing: jest.fn(async () => undefined),
+}));
+
+/*
+ * The legacy RajaOngkir path is used by S8 below: a COD order that is NOT
+ * fulfilled by Mengantar must never enter the Mengantar outbox.
+ */
+jest.mock("@/lib/rajaongkir", () => ({
+    ...jest.requireActual("@/lib/rajaongkir"),
+    calculateDomesticCost: jest.fn(async () => [
+        {
+            code: "jne",
+            service: "REG",
+            cost: 20000,
+            etd: "2-3",
+        },
+    ]),
 }));
 
 jest.mock("@/lib/mengantar/shipment", () => ({
@@ -186,14 +199,12 @@ async function runCodCheckout(input: {
     price: number;
     tag: string;
     guestIdentityKey?: string;
-    /** Logged-in buyer id (skips the guest COD quota entirely). */
-    userId?: string | null;
 }) {
     const { product, variant, destinationId, subdistrict } =
         await seedProductVariant(input.price, input.tag);
 
     const result = await createCheckoutOrder({
-        userId: input.userId ?? null,
+        userId: null,
         mode: "BUY_NOW",
         productId: product.id,
         variantId: variant.id,
@@ -228,8 +239,6 @@ async function runCodCheckout(input: {
         select: {
             id: true,
             orderNumber: true,
-            userId: true,
-            guestIdentityKey: true,
             status: true,
             paymentStatus: true,
             paymentMethod: true,
@@ -250,7 +259,7 @@ async function runCodCheckout(input: {
 
     const job = await prisma.shipmentJob.findUnique({
         where: { orderId: result.order.id },
-        select: { id: true, status: true },
+        select: { id: true, status: true, stage: true },
     });
 
     return { result, order, job };
@@ -286,6 +295,125 @@ async function seedCodOrder(input: {
     createdOrderIds.push(order.id);
 
     return order;
+}
+
+/** A guest COD checkout through the RAJAONGKIR path (no Mengantar). */
+async function runRajaOngkirCodCheckout() {
+    const { product, variant, destinationId, subdistrict } =
+        await seedProductVariant(10_000, "rajaongkir");
+
+    const result = await createCheckoutOrder({
+        userId: null,
+        mode: "BUY_NOW",
+        productId: product.id,
+        variantId: variant.id,
+        quantity: 1,
+        guestAddress: {
+            recipientName: "CCE LEGACY",
+            phone: "081298760003",
+            email: `cce-legacy-${SUFFIX}@cce.local`,
+            address: "Jl. Legacy No. 1",
+            province: "DKI Jakarta",
+            city: "Jakarta Selatan",
+            district: "Kebayoran Baru",
+            subdistrict,
+            postalCode: "12160",
+            rajaOngkirDestinationId: destinationId,
+        },
+        shipping: {
+            provider: "RAJAONGKIR",
+            courier: "jne",
+            service: "REG",
+            cost: 20000,
+        },
+        paymentMethod: "COD",
+    });
+
+    createdOrderIds.push(result.order.id);
+
+    const order = await prisma.order.findUnique({
+        where: { id: result.order.id },
+        select: {
+            id: true,
+            shippingProvider: true,
+            shipmentStatus: true,
+            paymentMethod: true,
+        },
+    });
+
+    const job = await prisma.shipmentJob.findUnique({
+        where: { orderId: result.order.id },
+        select: { id: true, status: true },
+    });
+
+    return { order, job };
+}
+
+/**
+ * A REAL guest NON-COD + Mengantar checkout.
+ *
+ * Non-COD money settles through the payment webhook, so the checkout must
+ * NOT enqueue a Mengantar job and must NOT nudge the worker — that is the
+ * pre-existing behaviour this change has to leave untouched.
+ */
+async function runNonCodMengantarCheckout(
+    paymentMethod: "BANK_TRANSFER" | "QRIS"
+) {
+    const { product, variant, destinationId, subdistrict } =
+        await seedProductVariant(10_000, `noncod-${paymentMethod}`);
+
+    const result = await createCheckoutOrder({
+        userId: null,
+        mode: "BUY_NOW",
+        productId: product.id,
+        variantId: variant.id,
+        quantity: 1,
+        guestAddress: {
+            recipientName: "CCE NONCOD",
+            phone: "081298760004",
+            email: `cce-noncod-${SUFFIX}@cce.local`,
+            address: "Jl. Non COD No. 1",
+            province: "DKI Jakarta",
+            city: "Jakarta Selatan",
+            district: "Kebayoran Baru",
+            subdistrict,
+            postalCode: "12160",
+            rajaOngkirDestinationId: destinationId,
+        },
+        shipping: {
+            provider: "MENGANTAR",
+            courier: "jne",
+            service: "REG",
+            cost: 20000,
+        },
+        paymentMethod,
+    });
+
+    createdOrderIds.push(result.order.id);
+
+    const order = await prisma.order.findUnique({
+        where: { id: result.order.id },
+        select: {
+            id: true,
+            paymentMethod: true,
+            paymentStatus: true,
+            status: true,
+            shippingProvider: true,
+            shipmentStatus: true,
+            requiresCodReview: true,
+            codReviewStatus: true,
+            subtotal: true,
+            shippingCost: true,
+            total: true,
+        },
+    });
+
+    const job = await prisma.shipmentJob.findUnique({
+        where: { orderId: result.order.id },
+        select: { id: true, status: true },
+    });
+
+    return { order, job };
 }
 
 function approveRequest(orderId: number, action = "APPROVE") {
@@ -362,13 +490,12 @@ describe("TARGET 1 — normal COD auto-enqueue (real checkout)", () => {
         /*
          * Server-derived shipping: the mocked estimate (20.000), UNLESS
          * an ACTIVE code-less auto-apply shipping discount reduced it.
-         *
          * `lib/marketing/shipping-discount.ts` auto-applies the first
          * active discount row when no code is supplied, and other suites
-         * in this repo seed such rows against the SAME database. That is
-         * real product behaviour, so the BASE PRICE is pinned whenever no
-         * discount was applied and the money CONTRACT below must hold
-         * either way (never a hard-coded total).
+         * seed such rows against the SAME database. That is real product
+         * behaviour, so the BASE PRICE is pinned whenever no discount was
+         * applied and the money CONTRACT below must hold either way
+         * (never a hard-coded total).
          */
         expect(Number(order!.shippingCost)).toBeGreaterThan(0);
         expect(Number(order!.shippingCost)).toBeLessThanOrEqual(
@@ -383,7 +510,7 @@ describe("TARGET 1 — normal COD auto-enqueue (real checkout)", () => {
         expect(Number(order!.subtotal)).toBe(10_000);
 
         /*
-         * codAmount must equal the RM45 contract:
+         * codAmount must equal the COD contract:
          *   total = subtotal − discount + shippingCost
          * and codAmount = total, so the courier collects the FULL order
          * value including shipping exactly once.
@@ -405,40 +532,48 @@ describe("TARGET 1 — normal COD auto-enqueue (real checkout)", () => {
         // shipment does not wait for an external cron sweep.
         expect(mockedSchedule).toHaveBeenCalledTimes(1);
 
-        // No provider call happened in this process.
+        /*
+         * NO PROVIDER CALL during checkout: the transaction only writes a
+         * ShipmentJob row. Both provider helpers are throwing spies, so a
+         * call from the checkout would fail the test itself.
+         */
         expect(mockedCreateShipment).not.toHaveBeenCalled();
         expect(mockedPayShipment).not.toHaveBeenCalled();
     });
 });
 
 /* ==========================================
- * 2 — FLAGGED COD IS REALLY HELD
+ * 2 — A FLAGGED COD ORDER IS ENQUEUED TOO
  * ========================================== */
 
-describe("TARGET 2/3/4 — flagged COD is held, never auto-approved", () => {
-    test("a HIGH_VALUE COD order gets NO ShipmentJob and no worker nudge", async () => {
+describe("TARGET 2/3 — a flagged COD order still ships automatically", () => {
+    test("a HIGH_VALUE COD order gets its ShipmentJob and the worker nudge", async () => {
         // ≥ COD_REVIEW_AMOUNT_THRESHOLD (default 2.000.000).
         const { order, job } = await runCodCheckout({
             price: 2_500_000,
             tag: "highvalue",
         });
 
+        // Flagged for review…
         expect(order!.requiresCodReview).toBe(true);
         expect(order!.codReviewStatus).toBe("PENDING");
 
-        // Held, not cancelled and not paid.
+        // …and NOT held: order still PENDING, buyer still owes.
         expect(order!.status).toBe("PENDING");
         expect(order!.paymentStatus).toBe("UNPAID");
         expect(order!.shipmentStatus).toBe("NOT_CREATED");
         expect(order!.providerShipmentId).toBeNull();
 
-        // Nothing may be handed to Mengantar before a human decides.
-        expect(job).toBeNull();
-        expect(mockedSchedule).not.toHaveBeenCalled();
+        // THE REQUIREMENT: the automatic shipment is requested anyway.
+        expect(job).not.toBeNull();
+        expect(job!.status).toBe("PENDING");
+        expect(mockedSchedule).toHaveBeenCalledTimes(1);
+
+        // Still no provider call inside the checkout transaction.
         expect(mockedCreateShipment).not.toHaveBeenCalled();
     });
 
-    test("TOO_MANY_OPEN_COD flags the 4th open COD order of the same identity", async () => {
+    test("TOO_MANY_OPEN_COD also flags AND enqueues the 4th open COD order", async () => {
         const identity = `cce-quota-${SUFFIX}-flag`;
 
         for (let index = 0; index < 3; index += 1) {
@@ -461,16 +596,19 @@ describe("TARGET 2/3/4 — flagged COD is held, never auto-approved", () => {
 
         expect(order!.requiresCodReview).toBe(true);
         expect(order!.codReviewStatus).toBe("PENDING");
-        expect(job).toBeNull();
-        expect(mockedSchedule).not.toHaveBeenCalled();
+
+        // A risk flag is not a hold.
+        expect(job).not.toBeNull();
+        expect(job!.status).toBe("PENDING");
+        expect(mockedSchedule).toHaveBeenCalledTimes(1);
     });
 
     test("the quota counts legacy NULL shipmentStatus but RELEASES DELIVERED", async () => {
         const identity = `cce-quota-${SUFFIX}-release`;
 
         /*
-         * The exact SQL trap the fix addresses: `shipmentStatus NOT IN
-         * ('DELIVERED')` is NULL (not TRUE) for a legacy row, so NULL
+         * The exact SQL trap the quota fix addresses: `shipmentStatus NOT
+         * IN ('DELIVERED')` is NULL (not TRUE) for a legacy row, so NULL
          * rows must be listed explicitly or they silently stop counting.
          */
         await seedCodOrder({
@@ -508,9 +646,8 @@ describe("TARGET 2/3/4 — flagged COD is held, never auto-approved", () => {
         ).toBe(2);
 
         /*
-         * End to end: an identity with only ONE open COD order
-         * (2 delivered, 1 open) is NOT flagged, and its order DOES get
-         * the automatic shipment job.
+         * End to end: an identity with only ONE open COD order (2
+         * delivered, 1 open) is NOT flagged, and its order is enqueued.
          */
         const releasedIdentity = `cce-quota-${SUFFIX}-released`;
 
@@ -544,11 +681,82 @@ describe("TARGET 2/3/4 — flagged COD is held, never auto-approved", () => {
 });
 
 /* ==========================================
- * 3 — APPROVAL THROUGH THE REAL ENDPOINT
+ * 8 — NON-MENGANTAR COD NEVER ENTERS THE OUTBOX
  * ========================================== */
 
-describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () => {
-    test("one approval enqueues exactly one job; a repeat adds nothing", async () => {
+describe("TARGET 8 — a non-Mengantar COD order gets no Mengantar job", () => {
+    test("a RAJAONGKIR COD checkout creates no ShipmentJob and is never nudged", async () => {
+        const { order, job } = await runRajaOngkirCodCheckout();
+
+        expect(order!.paymentMethod).toBe("COD");
+        // Legacy provider path: no Mengantar fulfilment state at all.
+        expect(order!.shippingProvider).toBeNull();
+        expect(order!.shipmentStatus).toBeNull();
+
+        // The Mengantar outbox must stay empty…
+        expect(job).toBeNull();
+
+        // …and no Mengantar work may be scheduled for it.
+        expect(mockedSchedule).not.toHaveBeenCalled();
+        expect(mockedCreateShipment).not.toHaveBeenCalled();
+    });
+});
+
+/* ==========================================
+ * 10 — NON-COD PAYMENT BEHAVIOUR IS UNCHANGED
+ * ========================================== */
+
+describe("TARGET 10 — a non-COD order keeps its own settlement trigger", () => {
+    /*
+     * The checkout change widened NOTHING: the enqueue and the worker
+     * nudge are both still scoped to `paymentMethod === "COD"`. A
+     * non-COD order must therefore leave the transaction with an EMPTY
+     * Mengantar outbox and wait for its payment webhook exactly as
+     * before.
+     */
+    test.each(["BANK_TRANSFER", "QRIS"] as const)(
+        "a %s + Mengantar checkout enqueues no job and is never nudged",
+        async (paymentMethod) => {
+            const { order, job } =
+                await runNonCodMengantarCheckout(paymentMethod);
+
+            expect(order).not.toBeNull();
+            expect(order!.paymentMethod).toBe(paymentMethod);
+            expect(order!.shippingProvider).toBe("MENGANTAR");
+
+            /*
+             * The COD risk assessment is COD-scoped: a non-COD order is
+             * never flagged for COD review, even on the Mengantar path.
+             */
+            expect(order!.requiresCodReview).toBe(false);
+            expect(order!.codReviewStatus).toBeNull();
+
+            /*
+             * Nothing is settled at checkout — the payment webhook owns
+             * that transition. A non-COD order awaits an ONLINE payment
+             * (PENDING), which is deliberately a DIFFERENT value from the
+             * COD one (UNPAID); this change must not have moved either.
+             */
+            expect(order!.paymentStatus).toBe("PENDING");
+            expect(order!.shipmentStatus).toBe("NOT_CREATED");
+
+            // No Mengantar outbox row at checkout…
+            expect(job).toBeNull();
+
+            // …and no worker nudge: the settlement webhook triggers it.
+            expect(mockedSchedule).not.toHaveBeenCalled();
+            expect(mockedCreateShipment).not.toHaveBeenCalled();
+            expect(mockedPayShipment).not.toHaveBeenCalled();
+        }
+    );
+});
+
+/* ==========================================
+ * 5 — APPROVE IS A DECISION, NOT A PREREQUISITE
+ * ========================================== */
+
+describe("TARGET 5 — the review decision never creates a shipment", () => {
+    test("the job already exists BEFORE any approval", async () => {
         const { order, job } = await runCodCheckout({
             price: 2_500_000,
             tag: "approve",
@@ -556,13 +764,20 @@ describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () =>
 
         const orderId = order!.id;
 
-        // Pre-condition (the order-#985 shape): flagged, held, no job.
+        // Pre-condition (the order-#985 shape, but FIXED): flagged,
+        // review open, and the automatic job is already queued.
         expect(order!.requiresCodReview).toBe(true);
         expect(order!.codReviewStatus).toBe("PENDING");
-        expect(job).toBeNull();
-        expect(mockedSchedule).not.toHaveBeenCalled();
+        expect(job).not.toBeNull();
+        expect(job!.status).toBe("PENDING");
 
-        /* ---- First click: APPROVE ---- */
+        const jobsBefore = await prisma.shipmentJob.findMany({
+            where: { orderId },
+            select: { id: true, status: true },
+        });
+        expect(jobsBefore).toHaveLength(1);
+
+        /* ---- The approval is a pure decision ---- */
         const first = await approveRequest(orderId);
         const firstBody = await first.json();
 
@@ -572,7 +787,6 @@ describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () =>
         expect(firstBody.data.codReviewStatus).toBe(
             "APPROVED"
         );
-        expect(firstBody.data.shipmentEnqueued).toBe(true);
 
         const afterFirst = await prisma.order.findUnique({
             where: { id: orderId },
@@ -597,6 +811,7 @@ describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () =>
             "NOT_CREATED"
         );
 
+        // …and it creates NO second job: exactly one, all along.
         const jobsAfterFirst = await prisma.shipmentJob.findMany({
             where: { orderId },
             select: { id: true, status: true },
@@ -604,7 +819,7 @@ describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () =>
 
         expect(jobsAfterFirst).toHaveLength(1);
         expect(jobsAfterFirst[0].status).toBe("PENDING");
-        expect(mockedSchedule).toHaveBeenCalledTimes(1);
+        expect(jobsAfterFirst[0].id).toBe(jobsBefore[0].id);
 
         /* ---- Second click: replay must be inert ---- */
         const second = await approveRequest(orderId);
@@ -621,9 +836,8 @@ describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () =>
 
         // Still exactly ONE job — the unique ShipmentJob.orderId holds.
         expect(jobsAfterSecond).toHaveLength(1);
-        expect(jobsAfterSecond[0].status).toBe("PENDING");
 
-        // …and nothing was handed to the provider by this process.
+        // Nothing was handed to the provider by this process.
         expect(mockedCreateShipment).not.toHaveBeenCalled();
     });
 
@@ -645,11 +859,20 @@ describe("TARGET 2/5/6 — approving a flagged COD order (real endpoint)", () =>
             where: { id: order!.id },
             select: {
                 codReviewStatus: true,
-                shipmentJob: { select: { id: true } },
+                shipmentStatus: true,
             },
         });
 
+        // Untouched decision, and fulfilment still going its own way.
         expect(after!.codReviewStatus).toBe("PENDING");
-        expect(after!.shipmentJob).toBeNull();
+        expect(after!.shipmentStatus).toBe("NOT_CREATED");
+
+        const jobs = await prisma.shipmentJob.findMany({
+            where: { orderId: order!.id },
+            select: { id: true, status: true },
+        });
+
+        expect(jobs).toHaveLength(1);
+        expect(jobs[0].status).toBe("PENDING");
     });
 });

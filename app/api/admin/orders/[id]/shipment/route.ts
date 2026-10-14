@@ -68,6 +68,12 @@ export async function POST(
          * Admin recovery is the ONLY path allowed to recreate an
          * intentionally DELETED shipment. The automatic worker never
          * passes `allowDeleted`.
+         *
+         * NOTE: this route does NOT consult the COD review. It is the
+         * same single `createShipmentForOrder` choke point the worker
+         * uses, so it can never create a SECOND shipment: the provider
+         * claim is CAS-guarded and a persisted `providerShipmentId`
+         * short-circuits the call.
          */
         const result = await createShipmentForOrder(orderId, {
             allowDeleted: true,
@@ -75,27 +81,13 @@ export async function POST(
 
         if (!result.ok) {
             /*
-             * COD REVIEW hold: a COD order that is still PENDING review —
-             * or was REJECTED — must not be shipped by a manual click
-             * either. Only an approved review releases it (through the
-             * cod-review endpoint, which records who approved it), so
-             * this answers 409 Conflict rather than a generic 400.
+             * NO COD REVIEW BRANCH: this manual button is a RECOVERY
+             * path, and a COD review in any state (PENDING / APPROVED /
+             * REJECTED) must not block it. A refusal here now means a
+             * real, non-review condition: the order is cancelled /
+             * refunded, is not a Mengantar order, or the provider itself
+             * rejected the request.
              */
-            if (result.reviewBlocked) {
-                return NextResponse.json(
-                    {
-                        success: false,
-                        message:
-                            result.reason ??
-                            "COD menunggu tinjauan admin.",
-                        data: {
-                            codReviewBlocked: true,
-                        },
-                    },
-                    { status: 409 }
-                );
-            }
-
             return NextResponse.json(
                 {
                     success: false,

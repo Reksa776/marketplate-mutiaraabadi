@@ -59,6 +59,17 @@ const mockTx = {
     },
     shipmentJob: {
         updateMany: jest.fn(async () => ({ count: 1 })),
+        /*
+         * The provider-aware rejection re-reads the job INSIDE the
+         * transaction: `findUnique` proves no pickup is scheduled yet,
+         * `count` proves no worker is mid-flight.
+         */
+        findUnique: jest.fn(async () => ({
+            status: "PENDING",
+            pickupDate: null,
+            pickupTime: null,
+        })),
+        count: jest.fn(async () => 0),
     },
     productVariant: {
         update: jest.fn(async () => ({})),
@@ -235,6 +246,12 @@ beforeEach(() => {
     mockTx.shipmentJob.updateMany.mockResolvedValue({
         count: 1,
     });
+    mockTx.shipmentJob.findUnique.mockResolvedValue({
+        status: "PENDING",
+        pickupDate: null,
+        pickupTime: null,
+    });
+    mockTx.shipmentJob.count.mockResolvedValue(0);
     mockTx.productVariant.update.mockResolvedValue({});
     mockTx.flashSale.findFirst.mockResolvedValue(null);
     mockTx.spinWheelSpin.findUnique.mockResolvedValue(null);
@@ -486,13 +503,16 @@ describe("Admin COD review — approval", () => {
         expect(mockedEnqueue).not.toHaveBeenCalled();
     });
 
-    test("approving RESETS a job the worker cancelled at the review gate", async () => {
+    test("approving RESETS a job cancelled earlier and converges", async () => {
         adminSession();
 
         /*
-         * The worker cancels a job for a not-yet-approved COD order.
-         * Approving must therefore revive that job — otherwise the
-         * order would never ship even though it was approved.
+         * CONVERGENCE ONLY. The COD review is NOT a gate any more, so
+         * the worker no longer cancels a job for an unreviewed order —
+         * a flagged COD order ships at checkout like any other. This
+         * case still matters for jobs that were cancelled for an
+         * unrelated reason (or left over from the old gate): approving
+         * must revive such a job so the order is not stranded.
          */
         mockedOrder.findUnique.mockResolvedValue(
             pendingCodOrder({
@@ -720,19 +740,31 @@ describe("Admin COD review — REJECT & CANCEL", () => {
             })
         );
 
-        // Shipment jobs are STOPPED (kept for the record, never deleted)
-        // and reset out of any lock.
+        /*
+         * Shipment jobs are STOPPED (kept for the record, never deleted)
+         * — but ONLY the ones that have not reached the provider yet.
+         *
+         * PROCESSING is deliberately EXCLUDED: a claimed job means a
+         * provider call may be in flight, so rejecting must DEFER rather
+         * than assume the shipment did not happen (see the in-flight case
+         * in cod-reject-cancel.integration.test.ts).
+         */
         expect(
             mockTx.shipmentJob.updateMany
         ).toHaveBeenCalledWith({
             where: {
                 orderId: 77,
-                status: { in: ["PENDING", "PROCESSING"] },
+                status: { in: ["PENDING", "FAILED"] },
             },
             data: expect.objectContaining({
                 status: "CANCELLED",
                 lockedAt: null,
             }),
+        });
+
+        // …and the in-flight check guarded that cancellation.
+        expect(mockTx.shipmentJob.count).toHaveBeenCalledWith({
+            where: { orderId: 77, status: "PROCESSING" },
         });
 
         // History is preserved: the order row is soft-cancelled.

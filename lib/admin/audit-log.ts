@@ -42,8 +42,9 @@ export type AuditAction =
     | "ORDER_TRACKING_ASSIGNED"
     | "SHIPMENT_CREATED"
     | "SHIPMENT_PAID"
-    // High-risk COD orders are held for admin review; these record the
-    // decision that releases (or withholds) the shipment.
+    // High-risk COD orders are FLAGGED for admin review (a risk marker,
+    // never a fulfilment gate — the shipment is requested automatically
+    // at checkout). These record the admin's business decision.
     | "COD_REVIEW_APPROVED"
     | "COD_REVIEW_REJECTED"
     // Provider explicitly deleted the shipment; local state was cleared

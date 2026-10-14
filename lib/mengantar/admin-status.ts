@@ -184,16 +184,22 @@ const STATUS_TABLE: Record<string, StatusDescriptor> = {
  *
  * Those are DIFFERENT conditions, and conflating them is exactly how
  * order #985 sat at `NOT_CREATED` with an empty ShipmentJob and no admin
- * approval UI: "Belum dibuat" looked identical whether a job was queued,
- * whether an admin was the blocker, or whether the job had failed.
+ * approval UI: "Belum dibuat" looked identical whether a job was queued
+ * or whether the job had failed.
  *
- * This pure resolver names each condition explicitly for a COD order:
+ * This pure resolver names each SHIPMENT condition explicitly for a COD
+ * order:
  *
- *   COD_REVIEW_PENDING  → "Menunggu Persetujuan COD"
  *   AWAITING_SHIPMENT   → "Menunggu Pembuatan Shipment"
  *   CREATING_SHIPMENT   → "Sedang Membuat Shipment"
  *   SHIPMENT_CREATED    → "Shipment Berhasil"
  *   SHIPMENT_FAILED     → "Shipment Gagal"
+ *
+ * THE COD REVIEW IS DELIBERATELY NOT PART OF THIS. A review in any
+ * state (PENDING / APPROVED / REJECTED) does not change whether a
+ * shipment is being created, so it must never be presented as a
+ * shipment condition that blocks fulfilment. The review has its own
+ * panel (risk marker + decision + audit).
  *
  * It is presentation only (no prisma / no env / no network) and returns
  * NOT_APPLICABLE for anything that is not a COD order or is already in a
@@ -204,7 +210,6 @@ const STATUS_TABLE: Record<string, StatusDescriptor> = {
 
 export type CodShipmentLifecycleKind =
     | "NOT_APPLICABLE"
-    | "COD_REVIEW_PENDING"
     | "AWAITING_SHIPMENT"
     | "CREATING_SHIPMENT"
     | "SHIPMENT_CREATED"
@@ -220,10 +225,6 @@ const LIFECYCLE_LABELS: Record<
     Exclude<CodShipmentLifecycleKind, "NOT_APPLICABLE">,
     { label: string; tone: MengantarAdminStatusTone }
 > = {
-    COD_REVIEW_PENDING: {
-        label: "Menunggu Persetujuan COD",
-        tone: "warning",
-    },
     AWAITING_SHIPMENT: {
         label: "Menunggu Pembuatan Shipment",
         tone: "info",
@@ -265,16 +266,13 @@ const COD_LIFECYCLE_NOT_APPLICABLE: CodShipmentLifecycle = {
 };
 
 /**
- * Resolve the explicit COD shipment condition shown to the admin.
+ * Resolve the explicit COD SHIPMENT condition shown to the admin.
  *
- * The admin decision ALWAYS wins: while a COD review is not yet
- * APPROVED, the honest condition is "waiting for approval — nothing is
- * queued", regardless of what any lingering job row says.
+ * The COD review is intentionally absent from this decision: it is a
+ * risk marker, so it must not be able to label a shipment as blocked.
  */
 export function resolveCodShipmentLifecycle(order: {
     paymentMethod?: string | null;
-    requiresCodReview?: boolean | null;
-    codReviewStatus?: string | null;
     shipmentStatus?: string | null;
     /** `ShipmentJob.status` when the caller already loaded it. */
     shipmentJobStatus?: string | null;
@@ -286,19 +284,6 @@ export function resolveCodShipmentLifecycle(order: {
 
     if (!isCod) {
         return COD_LIFECYCLE_NOT_APPLICABLE;
-    }
-
-    const reviewPending =
-        Boolean(order.requiresCodReview) &&
-        String(order.codReviewStatus ?? "")
-            .trim()
-            .toUpperCase() !== "APPROVED";
-
-    if (reviewPending) {
-        return {
-            kind: "COD_REVIEW_PENDING",
-            ...LIFECYCLE_LABELS.COD_REVIEW_PENDING,
-        };
     }
 
     const raw = String(order.shipmentStatus ?? "")

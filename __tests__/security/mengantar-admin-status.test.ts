@@ -255,46 +255,23 @@ describe("resolveMengantarAdminStatus", () => {
  * ==========================================
  *
  * The provider label alone cannot tell an admin whether a COD order is
- * waiting for THEIR approval, queued for the worker, mid-creation, done,
- * or failed. The regression (order #985) presented as a plain
- * "Belum dibuat" with nothing else to distinguish it.
+ * queued for the worker, mid-creation, done, or failed. The regression
+ * (order #985) presented as a plain "Belum dibuat" with nothing else to
+ * distinguish it.
+ *
+ * THE COD REVIEW IS NOT PART OF THIS: it is a risk marker, so it must
+ * never label a shipment as blocked. The resolver takes no review input
+ * at all, and a source guard below pins that.
  */
 
 describe("resolveCodShipmentLifecycle", () => {
     const base = {
         paymentMethod: "COD",
-        requiresCodReview: false,
-        codReviewStatus: null,
         shipmentStatus: "NOT_CREATED",
         shipmentJobStatus: null,
     };
 
-    it("a COD order awaiting review reads 'Menunggu Persetujuan COD'", () => {
-        const lifecycle = resolveCodShipmentLifecycle({
-            ...base,
-            requiresCodReview: true,
-            codReviewStatus: "PENDING",
-        });
-
-        expect(lifecycle.kind).toBe("COD_REVIEW_PENDING");
-        expect(lifecycle.label).toBe(
-            "Menunggu Persetujuan COD"
-        );
-        expect(lifecycle.tone).toBe("warning");
-    });
-
-    it("the admin decision wins over a lingering job row", () => {
-        const lifecycle = resolveCodShipmentLifecycle({
-            ...base,
-            requiresCodReview: true,
-            codReviewStatus: "PENDING",
-            shipmentJobStatus: "PROCESSING",
-        });
-
-        expect(lifecycle.kind).toBe("COD_REVIEW_PENDING");
-    });
-
-    it("an approved COD order not yet shipped reads 'Menunggu Pembuatan Shipment'", () => {
+    it("a COD order not yet shipped reads 'Menunggu Pembuatan Shipment'", () => {
         for (const status of [
             "NOT_CREATED",
             "SHIPMENT_PENDING",
@@ -302,8 +279,6 @@ describe("resolveCodShipmentLifecycle", () => {
         ]) {
             const lifecycle = resolveCodShipmentLifecycle({
                 ...base,
-                requiresCodReview: true,
-                codReviewStatus: "APPROVED",
                 shipmentStatus: status,
             });
 
@@ -312,6 +287,33 @@ describe("resolveCodShipmentLifecycle", () => {
                 "Menunggu Pembuatan Shipment"
             );
         }
+    });
+
+    it("no review state can change the resolved shipment condition", () => {
+        /*
+         * The resolver must not even accept review fields: fulfilment is
+         * independent of the review, so a review-driven label is not
+         * expressible.
+         */
+        const resolverSource = readFile(
+            "lib/mengantar/admin-status.ts"
+        );
+
+        const lifecycleSection = resolverSource.slice(
+            resolverSource.indexOf(
+                "export function resolveCodShipmentLifecycle"
+            )
+        );
+
+        expect(lifecycleSection).not.toContain(
+            "requiresCodReview"
+        );
+        expect(lifecycleSection).not.toContain(
+            "codReviewStatus"
+        );
+        expect(lifecycleSection).not.toContain(
+            "COD_REVIEW_PENDING"
+        );
     });
 
     it("a claimed job reads 'Sedang Membuat Shipment'", () => {
@@ -365,10 +367,9 @@ describe("resolveCodShipmentLifecycle", () => {
         ).toBe("Shipment Gagal");
     });
 
-    it("the five conditions are DISTINCT labels", () => {
+    it("the four shipment conditions are DISTINCT labels", () => {
         const labels = new Set(
             [
-                { requiresCodReview: true, codReviewStatus: "PENDING" },
                 { shipmentStatus: "SHIPMENT_PENDING" },
                 { shipmentStatus: "CREATING" },
                 { shipmentStatus: "CREATED" },
@@ -382,7 +383,7 @@ describe("resolveCodShipmentLifecycle", () => {
             )
         );
 
-        expect(labels.size).toBe(5);
+        expect(labels.size).toBe(4);
     });
 
     it("stays silent for non-COD and terminal non-success states", () => {
@@ -606,14 +607,24 @@ describe("dashboard wiring", () => {
     });
 
     /*
-     * The shipment gate refuses every create path while a COD review is
-     * open (see manual-shipment-cod-gate.test.ts), so the manual
-     * "Buat Shipment" button must not be OFFERED either — otherwise the
-     * admin is invited to click a button that always returns 409.
+     * The COD review must NOT gate the recovery button. A flagged order
+     * is shipped automatically, and if that attempt fails the admin has
+     * to retry it without "approving" anything first — so the page must
+     * not reintroduce a review condition on manual creation.
      */
-    it("the detail page does not offer manual creation during an open COD review", () => {
-        expect(detailPage).toContain("reviewBlocked");
-        expect(detailPage).toContain("!reviewBlocked");
+    it("the detail page does not gate manual creation on the COD review", () => {
+        expect(detailPage).not.toContain("reviewBlocked");
+        expect(detailPage).not.toContain("codReviewBlocked");
+        expect(detailPage).toContain("autoJobActive");
+    });
+
+    it("the detail page never claims the shipment waits for approval", () => {
+        expect(detailPage).not.toContain(
+            "Shipment Mengantar dibuat melalui antrean otomatis."
+        );
+        expect(detailPage).not.toContain(
+            "Setujui & Buat Shipment"
+        );
     });
 
     it("the shared resolver is pure (no prisma / server-only)", () => {

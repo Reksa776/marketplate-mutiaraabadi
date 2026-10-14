@@ -196,8 +196,6 @@ async function processClaimedJob(
             shippingProvider: true,
             shipmentStatus: true,
             shippingPaymentStatus: true,
-            requiresCodReview: true,
-            codReviewStatus: true,
         },
     });
 
@@ -207,30 +205,20 @@ async function processClaimedJob(
     }
 
     /*
-     * ---- COD REVIEW GATE (worker) ----
+     * ---- COD REVIEW IS NOT A GATE (worker) ----
      *
-     * A high-risk COD order is HELD until an admin approves it, and the
-     * hold is enforced HERE as well as at order creation, because a
-     * ShipmentJob can be (re)introduced after a rejection by an admin
-     * retry, a manual sweep or a reconcile re-queue.
+     * `requiresCodReview` / `codReviewStatus` are RISK MARKERS for the
+     * admin dashboard and the audit trail. They are deliberately NOT
+     * consulted here: a COD + Mengantar order must be shipped
+     * automatically as soon as it exists, whether or not a review is
+     * open, and whether the review is PENDING, APPROVED or REJECTED.
      *
-     * Without this check the sweeper would ship a REJECTED order —
-     * silently defeating the review decision. The job is CANCELLED (not
-     * retried) with a durable reason; approving the review resets it to
-     * PENDING, so an approval after this point still ships normally.
+     * A rejected review no longer cancels a parcel that is already with
+     * the courier — that decision is made safely in lib/cod-review.ts,
+     * which refuses any local cancellation once provider evidence
+     * exists. Fulfilment is therefore governed ONLY by the order status
+     * and the provider state below, exactly like a non-COD order.
      */
-    if (
-        order.paymentMethod === "COD" &&
-        order.requiresCodReview &&
-        order.codReviewStatus !== "APPROVED"
-    ) {
-        await finishJob(
-            jobId,
-            "CANCELLED",
-            "COD menunggu tinjauan admin (belum disetujui)."
-        );
-        return;
-    }
 
     // ---- Refund / cancellation guard (never create fakes) ----
     if (
@@ -448,34 +436,16 @@ export async function runShipmentJobForOrder(
     orderId: number
 ): Promise<{ ok: boolean; reason?: string }> {
     /*
-     * COD REVIEW GATE (admin retry path).
+     * NO COD REVIEW GATE HERE.
      *
-     * An admin retry must not bypass a recorded COD review decision:
-     * a REJECTED order (or one still awaiting review) may only be
-     * shipped through the review endpoint itself, which keeps the
-     * audit trail ("who approved this and when") intact.
+     * Admin retry is a RECOVERY path: it exists precisely for orders
+     * whose automatic shipment never completed (the #985 shape). Gating
+     * it on an APPROVED review made recovery impossible without an
+     * admin click, so the review state is not consulted at all. What
+     * protects the order is the create path itself (idempotent on
+     * providerShipmentId, refuses a cancelled/refunded order, respects
+     * an intentional admin deletion).
      */
-    const gate = await prisma.order.findUnique({
-        where: { id: orderId },
-        select: {
-            paymentMethod: true,
-            requiresCodReview: true,
-            codReviewStatus: true,
-        },
-    });
-
-    if (
-        gate?.paymentMethod === "COD" &&
-        gate.requiresCodReview &&
-        gate.codReviewStatus !== "APPROVED"
-    ) {
-        return {
-            ok: false,
-            reason:
-                "COD menunggu tinjauan admin. Setujui tinjauan COD terlebih dahulu.",
-        };
-    }
-
     const job = await prisma.shipmentJob.upsert({
         where: { orderId },
         create: { orderId },

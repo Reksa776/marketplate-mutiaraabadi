@@ -229,8 +229,10 @@ export async function GET(
             isGuestOrder: !order.user,
 
             /*
-             * COD REVIEW STATE — the decision gate that holds a
-             * high-risk COD shipment until an admin acts.
+             * COD REVIEW STATE — a RISK MARKER + audit trail for a
+             * high-risk COD order. It never gates fulfilment: the
+             * shipment is requested automatically at checkout regardless
+             * of this value.
              */
             requiresCodReview:
                 order.requiresCodReview,

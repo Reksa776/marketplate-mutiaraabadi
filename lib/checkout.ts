@@ -315,8 +315,12 @@ export type CreatedCheckout = {
     guestAccessToken?: string | null;
 
     /**
-     * true when the COD order is held for admin review and therefore
-     * has NO ShipmentJob yet.
+     * true when the COD order was FLAGGED for admin review.
+     *
+     * INFORMATIONAL ONLY: the flag marks elevated risk for the admin
+     * dashboard / audit trail. It NEVER holds fulfilment — a flagged COD
+     * order still gets its ShipmentJob and is still shipped
+     * automatically like every other COD + Mengantar order.
      */
     requiresCodReview?: boolean;
 
@@ -2265,10 +2269,14 @@ export async function createCheckoutOrder(
              * ==========================================
              *
              * A high-risk COD order (high value, or a guest with too
-             * many COD orders still open) is FLAGGED and its shipment is
-             * HELD until an admin approves. It is never auto-cancelled
-             * and its paymentStatus stays UNPAID — flagging only defers
-             * the Mengantar shipment creation.
+             * many COD orders still open) is FLAGGED for admin review.
+             *
+             * THE FLAG IS INFORMATIONAL. It is a risk marker for the
+             * admin dashboard and the audit trail, and it changes
+             * NOTHING about fulfilment: the order is never auto-cancelled,
+             * its paymentStatus stays UNPAID, and (below) it still gets
+             * its ShipmentJob so Mengantar is still asked to create the
+             * shipment/pickup automatically at checkout.
              */
             let requiresCodReview = false;
             let codReviewReasons: string[] = [];
@@ -2573,15 +2581,19 @@ export async function createCheckoutOrder(
              * Scoped to COD only - the NON-COD settlement trigger in
              * the payment webhooks is unchanged.
              *
-             * COD REVIEW GATE: a FLAGGED (high-risk) COD order gets NO
-             * shipment job here. Nothing is dispatched until an admin
-             * approves it, at which point the approve endpoint enqueues
-             * the job. The order itself is never cancelled.
+             * COD REVIEW IS NOT A GATE: a FLAGGED order is enqueued
+             * exactly like an unflagged one. The shipment/pickup must be
+             * requested automatically once the checkout succeeded —
+             * waiting for an admin click is what stranded production
+             * order #985.
+             *
+             * NOTE: this only writes a ShipmentJob ROW inside the
+             * checkout transaction. No provider call is ever made from
+             * here; Mengantar is contacted later by the worker.
              */
             if (
                 shippingProvider === "MENGANTAR" &&
-                input.paymentMethod === "COD" &&
-                !requiresCodReview
+                input.paymentMethod === "COD"
             ) {
                 await enqueueShipmentJobTx(tx, order.id);
             }
@@ -3006,11 +3018,14 @@ export async function createCheckoutOrder(
      * Mengantar API call. Any failure is swallowed and the durable
      * PENDING job is retried by the existing sweeper. NON-COD orders
      * keep using their settlement webhook unchanged.
+     *
+     * This applies to FLAGGED COD orders too: `requiresCodReview` is a
+     * risk marker, not a hold. The admin's review decision never gates
+     * fulfilment (see lib/cod-review.ts for what REJECT may do).
      */
     if (
         shippingProvider === "MENGANTAR" &&
-        input.paymentMethod === "COD" &&
-        !result.requiresCodReview
+        input.paymentMethod === "COD"
     ) {
         await scheduleShipmentProcessing();
     }

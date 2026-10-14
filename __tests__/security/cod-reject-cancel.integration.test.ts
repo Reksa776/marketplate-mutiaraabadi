@@ -548,3 +548,336 @@ describe("rejectAndCancelCodOrder against the real database", () => {
         });
     });
 });
+
+/* ==========================================
+ * REJECT MUST NEVER DESYNC FROM THE PROVIDER
+ * ==========================================
+ *
+ * Because COD now ships AUTOMATICALLY (the review is a risk marker, not
+ * a gate), Mengantar may already hold the parcel when an admin rejects —
+ * or a worker may be inside the provider call right now. Cancelling
+ * locally in those cases would make the database lie about what the
+ * courier has, so the decision is recorded and the order is left alone.
+ */
+
+describe("reject is provider-aware against the real database", () => {
+    /** Give the seeded COD order local evidence that Mengantar has it. */
+    async function markHandedToProvider(input: {
+        orderId: number;
+        jobId: number;
+        providerShipmentId?: string;
+        shipmentStatus?: string;
+        withPickup?: boolean;
+    }) {
+        await prisma.order.update({
+            where: { id: input.orderId },
+            data: {
+                providerShipmentId:
+                    input.providerShipmentId ?? null,
+                shipmentStatus:
+                    input.shipmentStatus ?? "NOT_CREATED",
+            },
+        });
+
+        if (input.withPickup) {
+            await prisma.shipmentJob.update({
+                where: { id: input.jobId },
+                data: {
+                    pickupDate: "2026-10-15",
+                    pickupTime: "09:00-12:00",
+                },
+            });
+        }
+    }
+
+    test("a reject with a provider shipment id records the decision but cancels NOTHING", async () => {
+        const { product, variant, voucher, tag } =
+            await seedResources();
+
+        const { order, job } = await seedFlaggedCodOrder({
+            product,
+            variant,
+            voucher,
+            tag,
+            codReviewStatus: "PENDING",
+        });
+
+        await markHandedToProvider({
+            orderId: order.id,
+            jobId: job.id,
+            providerShipmentId: "ORD-PROVIDER-1",
+            shipmentStatus: "CREATED",
+        });
+
+        const before = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        // Reservations were consumed by checkout and must STAY consumed.
+        expect(before.variant!.stock).toBe(8);
+
+        const result = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("unreachable");
+
+        // The REVIEW is still recorded (marker + audit)…
+        expect(result.changed).toBe(true);
+        expect(result.cancelled).toBe(false);
+        expect(result.providerShipmentPreserved).toBe(true);
+        expect(result.skipReason).toBe(
+            "PROVIDER_SHIPMENT_EXISTS"
+        );
+
+        const after = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        // …and NOTHING local was rolled back or cancelled.
+        expect(after.order!.codReviewStatus).toBe("REJECTED");
+        expect(after.order!.status).toBe("PENDING");
+        expect(after.variant!.stock).toBe(8);
+        expect(after.usage!.usageCount).toBe(1);
+        expect(after.job!.status).toBe("PENDING");
+    });
+
+    test("a reject with a SCHEDULED pickup is treated the same way", async () => {
+        const { product, variant, voucher, tag } =
+            await seedResources();
+
+        const { order, job } = await seedFlaggedCodOrder({
+            product,
+            variant,
+            voucher,
+            tag,
+            codReviewStatus: "PENDING",
+        });
+
+        // No provider id yet, but the pickup is already booked.
+        await markHandedToProvider({
+            orderId: order.id,
+            jobId: job.id,
+            withPickup: true,
+        });
+
+        const result = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("unreachable");
+
+        expect(result.cancelled).toBe(false);
+        expect(result.providerShipmentPreserved).toBe(true);
+
+        const after = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        expect(after.order!.status).toBe("PENDING");
+        expect(after.order!.codReviewStatus).toBe("REJECTED");
+        expect(after.variant!.stock).toBe(8);
+        expect(after.job!.status).toBe("PENDING");
+    });
+
+    test("a handoff shipment STATUS alone is enough to preserve the order", async () => {
+        const { product, variant, voucher, tag } =
+            await seedResources();
+
+        const { order, job } = await seedFlaggedCodOrder({
+            product,
+            variant,
+            voucher,
+            tag,
+            codReviewStatus: "PENDING",
+        });
+
+        /*
+         * WAITING_SHIPPING_PAYMENT means the provider already ACCEPTED a
+         * POST /order (the balance just has to settle) — the parcel
+         * exists at Mengantar.
+         */
+        await markHandedToProvider({
+            orderId: order.id,
+            jobId: job.id,
+            shipmentStatus: "WAITING_SHIPPING_PAYMENT",
+        });
+
+        const result = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("unreachable");
+
+        expect(result.cancelled).toBe(false);
+        expect(result.providerShipmentPreserved).toBe(true);
+
+        const after = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        expect(after.order!.status).toBe("PENDING");
+        expect(after.variant!.stock).toBe(8);
+    });
+
+    test("a job in flight DEFERS the cancellation instead of guessing", async () => {
+        const { product, variant, voucher, tag } =
+            await seedResources();
+
+        const { order, job } = await seedFlaggedCodOrder({
+            product,
+            variant,
+            voucher,
+            tag,
+            codReviewStatus: "PENDING",
+        });
+
+        // A worker is inside the provider call RIGHT NOW.
+        await prisma.shipmentJob.update({
+            where: { id: job.id },
+            data: {
+                status: "PROCESSING",
+                lockedAt: new Date(),
+            },
+        });
+
+        const result = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("unreachable");
+
+        // Decision recorded, cancellation deferred, in-flight job kept.
+        expect(result.changed).toBe(true);
+        expect(result.cancelled).toBe(false);
+        expect(result.jobInFlight).toBe(true);
+        expect(result.skipReason).toBe("JOB_IN_FLIGHT");
+
+        const after = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        expect(after.order!.codReviewStatus).toBe("REJECTED");
+        expect(after.order!.status).toBe("PENDING");
+        expect(after.variant!.stock).toBe(8);
+        expect(after.job!.status).toBe("PROCESSING");
+    });
+
+    test("rejecting again AFTER the in-flight job settled still cannot double-release", async () => {
+        const { product, variant, voucher, tag } =
+            await seedResources();
+
+        const { order, job } = await seedFlaggedCodOrder({
+            product,
+            variant,
+            voucher,
+            tag,
+            codReviewStatus: "PENDING",
+        });
+
+        await prisma.shipmentJob.update({
+            where: { id: job.id },
+            data: { status: "PROCESSING", lockedAt: new Date() },
+        });
+
+        const first = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(first.ok).toBe(true);
+        if (!first.ok) throw new Error("unreachable");
+        expect(first.cancelled).toBe(false);
+
+        // The worker finishes having created the shipment.
+        await prisma.shipmentJob.update({
+            where: { id: job.id },
+            data: { status: "DONE", lockedAt: null },
+        });
+
+        await prisma.order.update({
+            where: { id: order.id },
+            data: {
+                providerShipmentId: "ORD-LATE-1",
+                shipmentStatus: "CREATED",
+            },
+        });
+
+        const second = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(second.ok).toBe(true);
+        if (!second.ok) throw new Error("unreachable");
+
+        // Converges: still nothing released, still not cancelled.
+        expect(second.changed).toBe(false);
+        expect(second.cancelled).toBe(false);
+        expect(second.providerShipmentPreserved).toBe(true);
+
+        const after = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        expect(after.order!.status).toBe("PENDING");
+        expect(after.variant!.stock).toBe(8);
+        expect(after.usage!.usageCount).toBe(1);
+        expect(after.job!.status).toBe("DONE");
+    });
+
+    test("with NO provider evidence the reject still cancels safely (control)", async () => {
+        const { product, variant, voucher, tag } =
+            await seedResources();
+
+        const { order } = await seedFlaggedCodOrder({
+            product,
+            variant,
+            voucher,
+            tag,
+            codReviewStatus: "PENDING",
+        });
+
+        const result = await rejectAndCancelCodOrder({
+            orderId: order.id,
+            adminId: ADMIN_ID,
+        });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) throw new Error("unreachable");
+
+        expect(result.cancelled).toBe(true);
+        expect(result.providerShipmentPreserved).toBe(false);
+        expect(result.skipReason).toBeUndefined();
+
+        const after = await readState(
+            order.id,
+            variant.id,
+            voucher.id
+        );
+
+        expect(after.order!.status).toBe("CANCELLED");
+        expect(after.variant!.stock).toBe(10);
+        expect(after.job!.status).toBe("CANCELLED");
+    });
+});

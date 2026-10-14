@@ -349,6 +349,38 @@ describe("createShipmentForOrder (mocked provider)", () => {
         expect(mockedCreateOrder).not.toHaveBeenCalled();
     });
 
+    /*
+     * S7 of the COD auto-fulfilment matrix: once a provider shipment id
+     * is persisted, creating must be a pure no-op. This is the guard that
+     * makes a repeat worker run, a replayed checkout, or a manual admin
+     * click impossible to turn into a SECOND Mengantar shipment.
+     */
+    it("2b. a COD order that already has a providerShipmentId is never POSTed again", async () => {
+        mockPrisma.order.findUnique.mockResolvedValue(
+            baseOrder({
+                paymentMethod: "COD",
+                paymentStatus: "UNPAID",
+                codAmount: 110000,
+                providerShipmentId: "ORD-COD-1",
+                providerBatchId: "BATCH-COD-1",
+                shipmentStatus: "CREATED",
+                shippingPaymentStatus: "NOT_APPLICABLE",
+                trackingNumber: "CN-COD-1",
+            })
+        );
+
+        const result = await createShipmentForOrder(10);
+
+        expect(result.ok).toBe(true);
+        expect(result.changed).toBe(false);
+        expect(result.shipmentId).toBe("ORD-COD-1");
+        expect(result.trackingNumber).toBe("CN-COD-1");
+
+        // No provider call of any kind — create OR pay.
+        expect(mockedCreateOrder).not.toHaveBeenCalled();
+        expect(mockedPayUnpaid).not.toHaveBeenCalled();
+    });
+
     it("3. is race-safe — a lost claim does not call the provider twice", async () => {
         mockPrisma.order.findUnique
             .mockResolvedValueOnce(baseOrder())

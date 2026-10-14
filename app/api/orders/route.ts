@@ -391,7 +391,7 @@ export async function POST(
                 success: true,
 
                 message: result.requiresCodReview
-                    ? "Pesanan berhasil dibuat dan sedang menunggu verifikasi."
+                    ? "Pesanan berhasil dibuat. Pesanan ini ditandai untuk tinjauan risiko COD; pengiriman tetap diproses otomatis."
                     : "Pesanan berhasil dibuat.",
 
                 data: {
