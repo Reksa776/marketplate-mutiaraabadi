@@ -4,12 +4,69 @@ import { prisma } from "@/lib/prisma";
 import { releaseStockAndVoucherForOrder } from "@/lib/order-stock";
 import { releaseShippingDiscountForOrder } from "@/lib/marketing/shipping-discount";
 import { createAuditLog } from "@/lib/admin/audit-log";
+import {
+    assessCodRisk,
+    countActiveGuestCodOrders,
+    COD_MAX_ACTIVE_GUEST_ORDERS,
+    COD_REVIEW_AMOUNT_THRESHOLD,
+} from "@/lib/cod-policy";
 
 type RouteContext = {
     params: Promise<{
         id: string;
     }>;
 };
+
+/**
+ * COD REVIEW INFO (read-only, admin-facing).
+ *
+ * `requiresCodReview` is persisted, but the REASONS behind the flag are
+ * NOT — they are computed once at checkout (lib/checkout.ts →
+ * assessCodRisk) and only logged. Re-deriving them here with the SAME
+ * pure policy keeps the review prompt explainable without a schema
+ * change, and it reports the LIVE active-COD count (already fixed to
+ * release delivered parcels).
+ *
+ * The hashed guest identity is NEVER returned — only the count it
+ * produces, which is what the admin needs to judge the flag.
+ */
+async function buildCodReviewInfo(order: {
+    total: unknown;
+    userId: string | null;
+    guestIdentityKey: string | null;
+    codReviewStatus: string | null;
+    codReviewedAt: Date | null;
+    codReviewedBy: string | null;
+}) {
+    const isGuest = !order.userId;
+
+    const activeCodOrders =
+        isGuest && order.guestIdentityKey
+            ? await countActiveGuestCodOrders(
+                  prisma,
+                  order.guestIdentityKey
+              )
+            : 0;
+
+    const risk = assessCodRisk({
+        total: Number(order.total),
+        activeCodOrders,
+        isGuest,
+    });
+
+    return {
+        required: true,
+        status: order.codReviewStatus ?? null,
+        reviewedAt:
+            order.codReviewedAt?.toISOString() ?? null,
+        reviewedBy: order.codReviewedBy ?? null,
+        reasons: risk.reasons,
+        activeCodOrders,
+        amountThreshold: COD_REVIEW_AMOUNT_THRESHOLD,
+        maxActiveGuestOrders:
+            COD_MAX_ACTIVE_GUEST_ORDERS,
+    };
+}
 
 const allowedStatuses = [
     "PENDING",
@@ -137,6 +194,14 @@ export async function GET(
             );
         }
 
+        /*
+         * Computed only for a flagged order (one extra count query), and
+         * kept out of the response for every other order.
+         */
+        const codReview = order.requiresCodReview
+            ? await buildCodReviewInfo(order)
+            : null;
+
         const data = {
             id: order.id,
             orderNumber: order.orderNumber,
@@ -176,6 +241,12 @@ export async function GET(
             codReviewedAt:
                 order.codReviewedAt?.toISOString() ??
                 null,
+
+            /*
+             * Derived review detail (reasons + live counts). Null when
+             * the order was never flagged.
+             */
+            codReview,
 
             recipientName:
                 order.recipientName,

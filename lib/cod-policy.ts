@@ -54,6 +54,28 @@ export const COD_ACTIVE_STATUSES: Order_status[] = [
     "SHIPPED",
 ];
 
+/**
+ * Shipment states that mean "this COD order is FINISHED".
+ *
+ * WHY THIS EXISTS: the Mengantar fulfilment pipeline deliberately
+ * never writes `Order.status` — the shipping lifecycle lives in
+ * `shipmentStatus` (see lib/mengantar/shipment.ts). A COD order that
+ * was shipped and confirmed delivered therefore keeps
+ * `status = PENDING` unless an admin moves it by hand, so counting
+ * `COD_ACTIVE_STATUSES` alone meant a DELIVERED parcel occupied the
+ * buyer's open-COD allowance FOREVER. A legitimate repeat buyer then
+ * hit the cap and had every later order held for review — the very
+ * regression this constant fixes.
+ *
+ * Deliberately CONSERVATIVE: only a CONFIRMED DELIVERED parcel is
+ * released. UNDELIVERED / RETURNED / CANCELLED shipments keep counting,
+ * because a parcel that came back is exactly the signal this quota
+ * exists to catch.
+ */
+export const COD_QUOTA_RELEASED_SHIPMENT_STATUSES = [
+    "DELIVERED",
+] as const;
+
 function readIntEnv(
     name: string,
     fallback: number
@@ -138,6 +160,27 @@ export async function countActiveGuestCodOrders(
             status: {
                 in: COD_ACTIVE_STATUSES,
             },
+
+            /*
+             * A confirmed delivery releases the slot.
+             *
+             * NULL-SAFE ON PURPOSE: `notIn` alone would DROP every row
+             * whose shipmentStatus is NULL, because SQL three-valued
+             * logic evaluates `NULL NOT IN (...)` to NULL (not TRUE).
+             * Legacy / non-Mengantar COD orders have exactly that NULL,
+             * so they must be listed explicitly or the quota would
+             * silently stop counting them.
+             */
+            OR: [
+                { shipmentStatus: null },
+                {
+                    shipmentStatus: {
+                        notIn: [
+                            ...COD_QUOTA_RELEASED_SHIPMENT_STATUSES,
+                        ],
+                    },
+                },
+            ],
         },
     });
 }

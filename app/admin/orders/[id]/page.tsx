@@ -8,6 +8,23 @@ import toast from "react-hot-toast";
 import { useDialog } from "@/components/ui/Dialog";
 import { resolveMengantarAdminStatus } from "@/lib/mengantar/admin-status";
 
+/**
+ * COD REVIEW detail (derived server-side by
+ * GET /api/admin/orders/:id from the SAME pure policy that flagged the
+ * order at checkout). `reasons` is empty when the live counts no longer
+ * reproduce the original flag.
+ */
+type CodReviewInfo = {
+    required: boolean;
+    status: string | null;
+    reviewedAt: string | null;
+    reviewedBy: string | null;
+    reasons: string[];
+    activeCodOrders: number;
+    amountThreshold: number;
+    maxActiveGuestOrders: number;
+};
+
 type Order = {
     id: number;
     orderNumber: string;
@@ -49,6 +66,12 @@ type Order = {
 
     status: string;
     paymentMethod: string;
+
+    // ---- COD abuse review gate ----
+    requiresCodReview: boolean;
+    codReviewStatus: string | null;
+    codReviewedAt: string | null;
+    codReview: CodReviewInfo | null;
 
     createdAt: string;
     updatedAt: string;
@@ -159,6 +182,17 @@ const SHIPPING_PAYMENT_LABELS: Record<string, string> = {
 };
 
 /*
+ * Why a COD order was held. Codes come from lib/cod-policy.ts
+ * (assessCodRisk) — never invent a reason the server did not report.
+ */
+const COD_REVIEW_REASON_LABELS: Record<string, string> = {
+    HIGH_VALUE:
+        "Nilai pesanan mencapai ambang tinjauan COD",
+    TOO_MANY_OPEN_COD:
+        "Terlalu banyak pesanan COD yang masih terbuka untuk pembeli ini",
+};
+
+/*
  * Shipment states that are still in motion. Only while the order
  * sits in one of these does the admin detail page poll — and it polls
  * our OWN `/api/admin/orders/:id/shipment` route, never Mengantar
@@ -251,6 +285,12 @@ export default function AdminOrderDetailPage() {
 
     const [trackingNumber, setTrackingNumber] =
         useState("");
+
+    const [codReviewBusy, setCodReviewBusy] =
+        useState(false);
+
+    const codReviewReasons =
+        order?.codReview?.reasons ?? [];
 
     async function loadTracking() {
         if (!order?.id || !order.trackingNumber) {
@@ -644,6 +684,96 @@ export default function AdminOrderDetailPage() {
             toast.error(message);
         } finally {
             setShipmentBusy(false);
+        }
+    }
+
+    /*
+     * =====================================================
+     * COD REVIEW — APPROVE / REJECT
+     * =====================================================
+     *
+     * The decision is made by the EXISTING admin endpoint
+     * (`/api/admin/orders/:id/cod-review`): APPROVE marks the review
+     * approved and enqueues the shipment job through the SAME idempotent
+     * outbox every other COD order uses, after which the shipment worker
+     * creates the Mengantar shipment. This page NEVER talks to the
+     * provider directly and never creates a shipment itself.
+     *
+     * DOUBLE-SUBMIT GUARD: both buttons are disabled while `busy` (the
+     * handler also returns early), and the endpoint is idempotent — a
+     * replayed approval enqueues no second job, a replayed rejection
+     * releases nothing twice.
+     *
+     * REJECT is destructive (it cancels the order, releases stock/voucher
+     * and notifies the buyer), so it always asks for confirmation first.
+     */
+    async function reviewCodOrder(
+        action: "APPROVE" | "REJECT"
+    ) {
+        if (codReviewBusy) return;
+
+        if (action === "REJECT") {
+            const confirmed = await dialog.confirm({
+                title: "Tolak & Batalkan Pesanan COD",
+                message:
+                    "Tolak tinjauan COD ini? Pesanan akan DIBATALKAN, stok/voucher dikembalikan, dan pembeli diberi tahu. Persetujuan tidak dapat dibalik.",
+                variant: "danger",
+                confirmText: "Tolak & Batalkan",
+            });
+
+            if (!confirmed) return;
+        }
+
+        try {
+            setCodReviewBusy(true);
+
+            const response = await fetch(
+                `/api/admin/orders/${id}/cod-review`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type":
+                            "application/json",
+                    },
+                    body: JSON.stringify({ action }),
+                }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(
+                    result.message ||
+                        (action === "APPROVE"
+                            ? "Gagal menyetujui tinjauan COD."
+                            : "Gagal menolak tinjauan COD.")
+                );
+            }
+
+            toast.success(
+                result.message ??
+                    "Tinjauan COD diproses."
+            );
+
+            /*
+             * Re-read BOTH: the review decision and the shipment/job it
+             * just queued, so the panel never shows a stale status.
+             */
+            await loadOrder();
+            await loadShipment();
+        } catch (error) {
+            console.error(
+                "COD REVIEW ERROR:",
+                error
+            );
+
+            toast.error(
+                error instanceof Error
+                    ? error.message
+                    : "Gagal memproses tinjauan COD."
+            );
+        } finally {
+            setCodReviewBusy(false);
         }
     }
 
@@ -1395,6 +1525,213 @@ export default function AdminOrderDetailPage() {
                                 </p>
                             </div>
                         </div>
+
+                        {/* COD REVIEW GATE */}
+                        {order.requiresCodReview && (
+                            <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50/40">
+                                <div className="border-b border-amber-100 px-5 py-4">
+                                    <h2 className="text-sm font-semibold text-gray-900">
+                                        {order.codReviewStatus ===
+                                        "PENDING"
+                                            ? "COD REVIEW REQUIRED"
+                                            : order.codReviewStatus ===
+                                                "APPROVED"
+                                              ? "Tinjauan COD disetujui"
+                                              : "Tinjauan COD ditolak"}
+                                    </h2>
+
+                                    <p className="mt-0.5 text-xs text-gray-500">
+                                        Pesanan COD bernilai/berisiko
+                                        tinggi ditahan sebelum dikirim
+                                        ke Mengantar
+                                    </p>
+                                </div>
+
+                                <div className="space-y-4 px-5 py-5">
+                                    {order.codReviewStatus ===
+                                        "PENDING" && (
+                                        <>
+                                            <div>
+                                                <p className="text-xs font-medium text-gray-600">
+                                                    Alasan tinjauan
+                                                </p>
+
+                                                <ul className="mt-2 space-y-1">
+                                                    {codReviewReasons.length ===
+                                                    0 ? (
+                                                        <li className="text-xs leading-5 text-gray-500">
+                                                            Ditandai
+                                                            otomatis
+                                                            saat
+                                                            checkout.
+                                                            Rincian
+                                                            alasan
+                                                            tidak
+                                                            tersedia.
+                                                        </li>
+                                                    ) : (
+                                                        codReviewReasons.map(
+                                                            (
+                                                                reason
+                                                            ) => (
+                                                                <li
+                                                                    key={
+                                                                        reason
+                                                                    }
+                                                                    className="flex gap-2 text-xs leading-5 text-gray-700"
+                                                                >
+                                                                    <span className="text-amber-500">
+                                                                        •
+                                                                    </span>
+                                                                    <span>
+                                                                        {COD_REVIEW_REASON_LABELS[
+                                                                            reason
+                                                                        ] ??
+                                                                            reason}
+                                                                    </span>
+                                                                </li>
+                                                            )
+                                                        )
+                                                    )}
+                                                </ul>
+                                            </div>
+
+                                            {order.codReview && (
+                                                <div className="space-y-2 rounded-lg border border-amber-100 bg-white px-3 py-3 text-xs">
+                                                    <div className="flex justify-between gap-3">
+                                                        <span className="text-gray-400">
+                                                            Total
+                                                            pesanan
+                                                        </span>
+                                                        <span className="font-medium text-gray-900">
+                                                            {rupiah(
+                                                                order.total
+                                                            )}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="flex justify-between gap-3">
+                                                        <span className="text-gray-400">
+                                                            Ambang
+                                                            tinjauan
+                                                        </span>
+                                                        <span className="font-medium text-gray-900">
+                                                            {rupiah(
+                                                                order
+                                                                    .codReview
+                                                                    .amountThreshold
+                                                            )}
+                                                        </span>
+                                                    </div>
+
+                                                    <div className="flex justify-between gap-3">
+                                                        <span className="text-gray-400">
+                                                            COD aktif
+                                                            (pembeli
+                                                            ini)
+                                                        </span>
+                                                        <span className="font-medium text-gray-900">
+                                                            {
+                                                                order
+                                                                    .codReview
+                                                                    .activeCodOrders
+                                                            }{" "}
+                                                            /{" "}
+                                                            {
+                                                                order
+                                                                    .codReview
+                                                                    .maxActiveGuestOrders
+                                                            }
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <div className="space-y-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        reviewCodOrder(
+                                                            "APPROVE"
+                                                        )
+                                                    }
+                                                    disabled={
+                                                        codReviewBusy
+                                                    }
+                                                    className="h-10 w-full rounded-lg bg-gray-900 px-4 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    {codReviewBusy
+                                                        ? "Memproses..."
+                                                        : "Setujui & Buat Shipment"}
+                                                </button>
+
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        reviewCodOrder(
+                                                            "REJECT"
+                                                        )
+                                                    }
+                                                    disabled={
+                                                        codReviewBusy
+                                                    }
+                                                    className="h-10 w-full rounded-lg border border-red-200 bg-white px-4 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    {codReviewBusy
+                                                        ? "Memproses..."
+                                                        : "Tolak & Batalkan Pesanan"}
+                                                </button>
+                                            </div>
+
+                                            <p className="text-[11px] leading-4 text-gray-500">
+                                                Setujui = tinjauan
+                                                disetujui dan shipment
+                                                Mengantar dibuat
+                                                otomatis melalui
+                                                antrean (satu kali).
+                                                Tolak = pesanan
+                                                dibatalkan permanen;
+                                                stok, voucher, dan
+                                                komisi dikembalikan
+                                                serta pembeli diberi
+                                                tahu.
+                                            </p>
+                                        </>
+                                    )}
+
+                                    {order.codReviewStatus ===
+                                        "APPROVED" && (
+                                        <p className="text-xs leading-5 text-gray-600">
+                                            Disetujui
+                                            {order.codReview
+                                                ?.reviewedAt
+                                                ? ` pada ${new Date(
+                                                      order
+                                                          .codReview
+                                                          .reviewedAt
+                                                  ).toLocaleString(
+                                                      "id-ID"
+                                                  )}`
+                                                : ""}
+                                            . Shipment Mengantar
+                                            dibuat melalui antrean
+                                            otomatis.
+                                        </p>
+                                    )}
+
+                                    {order.codReviewStatus ===
+                                        "REJECTED" && (
+                                        <p className="text-xs leading-5 text-gray-600">
+                                            Ditolak — pesanan sudah
+                                            dibatalkan. Persetujuan
+                                            tidak dapat dibalik;
+                                            pembeli dapat memesan
+                                            ulang.
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
 
                         {/* MENGANTAR SHIPMENT */}
                         {order.shippingProvider === "MENGANTAR" &&

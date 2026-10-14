@@ -4,7 +4,10 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { createAuditLog } from "@/lib/admin/audit-log";
 import { rejectAndCancelCodOrder } from "@/lib/cod-review";
-import { enqueueShipmentJob } from "@/lib/mengantar/shipment-worker";
+import {
+    enqueueShipmentJob,
+    scheduleShipmentProcessing,
+} from "@/lib/mengantar/shipment-worker";
 
 export const dynamic = "force-dynamic";
 
@@ -323,6 +326,8 @@ export async function POST(
                 order
             );
 
+            await nudgeWorker(enqueued);
+
             return NextResponse.json({
                 success: true,
                 message: "Tinjauan COD sudah disetujui.",
@@ -397,6 +402,8 @@ export async function POST(
             order
         );
 
+        await nudgeWorker(enqueued);
+
         await createAuditLog({
             adminId: session.user.id,
             action: "COD_REVIEW_APPROVED",
@@ -434,6 +441,27 @@ export async function POST(
             { status: 500 }
         );
     }
+}
+
+/**
+ * Nudge the EXISTING shipment worker right after an approval enqueued a
+ * job.
+ *
+ * Approval is a human action, so the shipment must not wait for an
+ * external cron sweep to be picked up — that is exactly the "approved
+ * but nothing happened" state this endpoint used to leave behind. This
+ * reuses the SAME post-response trigger (`after()` + an idempotent
+ * worker claim) that a COD checkout already uses, so nothing new is
+ * introduced and a duplicate/replayed approval stays a no-op.
+ */
+async function nudgeWorker(
+    enqueued: boolean
+): Promise<void> {
+    if (!enqueued) {
+        return;
+    }
+
+    await scheduleShipmentProcessing();
 }
 
 /**

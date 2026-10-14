@@ -127,6 +127,7 @@ import { createAuditLog } from "@/lib/admin/audit-log";
 import {
     assessCodRisk,
     COD_ACTIVE_STATUSES,
+    COD_QUOTA_RELEASED_SHIPMENT_STATUSES,
     countActiveGuestCodOrders,
 } from "@/lib/cod-policy";
 import {
@@ -309,11 +310,30 @@ describe("COD risk assessment", () => {
                 guestIdentityKey: "g1:abc:def",
                 paymentMethod: "COD",
                 status: { in: COD_ACTIVE_STATUSES },
+                /*
+                 * A CONFIRMED DELIVERED parcel releases its slot, and
+                 * the filter is NULL-safe: legacy rows have no
+                 * shipmentStatus and must keep counting (a bare
+                 * `notIn` would silently drop them).
+                 */
+                OR: [
+                    { shipmentStatus: null },
+                    {
+                        shipmentStatus: {
+                            notIn: [
+                                ...COD_QUOTA_RELEASED_SHIPMENT_STATUSES,
+                            ],
+                        },
+                    },
+                ],
             },
         });
         expect(COD_ACTIVE_STATUSES).not.toContain(
             "CANCELLED" as never
         );
+        expect([
+            ...COD_QUOTA_RELEASED_SHIPMENT_STATUSES,
+        ]).toEqual(["DELIVERED"]);
     });
 });
 
