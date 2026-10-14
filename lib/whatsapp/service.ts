@@ -94,6 +94,43 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2000;
 const RECONNECT_MAX_DELAY_MS = 60000;
 
+/**
+ * How a `connection: "close"` event is treated. PURE.
+ *
+ *   LOGOUT  — WhatsApp said the session is gone (logged out from the
+ *             phone). Auth is cleared ONCE and no reconnect is
+ *             scheduled: an explicit logout must never loop.
+ *   REPLACED— another device/session took over this account. Retrying
+ *             would fight that device, so the service stops and reports
+ *             it honestly.
+ *   RETRY   — transient (network loss, timeout, restart required,
+ *             unavailable service, bad session, unknown codes). Safe to
+ *             reconnect with the SAVED auth, bounded by
+ *             MAX_RECONNECT_ATTEMPTS — auth is never deleted here.
+ */
+export function classifyConnectionClose(
+    statusCode: number | undefined
+): "LOGOUT" | "REPLACED" | "RETRY" {
+    if (statusCode === DisconnectReason.loggedOut) {
+        return "LOGOUT";
+    }
+
+    if (statusCode === DisconnectReason.connectionReplaced) {
+        return "REPLACED";
+    }
+
+    return "RETRY";
+}
+
+export type BootstrapConnectOutcome = {
+    started: boolean;
+    status: WhatsAppConnectionStatus;
+    reason:
+        | "STARTED"
+        | "ALREADY_ACTIVE"
+        | "FAILED";
+};
+
 // ==========================================
 // SERVICE CLASS
 // ==========================================
@@ -134,6 +171,17 @@ class WhatsAppService {
 
     getQrCode(): string | null {
         return this.currentQr;
+    }
+
+    /**
+     * The session directory this process uses (env override or default).
+     *
+     * Exposed so the startup bootstrap inspects the SAME directory the
+     * service will open — one source of truth, no second copy of the
+     * `WHATSAPP_AUTH_DIR` rule.
+     */
+    getAuthDir(): string {
+        return this.authDir;
     }
 
     getStatus(): WhatsAppStatusInfo {
@@ -195,6 +243,65 @@ class WhatsAppService {
         this.reconnectAttempts = 0;
 
         await this.initialize();
+    }
+
+    // ==========================================
+    // BOOTSTRAP CONNECT (SERVER STARTUP)
+    // ==========================================
+    //
+    // The startup path (see ./bootstrap + ./instrumentation.ts) calls
+    // THIS method instead of `connect()`, so a deploy / PM2 restart
+    // resumes the saved session without an admin opening the dashboard.
+    //
+    // It is deliberately idempotent and non-destructive:
+    //   * already connected / connecting / reconnecting, or a socket or
+    //     an initialization already in flight → NOTHING happens (this is
+    //     what makes concurrent startups share one socket),
+    //   * it re-arms the service (a previous shutdown must not block a
+    //     fresh process), clears a pending reconnect timer and resets the
+    //     attempt counter,
+    //   * it never deletes auth, never logs out and never sends anything —
+    //     it only opens the socket from the SAVED credentials.
+
+    async bootstrapFromSavedSession(): Promise<BootstrapConnectOutcome> {
+        if (
+            this.socket ||
+            this.initializing ||
+            this.status === "CONNECTED" ||
+            this.status === "CONNECTING" ||
+            this.status === "RECONNECTING"
+        ) {
+            return {
+                started: false,
+                status: this.status,
+                reason: "ALREADY_ACTIVE",
+            };
+        }
+
+        this.manuallyDisconnected = false;
+
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+
+        this.reconnectAttempts = 0;
+
+        await this.initialize();
+
+        if (this.status === "ERROR") {
+            return {
+                started: false,
+                status: this.status,
+                reason: "FAILED",
+            };
+        }
+
+        return {
+            started: true,
+            status: this.status,
+            reason: "STARTED",
+        };
     }
 
     // ==========================================
@@ -360,6 +467,16 @@ class WhatsAppService {
     // Closes socket but PRESERVES auth for next restart.
 
     shutdown(): void {
+        /*
+         * Idempotent: PM2 may deliver SIGINT and SIGTERM in sequence, and
+         * a double shutdown must not throw or leave a half-closed state.
+         * Auth is PRESERVED here — the session has to survive the
+         * restart, which is the whole point of this flow.
+         */
+        if (this.manuallyDisconnected && !this.socket) {
+            return;
+        }
+
         this.manuallyDisconnected = true;
 
         if (this.reconnectTimer) {
@@ -376,6 +493,7 @@ class WhatsAppService {
             this.socket = null;
         }
 
+        this.currentQr = null;
         this.status = "DISCONNECTED";
         this.initializing = false;
     }
@@ -407,6 +525,13 @@ class WhatsAppService {
 
             // Stale check: if generation changed during async auth load
             if (generation !== this.connectionGeneration) {
+                /*
+                 * Release the in-flight flag before bailing out: a leaked
+                 * `initializing = true` would make every later
+                 * connect/bootstrap a silent no-op.
+                 */
+                this.initializing = false;
+
                 return;
             }
 
@@ -541,12 +666,12 @@ class WhatsAppService {
 
             this.lastDisconnectedAt = new Date();
 
-            if (statusCode === DisconnectReason.loggedOut) {
-                // Permanent logout from phone — invalidate session
+            const outcome = classifyConnectionClose(statusCode);
+
+            if (outcome === "LOGOUT") {
+                // Permanent logout from phone — invalidate session ONCE.
                 this.handleLoggedOut(generation);
-            } else if (
-                statusCode === DisconnectReason.connectionReplaced
-            ) {
+            } else if (outcome === "REPLACED") {
                 // Another device took over
                 this.status = "ERROR";
                 this.lastError =
@@ -736,11 +861,15 @@ export function getWhatsAppService(): WhatsAppService {
 export async function initializeWhatsApp(): Promise<void> {
     const service = getWhatsAppService();
 
-    if (service.getStatus().status !== "DISCONNECTED") {
-        return;
-    }
-
-    service.connect().catch((err) => {
+    /*
+     * Delegates to the SAME idempotent startup path the instrumentation
+     * bootstrap uses, so there is exactly one auto-connect implementation
+     * (and one set of guards). Failures stay inside: this helper is called
+     * from request paths, where it must never throw.
+     */
+    try {
+        await service.bootstrapFromSavedSession();
+    } catch (err) {
         console.error("[WHATSAPP] Background init error:", err);
-    });
+    }
 }
