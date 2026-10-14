@@ -440,4 +440,20 @@ export const rateLimiters = {
     // Shipping estimate / cost from a guest browser (paid provider calls).
     guestShippingQuote: (key: string) =>
         checkRateLimit(`gshipping:${key}`, 60, 60 * 1000), // 60 per minute
+
+    /*
+     * PUBLIC RESI TRACKING (no account, resi only).
+     *
+     * Two buckets, because a resi lookup is BOTH a per-client volume
+     * surface and an ENUMERATION surface: `publicResiLookup` bounds one
+     * client hammering the route, while `publicResiLookupIdentity`
+     * bounds how often ONE resi may be probed (an attacker guessing
+     * waybills cannot grind a single hit, and a real customer checking
+     * their own parcel stays far inside the ceiling).
+     */
+    publicResiLookup: (key: string) =>
+        checkRateLimit(`resi:${key}`, 20, 60 * 1000), // 20 per minute
+
+    publicResiLookupIdentity: (key: string) =>
+        checkRateLimit(`resi-id:${key}`, 30, 60 * 60 * 1000), // 30 per hour
 };

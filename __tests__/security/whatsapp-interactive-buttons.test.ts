@@ -281,7 +281,11 @@ import {
     handoffNotice,
     mainMenu,
     postDeliveryMenu,
+    trackingInstruction,
 } from "@/lib/whatsapp/inbound/menu";
+import {
+    OFFICIAL_TRACKING_PAGE_URL,
+} from "@/lib/whatsapp/inbound/tracking-url";
 import { parseInboundMessage } from "@/lib/whatsapp/inbound/parse";
 import { buildTrackingReply } from "@/lib/whatsapp/inbound/replies";
 import { CHAT_STATE } from "@/lib/whatsapp/inbound/state";
@@ -1018,7 +1022,9 @@ describe("taps travel through the existing guards", () => {
         process.env[FLAG] = "1";
     });
 
-    test("tapping Lacak Resi without a bound order asks for the order number", async () => {
+    test("the tracking page hand-off is never dressed up as a button menu", async () => {
+        process.env[FLAG] = "1";
+
         const { deps, sent } = makeDeps();
 
         const result = await handleIncomingMessage(
@@ -1027,9 +1033,45 @@ describe("taps travel through the existing guards", () => {
         );
 
         expect(result).toBe("REPLIED");
-        expect(deliveredBodies(sent)).toEqual([askOrderNumber()]);
-        // Nothing about any order was released.
-        expect(deliveredBodies(sent).join(" ")).not.toContain(ORDER_NUMBER);
+
+        /*
+         * The instruction reply carries a URL and no menu, so it must be
+         * sent as plain text: `menuKindForReply` finds no menu inside it,
+         * and the pipeline degrades to `send` instead of attaching a
+         * button payload (which would have to invent options).
+         */
+        expect(sent.interactives).toHaveLength(0);
+        expect(deliveredBodies(sent)).toEqual([
+            trackingInstruction(OFFICIAL_TRACKING_PAGE_URL),
+        ]);
+    });
+
+    test("tapping Lacak Resi hands over the tracking page in every state", async () => {
+        const { deps, sent } = makeDeps();
+
+        const result = await handleIncomingMessage(
+            buttonTap("menu_track"),
+            deps
+        );
+
+        expect(result).toBe("REPLIED");
+
+        /*
+         * The tap reaches the SAME decision as the typed digit, and that
+         * decision no longer asks for anything: it is the instruction +
+         * official tracking page reply.
+         */
+        expect(deliveredBodies(sent)).toEqual([
+            trackingInstruction(OFFICIAL_TRACKING_PAGE_URL),
+        ]);
+
+        const bodies = deliveredBodies(sent).join(" ");
+
+        // Nothing about any order was released (or requested).
+        expect(bodies).not.toContain(ORDER_NUMBER);
+        expect(bodies).not.toContain("JNE1234567890");
+        expect(bodies).not.toContain(askOrderNumber());
+        expect(bodies).toContain("/lacak");
     });
 
     test("tapping Status Pesanan is still worthless for someone else's order", async () => {
@@ -1173,7 +1215,16 @@ describe("taps travel through the existing guards", () => {
                 shipmentStatus: "DELIVERED",
             })
         );
-        seedVerifiedState();
+
+        /*
+         * The customer is already in the post-delivery sub-menu, so key
+         * "1" means "Lihat Riwayat Pengiriman" — the one variant that
+         * still renders an interactive menu (the main-menu hand-off to
+         * the website is plain text on purpose).
+         */
+        seedVerifiedState({
+            state: CHAT_STATE.VERIFIED_DELIVERED,
+        });
 
         const { deps, sent } = makeDeps();
 

@@ -313,7 +313,10 @@ import {
     TRACKING_UPDATE_UNAVAILABLE_NOTE,
     type TrackingView,
 } from "@/lib/whatsapp/inbound/tracking";
-import { resetTrackingUrlWarningThrottle } from "@/lib/whatsapp/inbound/tracking-url";
+import {
+    OFFICIAL_TRACKING_PAGE_URL,
+    resetTrackingUrlWarningThrottle,
+} from "@/lib/whatsapp/inbound/tracking-url";
 
 const mockedMengantar =
     getMengantarOrderByTracking as unknown as jest.Mock;
@@ -1048,7 +1051,16 @@ describe("ownership verification", () => {
         mockDb.orders.push(orderRow({ shipmentStatus: "CREATED" }));
         seedVerifiedState();
 
-        await deliver(waMessage({ id: "LIVE-9", text: "1" }), deps);
+        /*
+         * A bare order number is the remaining owner-bound tracking
+         * path (menu key "1" is now a website hand-off). It goes through
+         * the same `bindOrder` + `trackingDecision` code the customer's
+         * own order always used.
+         */
+        await deliver(
+            waMessage({ id: "LIVE-9", text: ORDER_NUMBER }),
+            deps
+        );
 
         expect(sent[0].text).toContain(
             "Paket Dibuat, Belum Diambil Kurir"
@@ -1060,7 +1072,10 @@ describe("ownership verification", () => {
         });
         mockNow = new Date(mockNow.getTime() + 10 * 1000);
 
-        await deliver(waMessage({ id: "LIVE-10", text: "1" }), deps);
+        await deliver(
+            waMessage({ id: "LIVE-10", text: ORDER_NUMBER }),
+            deps
+        );
 
         expect(sent[1].text).toContain("Paket Dalam Perjalanan");
         expect(sent[1].text).not.toContain("Belum Diambil Kurir");
@@ -1080,7 +1095,7 @@ describe("ownership verification", () => {
         });
 
         const result = await deliver(
-            waMessage({ id: "EXP-1", text: "1" }),
+            waMessage({ id: "EXP-1", text: "2" }),
             deps
         );
 
@@ -1183,19 +1198,29 @@ describe("menu", () => {
         expect(stateRow()?.state).toBe(CHAT_STATE.MENU);
     });
 
-    test("a service chosen before an order is known asks for the order number", async () => {
+    test("'1' hands over the tracking page, '2' asks for the order number", async () => {
         const { deps, sent } = makeDeps();
 
+        /*
+         * Menu key "1" no longer collects anything: it points the
+         * customer at the official tracking page, in every state, so no
+         * order number is ever asked for (or disclosed) on this key.
+         */
         await deliver(waMessage({ id: "ASK-1", text: "1" }), deps);
 
-        expect(sent[0].text).toBe(menu.askOrderNumber());
-        expect(stateRow()?.state).toBe(CHAT_STATE.AWAITING_ORDER);
-        expect(stateRow()?.pendingIntent).toBe("TRACK");
+        expect(sent[0].text).toBe(
+            menu.trackingInstruction(OFFICIAL_TRACKING_PAGE_URL)
+        );
+        expect(stateRow()?.state).toBe(CHAT_STATE.MENU);
+        expect(stateRow()?.pendingIntent).toBeNull();
 
         mockNow = new Date(mockNow.getTime() + 5 * 1000);
 
+        /* The order-number path is unchanged on menu key "2". */
         await deliver(waMessage({ id: "ASK-2", text: "2" }), deps);
 
+        expect(sent[1].text).toBe(menu.askOrderNumber());
+        expect(stateRow()?.state).toBe(CHAT_STATE.AWAITING_ORDER);
         expect(stateRow()?.pendingIntent).toBe("STATUS");
     });
 
@@ -1467,7 +1492,10 @@ describe("tracking and status", () => {
         seedVerifiedState();
 
         const result = await deliver(
-            waMessage({ id: `TRACK-${rows[0].id}`, text: "1" }),
+            waMessage({
+                id: `TRACK-${rows[0].id}`,
+                text: ORDER_NUMBER,
+            }),
             deps
         );
 
@@ -2229,7 +2257,7 @@ describe("the official tracking page link", () => {
         expect(sent[0].text).not.toContain("?pesanan=");
     });
 
-    test('typing "resi" reaches the tracking flow and the same link', async () => {
+    test('typing "resi" reaches the tracking page hand-off, not the order data', async () => {
         const { deps, sent } = makeDeps();
 
         mockDb.orders.push(orderRow());
@@ -2241,12 +2269,16 @@ describe("the official tracking page link", () => {
         );
 
         expect(result).toBe("REPLIED");
-        expect(sent[0].text).toContain(
-            "Nomor Resi: JNE1234567890"
-        );
-        expect(sent[0].text).toContain(
-            `${BARE}?pesanan=${ORDER_NUMBER}`
-        );
+
+        /*
+         * A typed tracking word is menu key "1": the SAME instruction
+         * reply, with the BARE page (nothing was proven for this chat),
+         * and no order detail of any kind.
+         */
+        expect(sent[0].text).toBe(menu.trackingInstruction(BARE));
+        expect(sent[0].text).not.toContain("?pesanan=");
+        expect(sent[0].text).not.toContain(ORDER_NUMBER);
+        expect(sent[0].text).not.toContain("JNE1234567890");
     });
 
     test("with no configured origin every reply stays text only", async () => {

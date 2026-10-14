@@ -86,7 +86,10 @@ import {
 } from "./tracking";
 import * as chatState from "./state";
 import { CHAT_STATE } from "./state";
-import { buildOrderTrackingUrl } from "./tracking-url";
+import {
+    buildOrderTrackingUrl,
+    OFFICIAL_TRACKING_PAGE_URL,
+} from "./tracking-url";
 
 /* ==========================================
  * ACTOR / LIMITS
@@ -750,9 +753,10 @@ async function decide(
     /* ---- Plain tracking words ("resi", "lacak", "tracking") ---- */
     if (parsed.command === "TRACK") {
         /*
-         * Identical to menu key "1": the same binding requirement, the
-         * same pending intent and the same reply builder. A typed word is
-         * therefore not a second, less-guarded route into tracking data.
+         * Identical to menu key "1": the same instruction + official
+         * tracking page hand-off. A typed word therefore reaches no
+         * tracking data at all — it merely gets the customer to the
+         * page that is built for it.
          *
          * parse.ts classifies COMPLAINT before TRACK, so a problem report
          * that happens to mention a resi still reaches a human.
@@ -877,18 +881,32 @@ async function handleDigit(
     }
 
     /* ==========================================
-     * 1. Lacak Resi
-     * ========================================== */
+     * 1. Lacak Resi — TRACKING PAGE HAND-OFF
+     * ==========================================
+     *
+     * The bot no longer collects a resi (or an order number) on this
+     * key. The reply is the SAME instruction + official tracking page
+     * link in EVERY state, so this menu key discloses nothing about any
+     * order and cannot be used as an oracle: nothing is matched, no
+     * binding is attempted and no courier call is made here.
+     *
+     * Order-bound tracking stays reachable ONLY through the paths that
+     * already guard it: "2. Status Pesanan" (ownership-verified reply)
+     * and a bare order number typed by the customer — both still go
+     * through `trackingDecision`/`bindOrder` unchanged. The website
+     * keeps the full order-number + OTP recovery (app/lacak).
+     */
     if (digit === "1") {
-        if (!boundOrder) {
-            return askForOrderNumber(
-                input,
-                resumePatch,
-                "TRACK"
-            );
-        }
-
-        return trackingDecision(input, boundOrder, resumePatch);
+        return {
+            reply: menu.trackingInstruction(
+                trackingLinkFor(input.deps) ??
+                    OFFICIAL_TRACKING_PAGE_URL
+            ),
+            patch: patchOf(resumePatch, {
+                state: CHAT_STATE.MENU,
+                pendingIntent: null,
+            }),
+        };
     }
 
     /* ==========================================

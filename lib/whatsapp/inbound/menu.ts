@@ -62,6 +62,49 @@ export function postDeliveryMenu(): string {
     return POST_DELIVERY_MENU_TEXT;
 }
 
+/**
+ * "1. 📦 Lacak Resi" — the tracking page hand-off.
+ *
+ * The bot does NOT collect a resi in chat any more: the customer is sent
+ * to the official tracking page, which does exactly that and keeps the
+ * data behind the page's own rules. Nothing about any order is read,
+ * matched or disclosed here — this reply is IDENTICAL whether or not an
+ * order is bound to the chat, which is what keeps it from becoming a
+ * hint about somebody else's parcel.
+ *
+ * `linkUrl` is the official tracking page (./tracking-url). The caller
+ * always passes a usable url — the canonical production page is the
+ * fail-safe — so the customer is never told to click a missing link.
+ */
+export function trackingInstruction(
+    linkUrl?: string | null
+): string {
+    const url =
+        typeof linkUrl === "string" ? linkUrl.trim() : "";
+
+    return [
+        "*📦 LACAK PENGIRIMAN — MUTIARA ABADI*",
+        "",
+        "Halo Kak! Untuk mengetahui posisi paket, silakan gunakan halaman pelacakan resmi kami:",
+        "",
+        `🌐 ${url}`,
+        "",
+        "*Cara melacak paket:*",
+        "1. Klik link di atas.",
+        "2. Masukkan nomor resi pengiriman.",
+        "3. Tekan tombol *Lacak Resi*.",
+        "4. Status dan perjalanan paket akan ditampilkan di website.",
+        "",
+        "Nomor resi dapat dilihat pada informasi pesanan setelah paket berhasil dibuatkan pengiriman.",
+        "",
+        "Jika resi belum tersedia, kemungkinan pengiriman masih dalam proses persiapan.",
+        "",
+        "Ketik *0* untuk kembali ke Menu Utama.",
+        "",
+        "Terima kasih sudah berbelanja di Mutiara Abadi! 🙏",
+    ].join("\n");
+}
+
 /* ==========================================
  * OFFICIAL TRACKING PAGE LINK
  * ==========================================

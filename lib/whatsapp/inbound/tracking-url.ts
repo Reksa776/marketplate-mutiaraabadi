@@ -44,6 +44,18 @@ export const TRACKING_ORDER_PARAM = "pesanan";
 export const TRACKING_URL_ENV = "NEXT_PUBLIC_APP_URL";
 
 /**
+ * The canonical production tracking page.
+ *
+ * Used as the fail-safe ONLY when no trustworthy origin can be resolved
+ * from the environment (`NEXT_PUBLIC_APP_URL` missing/unparseable/not
+ * allowlisted). The host is the official storefront — the very host the
+ * allowlist in lib/app-origin.ts already treats as ours — so the menu
+ * instruction can never ship a broken or third-party link, and nothing
+ * here is derived from a request, a header or a customer value.
+ */
+export const OFFICIAL_TRACKING_PAGE_URL = `https://mutiaraabadisnack.com${TRACKING_PAGE_PATH}`;
+
+/**
  * Hosts on which plain http is tolerated. Development only: the origin
  * is not reachable by a customer's phone anyway, and the production
  * storefront is HTTPS.
