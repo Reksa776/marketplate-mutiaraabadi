@@ -6,7 +6,10 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { useDialog } from "@/components/ui/Dialog";
-import { resolveMengantarAdminStatus } from "@/lib/mengantar/admin-status";
+import {
+    resolveCodShipmentLifecycle,
+    resolveMengantarAdminStatus,
+} from "@/lib/mengantar/admin-status";
 
 /**
  * COD REVIEW detail (derived server-side by
@@ -1774,15 +1777,32 @@ export default function AdminOrderDetailPage() {
                                 const autoJobActive =
                                     job?.status === "PENDING" ||
                                     job?.status === "PROCESSING";
+                                // COD review hold: while the review is
+                                // not APPROVED the shipment gate in
+                                // lib/mengantar/shipment.ts refuses EVERY
+                                // create path, so offering the manual
+                                // button would only ever return 409. The
+                                // admin releases the hold through the COD
+                                // review panel, not from here.
+                                const reviewBlocked =
+                                    isCod &&
+                                    Boolean(
+                                        order.requiresCodReview
+                                    ) &&
+                                    order.codReviewStatus !==
+                                        "APPROVED";
+
                                 // Manual creation is a RECOVERY path:
                                 //  - a genuine automatic failure, OR
                                 //  - an intentional provider deletion,
                                 //    which leaves the order paid at
                                 //    NOT_CREATED with no auto job.
                                 // Never offered for an unpaid non-COD
-                                // order, nor while auto is still queued.
+                                // order, nor while auto is still queued,
+                                // nor for a COD order held for review.
                                 const canCreate =
                                     !shipmentId &&
+                                    !reviewBlocked &&
                                     (status === "FAILED" ||
                                         ((status ===
                                             "NOT_CREATED" ||
@@ -1830,6 +1850,41 @@ export default function AdminOrderDetailPage() {
                                         trackingNumber,
                                     });
 
+                                /*
+                                 * A COD order needs a SECOND, explicit
+                                 * line: "Belum dibuat" alone cannot tell
+                                 * an admin whether the order is waiting
+                                 * for their approval, queued for the
+                                 * worker, mid-creation, done, or failed.
+                                 */
+                                const codLifecycle =
+                                    resolveCodShipmentLifecycle({
+                                        paymentMethod:
+                                            order.paymentMethod,
+                                        requiresCodReview:
+                                            order.requiresCodReview,
+                                        codReviewStatus:
+                                            order.codReviewStatus,
+                                        shipmentStatus: status,
+                                        shipmentJobStatus:
+                                            job?.status ?? null,
+                                    });
+
+                                const codLifecycleTone =
+                                    codLifecycle.tone ===
+                                    "success"
+                                        ? "text-emerald-600"
+                                        : codLifecycle.tone ===
+                                            "progress"
+                                          ? "text-blue-600"
+                                          : codLifecycle.tone ===
+                                              "warning"
+                                            ? "text-amber-600"
+                                            : codLifecycle.tone ===
+                                                "danger"
+                                              ? "text-red-600"
+                                              : "text-gray-900";
+
                                 return (
                                     <div className="mt-5 rounded-xl border border-gray-200 bg-white">
                                         <div className="border-b border-gray-100 px-5 py-4">
@@ -1874,6 +1929,22 @@ export default function AdminOrderDetailPage() {
                                                     }
                                                 </span>
                                             </div>
+
+                                            {codLifecycle.kind !==
+                                                "NOT_APPLICABLE" && (
+                                                <div className="flex justify-between gap-3">
+                                                    <span className="text-gray-400">
+                                                        Kondisi COD
+                                                    </span>
+                                                    <span
+                                                        className={`text-right font-medium ${codLifecycleTone}`}
+                                                    >
+                                                        {
+                                                            codLifecycle.label
+                                                        }
+                                                    </span>
+                                                </div>
+                                            )}
 
                                             <div className="flex justify-between gap-3">
                                                 <span className="text-gray-400">

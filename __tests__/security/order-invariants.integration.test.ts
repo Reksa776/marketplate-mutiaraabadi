@@ -1169,8 +1169,10 @@ describe("iPaymu webhook settlement and stock release (real DB)", () => {
                 status: true,
                 paymentStatus: true,
                 subtotal: true,
+                discount: true,
                 shippingCost: true,
                 total: true,
+                shippingDiscountId: true,
                 items: {
                     select: {
                         variantId: true,
@@ -1191,10 +1193,33 @@ describe("iPaymu webhook settlement and stock release (real DB)", () => {
          */
         expect(order?.paymentStatus).toBe("PENDING");
 
-        // Server-derived money: 10.000 goods + 20.000 (mocked) shipping.
+        /*
+         * Server-derived money: 10.000 goods + 20.000 (mocked) shipping.
+         *
+         * The shipping total is PINNED to the mocked estimate only when
+         * no shipping discount was applied: `lib/marketing/
+         * shipping-discount.ts` AUTO-APPLIES the first active code-less
+         * discount row, and other suites seed such rows against this same
+         * database. Asserting a hard-coded 20.000 therefore made this
+         * suite fail intermittently (2/2 reproductions) whenever a
+         * marketing suite ran in parallel — the money CONTRACT is what
+         * must hold, not a fixed total.
+         */
         expect(Number(order?.subtotal)).toBe(10000);
-        expect(Number(order?.shippingCost)).toBe(20000);
-        expect(Number(order?.total)).toBe(30000);
+        expect(Number(order?.shippingCost)).toBeGreaterThan(0);
+        expect(Number(order?.shippingCost)).toBeLessThanOrEqual(
+            20000
+        );
+
+        if (order?.shippingDiscountId === null) {
+            expect(Number(order?.shippingCost)).toBe(20000);
+        }
+
+        expect(Number(order?.total)).toBe(
+            Number(order?.subtotal) -
+                Number(order?.discount) +
+                Number(order?.shippingCost)
+        );
         expect(order?.items).toHaveLength(1);
         expect(order?.items[0].quantity).toBe(1);
 

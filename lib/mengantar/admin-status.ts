@@ -172,6 +172,186 @@ const STATUS_TABLE: Record<string, StatusDescriptor> = {
     },
 };
 
+/*
+ * ============================================================
+ * COD SHIPMENT LIFECYCLE — EXPLICIT ADMIN CONDITIONS
+ * ============================================================
+ *
+ * The provider status above answers "what does Mengantar say?". It
+ * does NOT answer the question an admin actually has about a COD order:
+ * "is something supposed to be happening, is it happening, or is it
+ * waiting for me?"
+ *
+ * Those are DIFFERENT conditions, and conflating them is exactly how
+ * order #985 sat at `NOT_CREATED` with an empty ShipmentJob and no admin
+ * approval UI: "Belum dibuat" looked identical whether a job was queued,
+ * whether an admin was the blocker, or whether the job had failed.
+ *
+ * This pure resolver names each condition explicitly for a COD order:
+ *
+ *   COD_REVIEW_PENDING  → "Menunggu Persetujuan COD"
+ *   AWAITING_SHIPMENT   → "Menunggu Pembuatan Shipment"
+ *   CREATING_SHIPMENT   → "Sedang Membuat Shipment"
+ *   SHIPMENT_CREATED    → "Shipment Berhasil"
+ *   SHIPMENT_FAILED     → "Shipment Gagal"
+ *
+ * It is presentation only (no prisma / no env / no network) and returns
+ * NOT_APPLICABLE for anything that is not a COD order or is already in a
+ * terminal non-success state (cancelled / returned / deleted), so the
+ * caller renders nothing extra rather than a misleading label.
+ * ============================================================
+ */
+
+export type CodShipmentLifecycleKind =
+    | "NOT_APPLICABLE"
+    | "COD_REVIEW_PENDING"
+    | "AWAITING_SHIPMENT"
+    | "CREATING_SHIPMENT"
+    | "SHIPMENT_CREATED"
+    | "SHIPMENT_FAILED";
+
+export type CodShipmentLifecycle = {
+    kind: CodShipmentLifecycleKind;
+    label: string;
+    tone: MengantarAdminStatusTone;
+};
+
+const LIFECYCLE_LABELS: Record<
+    Exclude<CodShipmentLifecycleKind, "NOT_APPLICABLE">,
+    { label: string; tone: MengantarAdminStatusTone }
+> = {
+    COD_REVIEW_PENDING: {
+        label: "Menunggu Persetujuan COD",
+        tone: "warning",
+    },
+    AWAITING_SHIPMENT: {
+        label: "Menunggu Pembuatan Shipment",
+        tone: "info",
+    },
+    CREATING_SHIPMENT: {
+        label: "Sedang Membuat Shipment",
+        tone: "progress",
+    },
+    SHIPMENT_CREATED: {
+        label: "Shipment Berhasil",
+        tone: "success",
+    },
+    SHIPMENT_FAILED: {
+        label: "Shipment Gagal",
+        tone: "danger",
+    },
+};
+
+/** Shipment statuses that mean the parcel really exists at Mengantar. */
+const LIFECYCLE_SUCCESS_STATUSES = new Set<string>([
+    "CREATED",
+    "SHIPPING_PAID",
+    "PICKED_UP",
+    "IN_TRANSIT",
+    "DELIVERED",
+]);
+
+/** Terminal non-success states — a lifecycle label would mislead. */
+const LIFECYCLE_SILENT_STATUSES = new Set<string>([
+    "CANCELLED",
+    "RETURNED",
+    "DELETED",
+]);
+
+const COD_LIFECYCLE_NOT_APPLICABLE: CodShipmentLifecycle = {
+    kind: "NOT_APPLICABLE",
+    label: "",
+    tone: "neutral",
+};
+
+/**
+ * Resolve the explicit COD shipment condition shown to the admin.
+ *
+ * The admin decision ALWAYS wins: while a COD review is not yet
+ * APPROVED, the honest condition is "waiting for approval — nothing is
+ * queued", regardless of what any lingering job row says.
+ */
+export function resolveCodShipmentLifecycle(order: {
+    paymentMethod?: string | null;
+    requiresCodReview?: boolean | null;
+    codReviewStatus?: string | null;
+    shipmentStatus?: string | null;
+    /** `ShipmentJob.status` when the caller already loaded it. */
+    shipmentJobStatus?: string | null;
+}): CodShipmentLifecycle {
+    const isCod =
+        String(order.paymentMethod ?? "")
+            .trim()
+            .toUpperCase() === "COD";
+
+    if (!isCod) {
+        return COD_LIFECYCLE_NOT_APPLICABLE;
+    }
+
+    const reviewPending =
+        Boolean(order.requiresCodReview) &&
+        String(order.codReviewStatus ?? "")
+            .trim()
+            .toUpperCase() !== "APPROVED";
+
+    if (reviewPending) {
+        return {
+            kind: "COD_REVIEW_PENDING",
+            ...LIFECYCLE_LABELS.COD_REVIEW_PENDING,
+        };
+    }
+
+    const raw = String(order.shipmentStatus ?? "")
+        .trim()
+        .toUpperCase();
+
+    const job = String(order.shipmentJobStatus ?? "")
+        .trim()
+        .toUpperCase();
+
+    if (raw === "FAILED" || job === "FAILED") {
+        return {
+            kind: "SHIPMENT_FAILED",
+            ...LIFECYCLE_LABELS.SHIPMENT_FAILED,
+        };
+    }
+
+    if (LIFECYCLE_SILENT_STATUSES.has(raw)) {
+        return COD_LIFECYCLE_NOT_APPLICABLE;
+    }
+
+    /*
+     * A claimed job is "being created" even before the provider id is
+     * persisted — the worker is mid-request.
+     */
+    if (
+        raw === "CREATING" ||
+        raw === "PAYING" ||
+        job === "PROCESSING"
+    ) {
+        return {
+            kind: "CREATING_SHIPMENT",
+            ...LIFECYCLE_LABELS.CREATING_SHIPMENT,
+        };
+    }
+
+    if (LIFECYCLE_SUCCESS_STATUSES.has(raw)) {
+        return {
+            kind: "SHIPMENT_CREATED",
+            ...LIFECYCLE_LABELS.SHIPMENT_CREATED,
+        };
+    }
+
+    /*
+     * Everything else (NOT_CREATED / SHIPMENT_PENDING /
+     * WAITING_SHIPPING_PAYMENT / unset) is genuinely still queued.
+     */
+    return {
+        kind: "AWAITING_SHIPMENT",
+        ...LIFECYCLE_LABELS.AWAITING_SHIPMENT,
+    };
+}
+
 const NOT_APPLICABLE: StatusDescriptor = {
     kind: "NOT_APPLICABLE",
     label: "Tidak berlaku",

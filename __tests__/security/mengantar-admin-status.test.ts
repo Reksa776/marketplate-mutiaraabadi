@@ -72,6 +72,7 @@ import {
     reconcileMengantarShipments,
 } from "@/lib/mengantar/reconcile";
 import {
+    resolveCodShipmentLifecycle,
     resolveMengantarAdminStatus,
     isMengantarShippingProvider,
 } from "@/lib/mengantar/admin-status";
@@ -246,6 +247,164 @@ describe("resolveMengantarAdminStatus", () => {
                 shipmentStatus: "created",
             }).label
         ).toBe("Terbuat");
+    });
+});
+
+/* ==========================================
+ * 7b. COD SHIPMENT LIFECYCLE RESOLVER
+ * ==========================================
+ *
+ * The provider label alone cannot tell an admin whether a COD order is
+ * waiting for THEIR approval, queued for the worker, mid-creation, done,
+ * or failed. The regression (order #985) presented as a plain
+ * "Belum dibuat" with nothing else to distinguish it.
+ */
+
+describe("resolveCodShipmentLifecycle", () => {
+    const base = {
+        paymentMethod: "COD",
+        requiresCodReview: false,
+        codReviewStatus: null,
+        shipmentStatus: "NOT_CREATED",
+        shipmentJobStatus: null,
+    };
+
+    it("a COD order awaiting review reads 'Menunggu Persetujuan COD'", () => {
+        const lifecycle = resolveCodShipmentLifecycle({
+            ...base,
+            requiresCodReview: true,
+            codReviewStatus: "PENDING",
+        });
+
+        expect(lifecycle.kind).toBe("COD_REVIEW_PENDING");
+        expect(lifecycle.label).toBe(
+            "Menunggu Persetujuan COD"
+        );
+        expect(lifecycle.tone).toBe("warning");
+    });
+
+    it("the admin decision wins over a lingering job row", () => {
+        const lifecycle = resolveCodShipmentLifecycle({
+            ...base,
+            requiresCodReview: true,
+            codReviewStatus: "PENDING",
+            shipmentJobStatus: "PROCESSING",
+        });
+
+        expect(lifecycle.kind).toBe("COD_REVIEW_PENDING");
+    });
+
+    it("an approved COD order not yet shipped reads 'Menunggu Pembuatan Shipment'", () => {
+        for (const status of [
+            "NOT_CREATED",
+            "SHIPMENT_PENDING",
+            null,
+        ]) {
+            const lifecycle = resolveCodShipmentLifecycle({
+                ...base,
+                requiresCodReview: true,
+                codReviewStatus: "APPROVED",
+                shipmentStatus: status,
+            });
+
+            expect(lifecycle.kind).toBe("AWAITING_SHIPMENT");
+            expect(lifecycle.label).toBe(
+                "Menunggu Pembuatan Shipment"
+            );
+        }
+    });
+
+    it("a claimed job reads 'Sedang Membuat Shipment'", () => {
+        expect(
+            resolveCodShipmentLifecycle({
+                ...base,
+                shipmentStatus: "CREATING",
+            }).label
+        ).toBe("Sedang Membuat Shipment");
+
+        // The worker claimed the job but has not persisted the id yet.
+        expect(
+            resolveCodShipmentLifecycle({
+                ...base,
+                shipmentJobStatus: "PROCESSING",
+            }).label
+        ).toBe("Sedang Membuat Shipment");
+    });
+
+    it("a provider shipment reads 'Shipment Berhasil'", () => {
+        for (const status of [
+            "CREATED",
+            "SHIPPING_PAID",
+            "PICKED_UP",
+            "IN_TRANSIT",
+            "DELIVERED",
+        ]) {
+            const lifecycle = resolveCodShipmentLifecycle({
+                ...base,
+                shipmentStatus: status,
+            });
+
+            expect(lifecycle.kind).toBe("SHIPMENT_CREATED");
+            expect(lifecycle.label).toBe("Shipment Berhasil");
+        }
+    });
+
+    it("a failed shipment reads 'Shipment Gagal'", () => {
+        expect(
+            resolveCodShipmentLifecycle({
+                ...base,
+                shipmentStatus: "FAILED",
+            }).kind
+        ).toBe("SHIPMENT_FAILED");
+
+        expect(
+            resolveCodShipmentLifecycle({
+                ...base,
+                shipmentJobStatus: "FAILED",
+            }).label
+        ).toBe("Shipment Gagal");
+    });
+
+    it("the five conditions are DISTINCT labels", () => {
+        const labels = new Set(
+            [
+                { requiresCodReview: true, codReviewStatus: "PENDING" },
+                { shipmentStatus: "SHIPMENT_PENDING" },
+                { shipmentStatus: "CREATING" },
+                { shipmentStatus: "CREATED" },
+                { shipmentStatus: "FAILED" },
+            ].map(
+                (override) =>
+                    resolveCodShipmentLifecycle({
+                        ...base,
+                        ...override,
+                    }).label
+            )
+        );
+
+        expect(labels.size).toBe(5);
+    });
+
+    it("stays silent for non-COD and terminal non-success states", () => {
+        expect(
+            resolveCodShipmentLifecycle({
+                ...base,
+                paymentMethod: "BANK_TRANSFER",
+            }).kind
+        ).toBe("NOT_APPLICABLE");
+
+        for (const status of [
+            "CANCELLED",
+            "RETURNED",
+            "DELETED",
+        ]) {
+            expect(
+                resolveCodShipmentLifecycle({
+                    ...base,
+                    shipmentStatus: status,
+                }).kind
+            ).toBe("NOT_APPLICABLE");
+        }
     });
 });
 
@@ -437,6 +596,24 @@ describe("dashboard wiring", () => {
         // Provider id + resi + ongkir payment status remain visible.
         expect(detailPage).toContain("Pembayaran ongkir");
         expect(detailPage).toContain("{shipmentId ?? \"-\"}");
+    });
+
+    it("the detail page shows the explicit COD lifecycle condition", () => {
+        expect(detailPage).toContain(
+            "resolveCodShipmentLifecycle"
+        );
+        expect(detailPage).toContain("Kondisi COD");
+    });
+
+    /*
+     * The shipment gate refuses every create path while a COD review is
+     * open (see manual-shipment-cod-gate.test.ts), so the manual
+     * "Buat Shipment" button must not be OFFERED either — otherwise the
+     * admin is invited to click a button that always returns 409.
+     */
+    it("the detail page does not offer manual creation during an open COD review", () => {
+        expect(detailPage).toContain("reviewBlocked");
+        expect(detailPage).toContain("!reviewBlocked");
     });
 
     it("the shared resolver is pure (no prisma / server-only)", () => {
