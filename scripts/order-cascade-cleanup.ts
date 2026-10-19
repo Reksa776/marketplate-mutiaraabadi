@@ -27,6 +27,13 @@
  *   --obligations-reconciled
  *   --i-understand-production   (wajib untuk SEMUA eksekusi, termasuk DB lokal)
  *
+ * Override eksplisit (hanya untuk data uji/dummy — TIDAK mematikan gate lain):
+ *   --discard-open-obligations=DISCARD-OPEN-OBLIGATIONS
+ *       Menurunkan refund/komisi/payout/COD/PAID dari BLOCKER menjadi WARNING.
+ *   --discard-provider-shipments=DISCARD-PROVIDER-SHIPMENTS
+ *       Mengizinkan order dengan shipment Mengantar / providerShipmentId ikut
+ *       dihapus. Tanpa token ini, order tersebut tetap memblokir seluruh batch.
+ *
  * Mode:
  *   --dry-run                 (default; boleh ditulis eksplisit)
  *   --report-json             JSON ke stdout (tanpa teks lain)
@@ -90,6 +97,19 @@ const DELETE_RULES: Record<
         reason: "record order itu sendiri",
     },
 };
+
+/**
+ * Kewajiban yang menyangkut shipment di provider eksternal. Dikelompokkan
+ * terpisah karena token override-nya juga terpisah.
+ */
+const PROVIDER_OBLIGATIONS = new Set<string>([
+    "shipment Mengantar aktif",
+    "order dengan providerShipmentId",
+    "ShipmentJob PENDING/PROCESSING",
+]);
+
+const DISCARD_OPEN_OBLIGATIONS = "DISCARD-OPEN-OBLIGATIONS";
+const DISCARD_PROVIDER_SHIPMENTS = "DISCARD-PROVIDER-SHIPMENTS";
 
 /** Tabel yang WAJIB dipertahankan (master / konfigurasi / audit / entitlement). */
 const PRESERVE_TABLES = new Set<string>([
@@ -167,6 +187,8 @@ type Args = {
     allowProduction: boolean;
     orderId: number | null;
     confirmOrder: string | null;
+    discardObligations: string | null;
+    discardProviderShipments: string | null;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -195,6 +217,8 @@ function parseArgs(argv: string[]): Args {
         reportJson,
         confirm: val("confirm-all-orders"),
         confirmOrder: val("confirm-order"),
+        discardObligations: val("discard-open-obligations"),
+        discardProviderShipments: val("discard-provider-shipments"),
         orderId: rawOrderId === null ? null : Number(rawOrderId),
         fingerprint: val("database-fingerprint"),
         backup: val("backup"),
@@ -233,6 +257,9 @@ const SCOPE: Scope =
 function scopeLabel(): string {
     return SCOPE.kind === "all" ? "all" : `single:${SCOPE.orderId}`;
 }
+
+const OVERRIDE_OBLIGATIONS = ARGS.discardObligations === DISCARD_OPEN_OBLIGATIONS;
+const OVERRIDE_PROVIDER = ARGS.discardProviderShipments === DISCARD_PROVIDER_SHIPMENTS;
 
 /** Filter baris turunan; `column` default `orderId`. */
 function scopeSql(alias: string, column = "orderId"): string {
@@ -776,6 +803,7 @@ type Report = {
     mode: "dry-run" | "execute";
     scope: { mode: "all" | "single"; orderId: number | null };
     status: Status;
+    overrides: { openObligations: boolean; providerShipments: boolean };
     environment: {
         db: string;
         server: string;
@@ -868,8 +896,27 @@ function buildReport(
         );
     if (ins.fkChecks !== 1) reasons.push("foreign_key_checks tidak aktif");
 
+    /*
+     * Blocker kewajiban hanya turun menjadi WARNING bila token override yang
+     * tepat diberikan. Token tidak mematikan gate backup/fingerprint/dll.
+     */
     for (const [k, v] of Object.entries(counts.obligations)) {
-        if (v > 0) reasons.push(`kewajiban belum direkonsiliasi: ${k} (${v})`);
+        if (v <= 0) continue;
+        if (PROVIDER_OBLIGATIONS.has(k)) {
+            if (OVERRIDE_PROVIDER) {
+                warnings.push(
+                    `OVERRIDE shipment provider: ${k} (${v}) — jejak lokal akan dihapus`,
+                );
+            } else {
+                reasons.push(`kewajiban belum direkonsiliasi: ${k} (${v})`);
+            }
+        } else if (OVERRIDE_OBLIGATIONS) {
+            warnings.push(
+                `OVERRIDE kewajiban finansial/operasional: ${k} (${v}) — diabaikan atas permintaan operator`,
+            );
+        } else {
+            reasons.push(`kewajiban belum direkonsiliasi: ${k} (${v})`);
+        }
     }
 
     if (counts.orders === 0) warnings.push("tidak ada order; tidak ada yang perlu dibersihkan");
@@ -932,9 +979,34 @@ function buildReport(
                   },
               };
 
+    const openBlockers = Object.entries(counts.obligations).filter(
+        ([k, v]) => v > 0 && !PROVIDER_OBLIGATIONS.has(k),
+    ).length;
+    const providerBlockers = Object.entries(counts.obligations).filter(
+        ([k, v]) => v > 0 && PROVIDER_OBLIGATIONS.has(k),
+    ).length;
+
     const executeGates = {
         "--execute": { ok: ARGS.execute, detail: ARGS.execute ? "ya" : "belum" },
         ...confirmGate,
+        "override-open-obligations": {
+            ok: openBlockers === 0 || OVERRIDE_OBLIGATIONS,
+            detail:
+                openBlockers === 0
+                    ? "tidak diperlukan"
+                    : OVERRIDE_OBLIGATIONS
+                      ? "OVERRIDE AKTIF"
+                      : "wajib (masih ada kewajiban terbuka)",
+        },
+        "override-provider-shipments": {
+            ok: providerBlockers === 0 || OVERRIDE_PROVIDER,
+            detail:
+                providerBlockers === 0
+                    ? "tidak diperlukan"
+                    : OVERRIDE_PROVIDER
+                      ? "OVERRIDE AKTIF"
+                      : "wajib (masih ada shipment provider)",
+        },
         "database-fingerprint": {
             ok: ARGS.fingerprint === fp.full,
             detail: ARGS.fingerprint ? (ARGS.fingerprint === fp.full ? "cocok" : "TIDAK cocok") : "tidak ada",
@@ -960,6 +1032,10 @@ function buildReport(
             orderId: SCOPE.kind === "single" ? SCOPE.orderId : null,
         },
         status: reasons.length ? "BLOCKED" : "READY",
+        overrides: {
+            openObligations: OVERRIDE_OBLIGATIONS,
+            providerShipments: OVERRIDE_PROVIDER,
+        },
         environment: {
             db: ins.dbName,
             server: ins.serverVersion,
@@ -1006,6 +1082,15 @@ function printHuman(r: Report) {
         }`,
     );
     line(`status      : ${r.status}`);
+    if (r.overrides.openObligations || r.overrides.providerShipments) {
+        const active = [
+            r.overrides.openObligations ? "obligations" : null,
+            r.overrides.providerShipments ? "provider-shipments" : null,
+        ]
+            .filter(Boolean)
+            .join(", ");
+        line(`override    : AKTIF (${active})`);
+    }
     line(`database    : ${r.environment.db} (${r.environment.server}, ${r.environment.hostClass})`);
     line(`fingerprint : ${r.fingerprintShort}`);
     line(`orders      : ${r.counts.orders}`);

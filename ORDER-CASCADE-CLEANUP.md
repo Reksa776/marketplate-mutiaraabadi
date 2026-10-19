@@ -13,7 +13,7 @@ Tidak ada commit/push/deploy, tidak ada restart PM2, tidak ada perubahan `.env`.
 | Database dry-run | `toko` (development, MariaDB 11.8.8) |
 | Fingerprint dry-run (semua order) | `3674aee2e9dd5c54…` (64 hex lengkap di JSON) |
 | Status dry-run | **BLOCKED** (schema drift + kewajiban finansial) |
-| Hasil test | **96/96 PASS** pada database disposable |
+| Hasil test | **113/113 PASS** pada database disposable |
 | Scope | `semua order` (default) dan `--order-id=<id>` (satu order) |
 
 ---
@@ -147,15 +147,20 @@ Total baris target: **385**.
    `--i-understand-production` (**wajib untuk semua eksekusi, termasuk DB lokal**),
    **plus** `--confirm-all-orders=DELETE-ALL-ORDERS` (scope semua) **atau** `--confirm-order=<id>`
    (scope satu order).
-7. **Verifikasi backup** — file ada, > 0 byte, umur ≤ 24 jam, magic gzip / header `-- MySQL dump`,
+7. **Override eksplisit (khusus data uji/dummy)** — token terpisah, tidak mematikan gate lain:
+   `--discard-open-obligations=DISCARD-OPEN-OBLIGATIONS` menurunkan refund/komisi/payout/COD/PAID
+   dari BLOCKER menjadi WARNING; `--discard-provider-shipments=DISCARD-PROVIDER-SHIPMENTS`
+   mengizinkan order dengan shipment Mengantar / `providerShipmentId` ikut dihapus. Tanpa token
+   kedua, order tersebut tetap memblokir seluruh batch.
+8. **Verifikasi backup** — file ada, > 0 byte, umur ≤ 24 jam, magic gzip / header `-- MySQL dump`,
    dan `sha256` sidecar bila tersedia.
-8. **Eksekusi** — satu transaksi InnoDB, `GET_LOCK`, re-cek fingerprint & kewajiban di dalam
+9. **Eksekusi** — satu transaksi InnoDB, `GET_LOCK`, re-cek fingerprint & kewajiban di dalam
    transaksi, hapus anak → induk per batch, post-check (order scope = 0, turunan scope = 0, semua
    tabel PRESERVE jumlahnya identik, dan pada mode satu order jumlah order global turun tepat 1).
    Gagal → rollback.
-9. **Tanpa** TRUNCATE, DROP DATABASE, `FOREIGN_KEY_CHECKS=0`, panggilan Mengantar/WhatsApp/payment,
+10. **Tanpa** TRUNCATE, DROP DATABASE, `FOREIGN_KEY_CHECKS=0`, panggilan Mengantar/WhatsApp/payment,
    dan tanpa menyentuh file upload / direktori auth.
-10. **Output** — ringkasan agregat; tidak mencetak `DATABASE_URL`, password, token, nama/telepon/alamat.
+11. **Output** — ringkasan agregat; tidak mencetak `DATABASE_URL`, password, token, nama/telepon/alamat.
 
 Mode & exit code:
 
@@ -167,6 +172,8 @@ Mode & exit code:
 | `--report-json=<path>` | dry-run, JSON ke file + ringkasan |
 | `--execute --confirm-all-orders=DELETE-ALL-ORDERS` + gate lain | eksekusi semua order |
 | `--execute --order-id=<id> --confirm-order=<id>` + gate lain | eksekusi satu order |
+| `--discard-open-obligations=DISCARD-OPEN-OBLIGATIONS` | turunkan kewajiban finansial dari blocker ke warning (data uji) |
+| `--discard-provider-shipments=DISCARD-PROVIDER-SHIPMENTS` | izinkan order dengan shipment Mengantar ikut dihapus |
 | exit `0` | READY (dry-run) / eksekusi sukses |
 | exit `2` | BLOCKED atau gate ditolak — **tidak ada perubahan** |
 | exit `1` | kegagalan runtime; transaksi rollback |
@@ -210,7 +217,7 @@ Reset AUTO_INCREMENT tidak dilakukan.
 ```bash
 DATABASE_URL="mysql://…/toko" \
   npx tsx __tests__/order-cleanup/order-cascade-cleanup.e2e.ts
-# RESULT: 96 passed, 0 failed
+# RESULT: 113 passed, 0 failed
 ```
 
 Database disposable `toko_cleanup_test_<ts>` dibuat, diisi fixture, lalu **di-drop**.
@@ -237,6 +244,8 @@ fixture memakai `prisma db push` + tabel `_prisma_migrations` yang di-seed.
 | 16 | Eksekusi satu order: order terpilih + anaknya terhapus, order lain, item, user, produk, stok, audit, spin, FK utuh | PASS |
 | 17 | Eksekusi ulang order yang sudah terhapus → BLOCKED, tidak ada perubahan | PASS |
 | 18 | `--execute` tanpa `--i-understand-production` ditolak walau DB lokal, data utuh | PASS |
+| 19 | Tanpa token: refund PENDING + `providerShipmentId` memblokir; token finansial saja tidak cukup | PASS |
+| 20 | Kedua token → READY, warning OVERRIDE muncul, eksekusi sukses menghapus order+anak, user/produk/setting utuh | PASS |
 
 Keterbatasan pengujian:
 
@@ -396,7 +405,27 @@ Urutan yang disarankan:
 5. Jalankan `--execute` dengan gate lengkap.
 6. Verifikasi pasca-eksekusi (order 0, master utuh), lalu nyalakan app + cron.
 
-### 6. Yang TIDAK dilakukan CLI
+### 6. Override untuk data uji/dummy (hati-hati)
+
+Jika status masih `BLOCKED` hanya karena kewajiban pada data uji, dan Anda sudah membuat backup:
+
+```bash
+npx tsx scripts/order-cascade-cleanup.ts --execute \
+  --confirm-all-orders=DELETE-ALL-ORDERS \
+  --database-fingerprint=<fingerprint-64-hex> \
+  --backup=/path/backup.sql.gz \
+  --maintenance-confirmed --writers-stopped \
+  --mengantar-clear --obligations-reconciled \
+  --i-understand-production \
+  --discard-open-obligations=DISCARD-OPEN-OBLIGATIONS \
+  --discard-provider-shipments=DISCARD-PROVIDER-SHIPMENTS
+```
+
+Konsekuensi yang harus disadari: refund/komisi/payout yang belum selesai, order COD/PAID yang
+belum tuntas, dan shipment Mengantar aktif akan kehilangan jejak lokal. Nomor resi di provider
+TIDAK dibatalkan (script tidak memanggil API Mengantar). Jangan pakai token ini pada data asli.
+
+### 7. Yang TIDAK dilakukan CLI
 
 - Tidak menghapus user, produk, varian, stok, kategori, settings, voucher master,
   affiliate profile/KYC/payout, audit log, spin entitlement, cart, atau sesi WhatsApp.

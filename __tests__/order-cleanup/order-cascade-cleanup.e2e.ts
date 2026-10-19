@@ -605,6 +605,83 @@ async function main() {
         const reRun = runCli([...singleBase, "--confirm-order=2001"]);
         eq(reRun.code, 2, "re-running the same single delete is BLOCKED");
         eq(await count(db, "SELECT COUNT(*) c FROM `order`"), 1, "failed re-run changed nothing");
+
+        /* ============================= 16. explicit override (dummy data) */
+        await db.$executeRawUnsafe(
+            `INSERT INTO refund (id, orderId, amount, status, requestedBy, createdAt, updatedAt)
+             VALUES (4, 2002, 1000, 'PENDING', 'ADMIN', NOW(3), NOW(3))`,
+        );
+        await db.$executeRawUnsafe(
+            `UPDATE \`order\` SET providerShipmentId='TEST-PROVIDER-2', shipmentStatus='CREATED'
+              WHERE id=2002`,
+        );
+
+        const blockedNoToken = runCli(["--order-id=2002", "--report-json"]);
+        eq(blockedNoToken.code, 2, "open obligations block without a token");
+        const bnt = JSON.parse(blockedNoToken.stdout);
+        check(
+            bnt.reasons.some((x: string) => x.includes("refund")),
+            "refund blocker is reported",
+        );
+        check(
+            bnt.reasons.some((x: string) => x.includes("providerShipmentId")),
+            "provider shipment blocker is reported",
+        );
+
+        const onlyFinancial = runCli([
+            "--order-id=2002",
+            "--report-json",
+            "--discard-open-obligations=DISCARD-OPEN-OBLIGATIONS",
+        ]);
+        eq(onlyFinancial.code, 2, "financial token alone is still blocked by the provider shipment");
+        check(
+            JSON.parse(onlyFinancial.stdout).reasons.some((x: string) =>
+                x.includes("providerShipmentId"),
+            ),
+            "provider blocker survives the financial token",
+        );
+
+        const bothTokens = runCli([
+            "--order-id=2002",
+            "--report-json",
+            "--discard-open-obligations=DISCARD-OPEN-OBLIGATIONS",
+            "--discard-provider-shipments=DISCARD-PROVIDER-SHIPMENTS",
+        ]);
+        eq(bothTokens.code, 0, "both tokens make the order READY");
+        const bt = JSON.parse(bothTokens.stdout);
+        eq(bt.status, "READY", "override reports READY");
+        eq(bt.overrides.openObligations, true, "financial override is recorded");
+        eq(bt.overrides.providerShipments, true, "provider override is recorded");
+        check(
+            bt.warnings.some((w: string) => w.includes("OVERRIDE")),
+            "override is surfaced as a warning",
+        );
+
+        const overrideRun = runCli([
+            "--execute",
+            "--order-id=2002",
+            `--database-fingerprint=${bt.fingerprint}`,
+            `--backup=${backupPath}`,
+            "--confirm-order=2002",
+            "--maintenance-confirmed",
+            "--writers-stopped",
+            "--mengantar-clear",
+            "--obligations-reconciled",
+            "--i-understand-production",
+            "--discard-open-obligations=DISCARD-OPEN-OBLIGATIONS",
+            "--discard-provider-shipments=DISCARD-PROVIDER-SHIPMENTS",
+        ]);
+        check(
+            overrideRun.code === 0,
+            "override execute succeeds",
+            `code=${overrideRun.code} ${overrideRun.stderr.slice(0, 300)}`,
+        );
+        eq(await count(db, "SELECT COUNT(*) c FROM `order`"), 0, "all orders deleted with override");
+        eq(await count(db, "SELECT COUNT(*) c FROM orderitem"), 0, "all items deleted with override");
+        eq(await count(db, "SELECT COUNT(*) c FROM refund"), 0, "pending refund deleted with override");
+        eq(await count(db, "SELECT COUNT(*) c FROM user"), baseline.users, "users survive the override");
+        eq(await count(db, "SELECT COUNT(*) c FROM product"), baseline.products, "products survive the override");
+        eq(await count(db, "SELECT COUNT(*) c FROM storesetting"), baseline.settings, "settings survive the override");
     } finally {
         try {
             if (db) await db.$disconnect();
