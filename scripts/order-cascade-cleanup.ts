@@ -25,6 +25,7 @@
  *   --writers-stopped
  *   --mengantar-clear
  *   --obligations-reconciled
+ *   --i-understand-production   (wajib untuk SEMUA eksekusi, termasuk DB lokal)
  *
  * Mode:
  *   --dry-run                 (default; boleh ditulis eksplisit)
@@ -1079,13 +1080,17 @@ async function execute(
     for (const [name, g] of Object.entries(report.executeGates)) {
         if (!g.ok) gateErrors.push(`gate gagal: ${name}`);
     }
-    if (report.environment.hostClass !== "local" && !ARGS.allowProduction) {
+    /*
+     * Flag ini WAJIB untuk setiap eksekusi, bukan hanya DB remote: pada VPS
+     * production database justru lokal, sehingga hostClass="local" tidak
+     * membuktikan apa pun. Tanpa flag, script tidak boleh menghapus data.
+     */
+    if (!ARGS.allowProduction) {
         gateErrors.push(
-            "database remote/tidak diketahui butuh --i-understand-production",
+            "--i-understand-production wajib untuk SEMUA --execute " +
+                `(db=${report.environment.db}, host=${report.environment.hostClass}, ` +
+                `NODE_ENV=${report.environment.nodeEnv})`,
         );
-    }
-    if (process.env.NODE_ENV === "production" && !ARGS.allowProduction) {
-        gateErrors.push("NODE_ENV=production butuh --i-understand-production");
     }
     if (gateErrors.length) {
         process.stderr.write("\nEXECUTE DITOLAK:\n");

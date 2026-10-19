@@ -13,7 +13,7 @@ Tidak ada commit/push/deploy, tidak ada restart PM2, tidak ada perubahan `.env`.
 | Database dry-run | `toko` (development, MariaDB 11.8.8) |
 | Fingerprint dry-run (semua order) | `3674aee2e9dd5c54…` (64 hex lengkap di JSON) |
 | Status dry-run | **BLOCKED** (schema drift + kewajiban finansial) |
-| Hasil test | **93/93 PASS** pada database disposable |
+| Hasil test | **96/96 PASS** pada database disposable |
 | Scope | `semua order` (default) dan `--order-id=<id>` (satu order) |
 
 ---
@@ -144,8 +144,9 @@ Total baris target: **385**.
    order tidak bisa dipakai untuk mode semua order (dan sebaliknya).
 6. **Gate eksekusi** (semua wajib): `--execute`, `--database-fingerprint`, `--backup`,
    `--maintenance-confirmed`, `--writers-stopped`, `--mengantar-clear`, `--obligations-reconciled`,
+   `--i-understand-production` (**wajib untuk semua eksekusi, termasuk DB lokal**),
    **plus** `--confirm-all-orders=DELETE-ALL-ORDERS` (scope semua) **atau** `--confirm-order=<id>`
-   (scope satu order), (+ `--i-understand-production` untuk DB remote).
+   (scope satu order).
 7. **Verifikasi backup** — file ada, > 0 byte, umur ≤ 24 jam, magic gzip / header `-- MySQL dump`,
    dan `sha256` sidecar bila tersedia.
 8. **Eksekusi** — satu transaksi InnoDB, `GET_LOCK`, re-cek fingerprint & kewajiban di dalam
@@ -209,7 +210,7 @@ Reset AUTO_INCREMENT tidak dilakukan.
 ```bash
 DATABASE_URL="mysql://…/toko" \
   npx tsx __tests__/order-cleanup/order-cascade-cleanup.e2e.ts
-# RESULT: 93 passed, 0 failed
+# RESULT: 96 passed, 0 failed
 ```
 
 Database disposable `toko_cleanup_test_<ts>` dibuat, diisi fixture, lalu **di-drop**.
@@ -235,6 +236,7 @@ fixture memakai `prisma db push` + tabel `_prisma_migrations` yang di-seed.
 | 15 | Order ID tidak ada → BLOCKED; order dengan `providerShipmentId` diblokir, order lain tidak tersentuh | PASS |
 | 16 | Eksekusi satu order: order terpilih + anaknya terhapus, order lain, item, user, produk, stok, audit, spin, FK utuh | PASS |
 | 17 | Eksekusi ulang order yang sudah terhapus → BLOCKED, tidak ada perubahan | PASS |
+| 18 | `--execute` tanpa `--i-understand-production` ditolak walau DB lokal, data utuh | PASS |
 
 Keterbatasan pengujian:
 

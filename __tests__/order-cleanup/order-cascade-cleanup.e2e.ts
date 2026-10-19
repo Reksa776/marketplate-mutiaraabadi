@@ -378,6 +378,21 @@ async function main() {
         eq(await count(db, "SELECT COUNT(*) c FROM orderitem"), baseline.items, "rollback kept every item");
         await db.$executeRawUnsafe(`DROP TRIGGER trg_block_orderitem`);
 
+        /* --------- 9b. production flag is mandatory even for a local DB */
+        const noProdFlag = runCli(
+            goodArgs.filter((a) => a !== "--i-understand-production"),
+        );
+        eq(noProdFlag.code, 2, "execute without --i-understand-production is refused");
+        check(
+            noProdFlag.stderr.includes("--i-understand-production"),
+            "refusal names the mandatory production flag",
+        );
+        eq(
+            await count(db, "SELECT COUNT(*) c FROM `order`"),
+            baseline.orders,
+            "production-flag refusal changed nothing",
+        );
+
         /* ------------------------------------------------ 10. real execute */
         const run = runCli(goodArgs);
         check(run.code === 0, "execute succeeds on a clean fixture", `code=${run.code} ${run.stderr.slice(0, 300)}`);
