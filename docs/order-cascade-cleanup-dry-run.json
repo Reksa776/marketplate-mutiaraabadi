@@ -1,0 +1,391 @@
+{
+  "tool": "order-cascade-cleanup",
+  "generatedAt": "2026-10-19T02:11:38.077Z",
+  "mode": "dry-run",
+  "status": "BLOCKED",
+  "environment": {
+    "db": "toko",
+    "server": "11.8.8-MariaDB",
+    "hostClass": "local",
+    "foreignKeyChecks": 1,
+    "nodeEnv": "development"
+  },
+  "fingerprint": "7238ef38f80112a54fb3adfd8dcec7c6e14ab67e9c5b1318f9b4672bf232d5b7",
+  "fingerprintShort": "7238ef38f80112a5",
+  "schema": {
+    "ok": false,
+    "missingInDb": [
+      "whatsapp_chat_state",
+      "whatsapp_inbound_message"
+    ],
+    "missingMigrations": [
+      "20261013120000_whatsapp_autoreply_state"
+    ],
+    "failedMigrations": [],
+    "extraTables": [],
+    "requiredColumnsMissing": []
+  },
+  "dependencyGraph": [
+    {
+      "table": "order",
+      "depth": 0,
+      "parent": null,
+      "column": null,
+      "onDelete": null,
+      "action": "DELETE"
+    },
+    {
+      "table": "affiliateconversion",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "RESTRICT",
+      "action": "DELETE"
+    },
+    {
+      "table": "notification",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "SET NULL",
+      "action": "DELETE"
+    },
+    {
+      "table": "orderitem",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "CASCADE",
+      "action": "DELETE"
+    },
+    {
+      "table": "refund",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "NO ACTION",
+      "action": "DELETE"
+    },
+    {
+      "table": "shipmentjob",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "CASCADE",
+      "action": "DELETE"
+    },
+    {
+      "table": "spinwheelspin",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "SET NULL",
+      "action": "AMBIGUOUS"
+    },
+    {
+      "table": "guestrecoverychallenge",
+      "depth": 1,
+      "parent": "order",
+      "column": "orderId",
+      "onDelete": "CASCADE",
+      "action": "DELETE"
+    }
+  ],
+  "tables": {
+    "delete": [
+      {
+        "table": "affiliateconversion",
+        "scopeRows": 17,
+        "reason": "konversi komisi per order"
+      },
+      {
+        "table": "guestrecoverychallenge",
+        "scopeRows": 0,
+        "reason": "OTP pemulihan order, sekali pakai"
+      },
+      {
+        "table": "notification",
+        "scopeRows": 46,
+        "reason": "payload notifikasi memuat data order (nomor, total, item)"
+      },
+      {
+        "table": "orderitem",
+        "scopeRows": 153,
+        "reason": "item order (snapshot harga/nama)"
+      },
+      {
+        "table": "refund",
+        "scopeRows": 6,
+        "reason": "refund hanya ada karena order"
+      },
+      {
+        "table": "shipmentjob",
+        "scopeRows": 0,
+        "reason": "outbox shipment turunan order"
+      },
+      {
+        "table": "order",
+        "scopeRows": 163,
+        "reason": "record order itu sendiri"
+      }
+    ],
+    "preserve": [
+      {
+        "table": "_prisma_migrations",
+        "rows": 29
+      },
+      {
+        "table": "account",
+        "rows": 4
+      },
+      {
+        "table": "adminauditlog",
+        "rows": 875
+      },
+      {
+        "table": "affiliateclick",
+        "rows": 7
+      },
+      {
+        "table": "affiliatekyc",
+        "rows": 2
+      },
+      {
+        "table": "affiliatepayout",
+        "rows": 5
+      },
+      {
+        "table": "affiliateprofile",
+        "rows": 15
+      },
+      {
+        "table": "broadcast",
+        "rows": 5
+      },
+      {
+        "table": "bulkdiscount",
+        "rows": 2
+      },
+      {
+        "table": "campaign",
+        "rows": 1
+      },
+      {
+        "table": "campaigncategory",
+        "rows": 0
+      },
+      {
+        "table": "campaignproduct",
+        "rows": 0
+      },
+      {
+        "table": "cart",
+        "rows": 7
+      },
+      {
+        "table": "cartitem",
+        "rows": 4
+      },
+      {
+        "table": "district",
+        "rows": 1811
+      },
+      {
+        "table": "flashsale",
+        "rows": 2
+      },
+      {
+        "table": "flashsalepurchase",
+        "rows": 0
+      },
+      {
+        "table": "product",
+        "rows": 28
+      },
+      {
+        "table": "productdiscount",
+        "rows": 1
+      },
+      {
+        "table": "productvariant",
+        "rows": 8
+      },
+      {
+        "table": "promotion",
+        "rows": 0
+      },
+      {
+        "table": "province",
+        "rows": 54
+      },
+      {
+        "table": "rajaongkirregion",
+        "rows": 0
+      },
+      {
+        "table": "regency",
+        "rows": 1003
+      },
+      {
+        "table": "session",
+        "rows": 0
+      },
+      {
+        "table": "shippingdiscount",
+        "rows": 6
+      },
+      {
+        "table": "spinwheelcampaign",
+        "rows": 1
+      },
+      {
+        "table": "spinwheelreward",
+        "rows": 7
+      },
+      {
+        "table": "spinwheelspin",
+        "rows": 13
+      },
+      {
+        "table": "storesetting",
+        "rows": 1
+      },
+      {
+        "table": "user",
+        "rows": 402
+      },
+      {
+        "table": "useraddress",
+        "rows": 15
+      },
+      {
+        "table": "verificationtoken",
+        "rows": 0
+      },
+      {
+        "table": "village",
+        "rows": 1178
+      },
+      {
+        "table": "voucher",
+        "rows": 2
+      },
+      {
+        "table": "vouchercategory",
+        "rows": 0
+      },
+      {
+        "table": "voucherproduct",
+        "rows": 0
+      },
+      {
+        "table": "voucheruserusage",
+        "rows": 1
+      }
+    ],
+    "ambiguous": [
+      {
+        "item": "notification tanpa orderId (payload mungkin memuat data order)",
+        "rows": 21
+      },
+      {
+        "item": "adminauditlog entityType=Order",
+        "rows": 387
+      },
+      {
+        "item": "voucheruserusage (kuota per-user)",
+        "rows": 1
+      },
+      {
+        "item": "flashsalepurchase (reservasi flash sale)",
+        "rows": 0
+      },
+      {
+        "item": "spinwheelspin (entitlement user)",
+        "rows": 13
+      },
+      {
+        "item": "whatsapp_chat_state terikat order",
+        "rows": 0
+      }
+    ]
+  },
+  "counts": {
+    "orders": 163,
+    "totalRowsToDelete": 385,
+    "maxOrderId": 1819
+  },
+  "foreignKeyBlockers": [
+    {
+      "child": "affiliateconversion",
+      "parent": "order",
+      "onDelete": "RESTRICT",
+      "handledBy": "dihapus lebih dulu"
+    },
+    {
+      "child": "refund",
+      "parent": "order",
+      "onDelete": "NO ACTION",
+      "handledBy": "dihapus lebih dulu"
+    }
+  ],
+  "obligations": {
+    "refund PENDING/PROCESSING": 2,
+    "komisi affiliate PENDING/APPROVED/PAID": 12,
+    "affiliate payout PENDING/PROCESSING": 4,
+    "ShipmentJob PENDING/PROCESSING": 0,
+    "shipment Mengantar aktif": 0,
+    "order dengan providerShipmentId": 0,
+    "COD belum selesai": 18,
+    "PAID belum COMPLETED": 33,
+    "payment window masih terbuka": 0,
+    "notifikasi QUEUED/PROCESSING": 0,
+    "spinwheelspin terikat order": 0,
+    "chat WhatsApp terikat order": 0
+  },
+  "reasons": [
+    "schema drift — tabel schema hilang di DB: whatsapp_chat_state, whatsapp_inbound_message; migration belum diterapkan: 20261013120000_whatsapp_autoreply_state",
+    "kewajiban belum direkonsiliasi: refund PENDING/PROCESSING (2)",
+    "kewajiban belum direkonsiliasi: komisi affiliate PENDING/APPROVED/PAID (12)",
+    "kewajiban belum direkonsiliasi: affiliate payout PENDING/PROCESSING (4)",
+    "kewajiban belum direkonsiliasi: COD belum selesai (18)",
+    "kewajiban belum direkonsiliasi: PAID belum COMPLETED (33)"
+  ],
+  "warnings": [
+    "21 notification tanpa orderId dipertahankan (ambigu, cek manual)"
+  ],
+  "executeGates": {
+    "--execute": {
+      "ok": false,
+      "detail": "belum"
+    },
+    "confirm=DELETE-ALL-ORDERS": {
+      "ok": false,
+      "detail": "salah/tidak ada"
+    },
+    "database-fingerprint": {
+      "ok": false,
+      "detail": "tidak ada"
+    },
+    "backup": {
+      "ok": false,
+      "detail": "tidak ada"
+    },
+    "--maintenance-confirmed": {
+      "ok": false,
+      "detail": "belum"
+    },
+    "--writers-stopped": {
+      "ok": false,
+      "detail": "belum"
+    },
+    "--mengantar-clear": {
+      "ok": false,
+      "detail": "belum"
+    },
+    "--obligations-reconciled": {
+      "ok": false,
+      "detail": "belum"
+    }
+  }
+}
