@@ -1,7 +1,11 @@
 {
   "tool": "order-cascade-cleanup",
-  "generatedAt": "2026-10-19T02:11:38.077Z",
+  "generatedAt": "2026-10-19T02:55:27.836Z",
   "mode": "dry-run",
+  "scope": {
+    "mode": "all",
+    "orderId": null
+  },
   "status": "BLOCKED",
   "environment": {
     "db": "toko",
@@ -10,8 +14,8 @@
     "foreignKeyChecks": 1,
     "nodeEnv": "development"
   },
-  "fingerprint": "7238ef38f80112a54fb3adfd8dcec7c6e14ab67e9c5b1318f9b4672bf232d5b7",
-  "fingerprintShort": "7238ef38f80112a5",
+  "fingerprint": "3674aee2e9dd5c5485c9694fd7961d0012204cc5500be1e0effb0b8f85974da4",
+  "fingerprintShort": "3674aee2e9dd5c54",
   "schema": {
     "ok": false,
     "missingInDb": [

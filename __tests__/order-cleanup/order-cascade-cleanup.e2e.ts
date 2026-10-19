@@ -428,6 +428,168 @@ async function main() {
         check(!/FOREIGN_KEY_CHECKS\s*=\s*0/i.test(code), "never disables FK checks");
         check(!/\bTRUNCATE\s+(TABLE\s+)?[`"\w]/i.test(code), "never uses TRUNCATE");
         check(!/\bDROP\s+DATABASE\b/i.test(code), "never drops a database");
+
+        /* ================================ 14. single-order mode */
+        await db.$executeRawUnsafe(
+            `INSERT INTO \`order\`
+               (id, userId, orderNumber, recipientName, phone, address, subtotal, shippingCost, total,
+                status, paymentMethod, paymentStatus, createdAt, updatedAt)
+             VALUES
+               (2001, 'u_cust_test', 'TEST-SINGLE-1', 'Cust Test', '0800000000', 'Alamat Uji',
+                50000, 10000, 60000, 'COMPLETED', 'BANK_TRANSFER', 'PAID', NOW(3), NOW(3)),
+               (2002, 'u_cust_test', 'TEST-SINGLE-2', 'Cust Test', '0800000000', 'Alamat Uji',
+                50000, 0, 50000, 'COMPLETED', 'COD', 'UNPAID', NOW(3), NOW(3))`,
+        );
+        await db.$executeRawUnsafe(
+            `INSERT INTO orderitem
+               (id, orderId, productId, variantId, productName, variantName, price, quantity, subtotal)
+             VALUES
+               (21, 2001, 1, 1, 'Produk Uji', 'Varian Uji', 50000, 1, 50000),
+               (22, 2002, 1, 1, 'Produk Uji', 'Varian Uji', 50000, 1, 50000)`,
+        );
+        await db.$executeRawUnsafe(
+            `INSERT INTO refund (id, orderId, amount, status, requestedBy, createdAt, updatedAt)
+             VALUES (3, 2001, 60000, 'COMPLETED', 'ADMIN', NOW(3), NOW(3))`,
+        );
+        await db.$executeRawUnsafe(
+            `INSERT INTO notification
+               (id, orderId, channel, notificationType, recipient, idempotencyKey, payload, status, createdAt, updatedAt)
+             VALUES (3, 2001, 'whatsapp', 'ORDER_STATUS_CHANGED', '0800000000', 'idem-3', '{}', 'SENT', NOW(3), NOW(3))`,
+        );
+
+        const singleDry = runCli(["--order-id=2001", "--report-json"]);
+        eq(singleDry.code, 0, "single-order dry-run exits 0");
+        const s1 = JSON.parse(singleDry.stdout);
+        eq(s1.scope.mode, "single", "scope is reported as single");
+        eq(s1.scope.orderId, 2001, "scope carries the order id");
+        eq(s1.counts.orders, 1, "single scope counts exactly one order");
+        eq(
+            s1.tables.delete.find((t: any) => t.table === "order").scopeRows,
+            1,
+            "order plan covers one row only",
+        );
+        eq(
+            s1.tables.delete.find((t: any) => t.table === "orderitem").scopeRows,
+            1,
+            "item plan is scoped to the selected order",
+        );
+        eq(
+            s1.tables.delete.find((t: any) => t.table === "refund").scopeRows,
+            1,
+            "refund plan is scoped to the selected order",
+        );
+        eq(
+            s1.tables.delete.find((t: any) => t.table === "notification").scopeRows,
+            1,
+            "notification plan is scoped to the selected order",
+        );
+        check(
+            s1.fingerprint !== r1.fingerprint,
+            "single fingerprint differs from the all-orders fingerprint",
+        );
+        eq(await count(db, "SELECT COUNT(*) c FROM `order`"), 2, "single dry-run changed nothing");
+
+        const singleBase = [
+            "--execute",
+            "--order-id=2001",
+            `--database-fingerprint=${s1.fingerprint}`,
+            `--backup=${backupPath}`,
+            "--maintenance-confirmed",
+            "--writers-stopped",
+            "--mengantar-clear",
+            "--obligations-reconciled",
+            "--i-understand-production",
+        ];
+
+        const noSingleConfirm = runCli(singleBase);
+        eq(noSingleConfirm.code, 2, "single execute without --confirm-order is refused");
+        check(
+            noSingleConfirm.stderr.includes("confirm-order=<id>"),
+            "refusal names the single-order confirmation gate",
+        );
+
+        const wrongSingleConfirm = runCli([...singleBase, "--confirm-order=2002"]);
+        eq(wrongSingleConfirm.code, 2, "wrong --confirm-order is refused");
+
+        const mixedFlags = runCli([
+            ...singleBase,
+            "--confirm-order=2001",
+            "--confirm-all-orders=DELETE-ALL-ORDERS",
+        ]);
+        eq(mixedFlags.code, 2, "--order-id plus bulk confirmation is refused");
+        eq(await count(db, "SELECT COUNT(*) c FROM `order`"), 2, "refused single executes changed nothing");
+
+        const missingOrder = runCli(["--order-id=999999", "--report-json"]);
+        eq(missingOrder.code, 2, "unknown order id is BLOCKED");
+        const missing = JSON.parse(missingOrder.stdout);
+        eq(missing.status, "BLOCKED", "unknown order id reports BLOCKED");
+        check(
+            missing.reasons.some((x: string) => x.includes("999999") && x.includes("tidak ditemukan")),
+            "unknown order id reason is explicit",
+        );
+
+        // Shipment yang sudah dibuat provider harus memblokir order itu saja.
+        await db.$executeRawUnsafe(
+            `UPDATE \`order\` SET providerShipmentId='TEST-PROVIDER-1', shipmentStatus='CREATED'
+              WHERE id=2002`,
+        );
+        const providerBlocked = runCli(["--order-id=2002", "--report-json"]);
+        eq(providerBlocked.code, 2, "order with a provider shipment is BLOCKED");
+        const pb = JSON.parse(providerBlocked.stdout);
+        check(
+            pb.reasons.some((x: string) => x.includes("providerShipmentId")),
+            "BLOCKED reason names the provider shipment",
+        );
+        eq(
+            await count(db, "SELECT COUNT(*) c FROM `order` WHERE id=2002"),
+            1,
+            "provider shipment order is untouched",
+        );
+        await db.$executeRawUnsafe(
+            `UPDATE \`order\` SET providerShipmentId=NULL, shipmentStatus=NULL WHERE id=2002`,
+        );
+
+        /* ------------------------- 15. real single-order execute */
+        const singleRun = runCli([...singleBase, "--confirm-order=2001"]);
+        check(
+            singleRun.code === 0,
+            "single-order execute succeeds",
+            `code=${singleRun.code} ${singleRun.stderr.slice(0, 300)}`,
+        );
+        eq(
+            await count(db, "SELECT COUNT(*) c FROM `order` WHERE id=2001"),
+            0,
+            "selected order deleted",
+        );
+        eq(
+            await count(db, "SELECT COUNT(*) c FROM `order` WHERE id=2002"),
+            1,
+            "other order preserved",
+        );
+        eq(await count(db, "SELECT COUNT(*) c FROM orderitem"), 1, "only the selected item was deleted");
+        eq(await count(db, "SELECT COUNT(*) c FROM orderitem WHERE orderId=2002"), 1, "remaining item belongs to the other order");
+        eq(await count(db, "SELECT COUNT(*) c FROM refund"), 0, "refund of the selected order deleted");
+        eq(await count(db, "SELECT COUNT(*) c FROM notification WHERE orderId=2001"), 0, "notification of the selected order deleted");
+        eq(await count(db, "SELECT COUNT(*) c FROM notification WHERE orderId IS NULL"), baseline.unlinkedNotif, "unlinked notification still preserved");
+        eq(await count(db, "SELECT COUNT(*) c FROM user"), baseline.users, "users unchanged after single delete");
+        eq(await count(db, "SELECT COUNT(*) c FROM product"), baseline.products, "products unchanged after single delete");
+        eq(await count(db, "SELECT COUNT(*) c FROM productvariant"), baseline.variants, "variants unchanged after single delete");
+        eq(await count(db, "SELECT COUNT(*) c FROM productvariant WHERE id=1 AND stock=10"), 1, "stock unchanged after single delete");
+        eq(await count(db, "SELECT COUNT(*) c FROM adminauditlog"), baseline.audit, "audit log unchanged after single delete");
+        eq(await count(db, "SELECT COUNT(*) c FROM spinwheelspin"), baseline.spins, "spin entitlement unchanged after single delete");
+        eq(
+            await count(
+                db,
+                `SELECT COUNT(*) c FROM information_schema.KEY_COLUMN_USAGE
+                  WHERE TABLE_SCHEMA=DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL`,
+            ),
+            baseline.fkConstraints,
+            "foreign keys still present after single delete",
+        );
+
+        const reRun = runCli([...singleBase, "--confirm-order=2001"]);
+        eq(reRun.code, 2, "re-running the same single delete is BLOCKED");
+        eq(await count(db, "SELECT COUNT(*) c FROM `order`"), 1, "failed re-run changed nothing");
     } finally {
         try {
             if (db) await db.$disconnect();

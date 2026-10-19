@@ -7,9 +7,18 @@
  * Prisma dan foreign key AKTUAL di database. Master data (user, produk, stok,
  * settings, kredensial, sesi WhatsApp) TIDAK pernah dihapus.
  *
- * DEFAULT: DRY-RUN. Tidak ada DELETE tanpa SEMUA gate berikut:
+ * DEFAULT: DRY-RUN, dan default scope = SEMUA order.
+ *
+ * Scope:
+ *   (tanpa flag)              semua order  → butuh --confirm-all-orders=DELETE-ALL-ORDERS
+ *   --order-id=<id>           satu order   → butuh --confirm-order=<id>
+ *   Scope ikut masuk fingerprint, jadi fingerprint mode "single" tidak bisa
+ *   dipakai untuk mode "all" (dan sebaliknya).
+ *
+ * Tidak ada DELETE tanpa SEMUA gate berikut:
  *   --execute
- *   --confirm-all-orders=DELETE-ALL-ORDERS
+ *   --confirm-all-orders=DELETE-ALL-ORDERS   (scope semua)  ATAU
+ *   --confirm-order=<id>                      (scope satu order)
  *   --database-fingerprint=<fingerprint dari dry-run>
  *   --backup=<file dump terverifikasi>
  *   --maintenance-confirmed
@@ -155,6 +164,8 @@ type Args = {
     obligationsReconciled: boolean;
     batch: number;
     allowProduction: boolean;
+    orderId: number | null;
+    confirmOrder: string | null;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -171,11 +182,19 @@ function parseArgs(argv: string[]): Args {
           ? true
           : (reportFlag.split("=").slice(1).join("=") || true);
 
+    const rawOrderId = val("order-id");
+    if (rawOrderId !== null && !/^[1-9][0-9]*$/.test(rawOrderId)) {
+        process.stderr.write("ERROR: --order-id harus bilangan bulat positif.\n");
+        process.exit(2);
+    }
+
     return {
         dryRun: has("--dry-run"),
         execute: has("--execute"),
         reportJson,
         confirm: val("confirm-all-orders"),
+        confirmOrder: val("confirm-order"),
+        orderId: rawOrderId === null ? null : Number(rawOrderId),
         fingerprint: val("database-fingerprint"),
         backup: val("backup"),
         maintenance: has("--maintenance-confirmed"),
@@ -192,6 +211,38 @@ const ARGS = parseArgs(process.argv.slice(2));
 if (ARGS.execute && ARGS.dryRun) {
     process.stderr.write("ERROR: --dry-run dan --execute tidak bisa digabung.\n");
     process.exit(2);
+}
+
+if (ARGS.orderId !== null && ARGS.confirm !== null) {
+    process.stderr.write(
+        "ERROR: --order-id (satu order) tidak boleh digabung dengan --confirm-all-orders.\n",
+    );
+    process.exit(2);
+}
+
+/* ==========================================================================
+ * 2b. SCOPE — semua order atau satu order
+ * ========================================================================== */
+
+type Scope = { kind: "all" } | { kind: "single"; orderId: number };
+
+const SCOPE: Scope =
+    ARGS.orderId === null ? { kind: "all" } : { kind: "single", orderId: ARGS.orderId };
+
+function scopeLabel(): string {
+    return SCOPE.kind === "all" ? "all" : `single:${SCOPE.orderId}`;
+}
+
+/** Filter baris turunan; `column` default `orderId`. */
+function scopeSql(alias: string, column = "orderId"): string {
+    if (SCOPE.kind === "all") return "1=1";
+    return `${alias}.${column} = ${SCOPE.orderId}`;
+}
+
+/** Filter tabel `order` itu sendiri (kolom `id`). */
+function orderScopeSql(alias: string): string {
+    if (SCOPE.kind === "all") return "1=1";
+    return `${alias}.id = ${SCOPE.orderId}`;
 }
 
 /* ==========================================================================
@@ -501,17 +552,32 @@ type Counts = {
 };
 
 async function collectCounts(graph: GraphNode[]): Promise<Counts> {
-    const orders = asNum((await ro(`SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}`))[0].c);
-    const maxOrderId = asNum(
-        (await ro(`SELECT COALESCE(MAX(id),0) m FROM ${sqlIdent(ORDER_TABLE)}`))[0].m,
+    const orders = asNum(
+        (await ro(
+            `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)} x WHERE ${orderScopeSql("x")}`,
+        ))[0].c,
     );
+    const maxOrderId =
+        SCOPE.kind === "single"
+            ? orders > 0
+                ? SCOPE.orderId
+                : 0
+            : asNum(
+                  (await ro(
+                      `SELECT COALESCE(MAX(id),0) m FROM ${sqlIdent(ORDER_TABLE)}`,
+                  ))[0].m,
+              );
 
     const perDeleteTable: Record<string, number> = {};
     for (const node of graph) {
         const rule = DELETE_RULES[node.table];
         if (!rule) continue;
         const where = rule.predicate("x");
-        const r = await ro(`SELECT COUNT(*) c FROM ${sqlIdent(node.table)} x WHERE ${where}`);
+        const scope =
+            node.table === ORDER_TABLE ? orderScopeSql("x") : scopeSql("x");
+        const r = await ro(
+            `SELECT COUNT(*) c FROM ${sqlIdent(node.table)} x WHERE ${where} AND ${scope}`,
+        );
         perDeleteTable[node.table] = asNum(r[0].c);
     }
 
@@ -537,60 +603,69 @@ async function collectCounts(graph: GraphNode[]): Promise<Counts> {
         }
     };
 
+    /*
+     * Kewajiban dihitung pada scope yang sama dengan penghapusan: mode satu
+     * order tidak boleh diblokir oleh kewajiban order lain. Pengecualian:
+     * affiliatepayout tidak punya kolom order (level akun) sehingga tetap
+     * dihitung global sebagai peringatan saldo.
+     */
+    const scoped = (column: string) =>
+        SCOPE.kind === "single" ? ` AND ${column} = ${SCOPE.orderId}` : "";
+
     const obligations: Record<string, number> = {
         "refund PENDING/PROCESSING": await scalar(
-            `SELECT COUNT(*) c FROM refund WHERE status IN ('PENDING','PROCESSING')`,
+            `SELECT COUNT(*) c FROM refund WHERE status IN ('PENDING','PROCESSING')${scoped("orderId")}`,
         ),
         "komisi affiliate PENDING/APPROVED/PAID": await scalar(
-            `SELECT COUNT(*) c FROM affiliateconversion WHERE status IN ('PENDING','APPROVED','PAID')`,
+            `SELECT COUNT(*) c FROM affiliateconversion WHERE status IN ('PENDING','APPROVED','PAID')${scoped("orderId")}`,
         ),
         "affiliate payout PENDING/PROCESSING": await scalar(
             `SELECT COUNT(*) c FROM affiliatepayout WHERE status IN ('PENDING','PROCESSING')`,
         ),
         "ShipmentJob PENDING/PROCESSING": await scalar(
-            `SELECT COUNT(*) c FROM shipmentjob WHERE status IN ('PENDING','PROCESSING')`,
+            `SELECT COUNT(*) c FROM shipmentjob WHERE status IN ('PENDING','PROCESSING')${scoped("orderId")}`,
         ),
         "shipment Mengantar aktif": await scalar(
             `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}
               WHERE shipmentStatus IS NOT NULL
-                AND shipmentStatus NOT IN ('DELIVERED','CANCELLED','RETURNED','NOT_CREATED')`,
+                AND shipmentStatus NOT IN ('DELIVERED','CANCELLED','RETURNED','NOT_CREATED')${scoped("id")}`,
         ),
         "order dengan providerShipmentId": await scalar(
-            `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)} WHERE providerShipmentId IS NOT NULL`,
+            `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)} WHERE providerShipmentId IS NOT NULL${scoped("id")}`,
         ),
         "COD belum selesai": await scalar(
             `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}
-              WHERE paymentMethod='COD' AND status NOT IN ('COMPLETED','CANCELLED')`,
+              WHERE paymentMethod='COD' AND status NOT IN ('COMPLETED','CANCELLED')${scoped("id")}`,
         ),
         "PAID belum COMPLETED": await scalar(
             `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}
-              WHERE paymentStatus='PAID' AND status NOT IN ('COMPLETED','REFUND_PENDING')`,
+              WHERE paymentStatus='PAID' AND status NOT IN ('COMPLETED','REFUND_PENDING')${scoped("id")}`,
         ),
         "payment window masih terbuka": await scalar(
             `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}
               WHERE paymentExpiresAt IS NOT NULL AND paymentExpiresAt > NOW()
-                AND paymentStatus IN ('UNPAID','PENDING')`,
+                AND paymentStatus IN ('UNPAID','PENDING')${scoped("id")}`,
         ),
         "notifikasi QUEUED/PROCESSING": await scalar(
-            `SELECT COUNT(*) c FROM notification WHERE status IN ('QUEUED','PROCESSING')`,
+            `SELECT COUNT(*) c FROM notification WHERE status IN ('QUEUED','PROCESSING')${scoped("orderId")}`,
         ),
         "spinwheelspin terikat order": await scalar(
-            `SELECT COUNT(*) c FROM spinwheelspin WHERE orderId IS NOT NULL`,
+            `SELECT COUNT(*) c FROM spinwheelspin WHERE orderId IS NOT NULL${scoped("orderId")}`,
         ),
         "chat WhatsApp terikat order": await scalar(
-            `SELECT COUNT(*) c FROM whatsapp_chat_state WHERE verifiedOrderId IS NOT NULL`,
+            `SELECT COUNT(*) c FROM whatsapp_chat_state WHERE verifiedOrderId IS NOT NULL${scoped("verifiedOrderId")}`,
         ),
     };
 
     const recentOrders = await scalar(
         `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}
-          WHERE createdAt > (NOW() - INTERVAL 5 MINUTE)`,
+          WHERE createdAt > (NOW() - INTERVAL 5 MINUTE)${scoped("id")}`,
     );
 
     const ambiguous: Record<string, number> = {
         "notification tanpa orderId (payload mungkin memuat data order)": notificationUnlinked,
         "adminauditlog entityType=Order": await scalar(
-            `SELECT COUNT(*) c FROM adminauditlog WHERE entityType='Order'`,
+            `SELECT COUNT(*) c FROM adminauditlog WHERE entityType='Order'${scoped("entityId")}`,
         ),
         "voucheruserusage (kuota per-user)": await scalar(
             `SELECT COUNT(*) c FROM voucheruserusage`,
@@ -626,6 +701,7 @@ function computeFingerprint(ins: Inspection, counts: Counts): { full: string; sh
     const payload = JSON.stringify({
         db: ins.dbName,
         server: ins.serverVersion,
+        scope: scopeLabel(),
         tables: ins.tables.map((t) => t.name).sort(),
         migrations: ins.migrations
             .filter((m) => m.finished && !m.rolledBack)
@@ -697,6 +773,7 @@ type Report = {
     tool: "order-cascade-cleanup";
     generatedAt: string;
     mode: "dry-run" | "execute";
+    scope: { mode: "all" | "single"; orderId: number | null };
     status: Status;
     environment: {
         db: string;
@@ -781,6 +858,8 @@ function buildReport(
             bits.push(`kolom wajib hilang: ${schema.requiredColumnsMissing.join(", ")}`);
         reasons.push(`schema drift — ${bits.join("; ")}`);
     }
+    if (SCOPE.kind === "single" && counts.orders === 0)
+        reasons.push(`order ${SCOPE.orderId} tidak ditemukan`);
     if (unknown.length) reasons.push(`tabel turunan order tidak dikenali: ${unknown.join(", ")}`);
     if (unknownRefs.length)
         reasons.push(
@@ -831,12 +910,30 @@ function buildReport(
         }
     })();
 
+    const confirmGate: Record<string, { ok: boolean; detail: string }> =
+        SCOPE.kind === "all"
+            ? {
+                  "confirm=DELETE-ALL-ORDERS": {
+                      ok: ARGS.confirm === "DELETE-ALL-ORDERS",
+                      detail:
+                          ARGS.confirm === "DELETE-ALL-ORDERS" ? "valid" : "salah/tidak ada",
+                  },
+              }
+            : {
+                  "confirm-order=<id>": {
+                      ok: ARGS.confirmOrder === String(SCOPE.orderId),
+                      detail:
+                          ARGS.confirmOrder === null
+                              ? "tidak ada"
+                              : ARGS.confirmOrder === String(SCOPE.orderId)
+                                ? "valid"
+                                : "TIDAK cocok",
+                  },
+              };
+
     const executeGates = {
         "--execute": { ok: ARGS.execute, detail: ARGS.execute ? "ya" : "belum" },
-        "confirm=DELETE-ALL-ORDERS": {
-            ok: ARGS.confirm === "DELETE-ALL-ORDERS",
-            detail: ARGS.confirm === "DELETE-ALL-ORDERS" ? "valid" : "salah/tidak ada",
-        },
+        ...confirmGate,
         "database-fingerprint": {
             ok: ARGS.fingerprint === fp.full,
             detail: ARGS.fingerprint ? (ARGS.fingerprint === fp.full ? "cocok" : "TIDAK cocok") : "tidak ada",
@@ -857,6 +954,10 @@ function buildReport(
         tool: "order-cascade-cleanup",
         generatedAt: new Date().toISOString(),
         mode,
+        scope: {
+            mode: SCOPE.kind,
+            orderId: SCOPE.kind === "single" ? SCOPE.orderId : null,
+        },
         status: reasons.length ? "BLOCKED" : "READY",
         environment: {
             db: ins.dbName,
@@ -898,6 +999,11 @@ function printHuman(r: Report) {
     line("ORDER CASCADE CLEANUP");
     line("=".repeat(78));
     line(`mode        : ${r.mode}`);
+    line(
+        `scope       : ${
+            r.scope.mode === "all" ? "semua order" : `satu order (id ${r.scope.orderId})`
+        }`,
+    );
     line(`status      : ${r.status}`);
     line(`database    : ${r.environment.db} (${r.environment.server}, ${r.environment.hostClass})`);
     line(`fingerprint : ${r.fingerprintShort}`);
@@ -993,8 +1099,16 @@ async function execute(
         .sort((a, b) => b.depth - a.depth || (a.table === ORDER_TABLE ? 1 : b.table === ORDER_TABLE ? -1 : a.table.localeCompare(b.table)));
 
     const orderIds = (
-        await ro(`SELECT id FROM ${sqlIdent(ORDER_TABLE)} ORDER BY id`)
+        await ro(
+            `SELECT id FROM ${sqlIdent(ORDER_TABLE)} x WHERE ${orderScopeSql("x")} ORDER BY id`,
+        )
     ).map((r) => asNum(r.id));
+
+    // Total global sebelum eksekusi, untuk membuktikan mode satu order hanya
+    // mengurangi tepat satu baris `order` (tidak menyentuh order lain).
+    const totalOrdersBefore = asNum(
+        (await ro(`SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}`))[0].c,
+    );
 
     const deleted: Record<string, number> = {};
     for (const n of deleteNodes) deleted[n.table] = 0;
@@ -1007,18 +1121,25 @@ async function execute(
             if (asNum(lock[0].l) !== 1) throw new Error("gagal memperoleh advisory lock");
 
             // Fingerprint harus masih sama (tidak ada order baru / migrasi baru).
+            const recheckOrders = asNum(
+                (await tx.$queryRawUnsafe(
+                    `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)} x WHERE ${orderScopeSql("x")}`,
+                ) as Row[])[0].c,
+            );
+            const recheckMaxOrderId =
+                SCOPE.kind === "single"
+                    ? recheckOrders > 0
+                        ? SCOPE.orderId
+                        : 0
+                    : asNum(
+                          (await tx.$queryRawUnsafe(
+                              `SELECT COALESCE(MAX(id),0) m FROM ${sqlIdent(ORDER_TABLE)}`,
+                          ) as Row[])[0].m,
+                      );
             const recheck = computeFingerprint(ins, {
                 ...counts,
-                orders: asNum(
-                    (await tx.$queryRawUnsafe(
-                        `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}`,
-                    ) as Row[])[0].c,
-                ),
-                maxOrderId: asNum(
-                    (await tx.$queryRawUnsafe(
-                        `SELECT COALESCE(MAX(id),0) m FROM ${sqlIdent(ORDER_TABLE)}`,
-                    ) as Row[])[0].m,
-                ),
+                orders: recheckOrders,
+                maxOrderId: recheckMaxOrderId,
             });
             if (recheck.full !== fp.full) {
                 throw new Error("fingerprint berubah saat eksekusi — abort");
@@ -1045,17 +1166,31 @@ async function execute(
             // Post-check di dalam transaksi.
             const left = asNum(
                 (await tx.$queryRawUnsafe(
-                    `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}`,
+                    `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)} x WHERE ${orderScopeSql("x")}`,
                 ) as Row[])[0].c,
             );
             if (left !== 0) throw new Error(`post-check: masih ada ${left} order`);
 
+            if (SCOPE.kind === "single") {
+                const totalAfter = asNum(
+                    (await tx.$queryRawUnsafe(
+                        `SELECT COUNT(*) c FROM ${sqlIdent(ORDER_TABLE)}`,
+                    ) as Row[])[0].c,
+                );
+                if (totalAfter !== totalOrdersBefore - 1) {
+                    throw new Error(
+                        `post-check: jumlah order ${totalOrdersBefore} → ${totalAfter}, ` +
+                            `seharusnya ${totalOrdersBefore - 1}`,
+                    );
+                }
+            }
+
             for (const n of deleteNodes) {
                 if (n.table === ORDER_TABLE) continue;
-                const where = DELETE_RULES[n.table].predicate("x").replace(/\bx\./g, "");
+                const where = DELETE_RULES[n.table].predicate("x");
                 const remain = asNum(
                     (await tx.$queryRawUnsafe(
-                        `SELECT COUNT(*) c FROM ${sqlIdent(n.table)} x WHERE ${where}`,
+                        `SELECT COUNT(*) c FROM ${sqlIdent(n.table)} x WHERE ${where} AND ${scopeSql("x")}`,
                     ) as Row[])[0].c,
                 );
                 if (remain !== 0) throw new Error(`post-check: ${n.table} menyisakan ${remain} baris`);

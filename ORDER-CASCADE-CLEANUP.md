@@ -1,8 +1,9 @@
 # ORDER CASCADE CLEANUP — Implementasi, Dry-Run & Pengujian
 
-**Status: implementasi selesai, DRY-RUN dijalankan, `--execute` TIDAK dijalankan.**
-Database development tidak berubah (`order` tetap 163 baris). Tidak ada commit/push/deploy,
-tidak ada restart PM2, tidak ada perubahan `.env`.
+**Status: implementasi selesai, DRY-RUN dijalankan, `--execute` TIDAK dijalankan pada database
+development/production** (hanya pada database disposable di dalam test).
+Database development tidak berubah (`order` tetap 163 baris, user 402, product 28, variant 8).
+Tidak ada commit/push/deploy, tidak ada restart PM2, tidak ada perubahan `.env`.
 
 | Item | Nilai |
 |---|---|
@@ -10,9 +11,10 @@ tidak ada restart PM2, tidak ada perubahan `.env`.
 | Test | `__tests__/order-cleanup/order-cascade-cleanup.e2e.ts` |
 | Laporan JSON dry-run | `docs/order-cascade-cleanup-dry-run.json` |
 | Database dry-run | `toko` (development, MariaDB 11.8.8) |
-| Fingerprint dry-run | `7238ef38f80112a5…` (64 hex lengkap di JSON) |
+| Fingerprint dry-run (semua order) | `3674aee2e9dd5c54…` (64 hex lengkap di JSON) |
 | Status dry-run | **BLOCKED** (schema drift + kewajiban finansial) |
-| Hasil test | **55/55 PASS** pada database disposable |
+| Hasil test | **93/93 PASS** pada database disposable |
+| Scope | `semua order` (default) dan `--order-id=<id>` (satu order) |
 
 ---
 
@@ -128,7 +130,7 @@ Total baris target: **385**.
 
 ## D. Source code CLI
 
-**`scripts/order-cascade-cleanup.ts`** (1.146 baris). Bagian penting:
+**`scripts/order-cascade-cleanup.ts`** (1.281 baris). Bagian penting:
 
 1. **Inspeksi read-only** — `information_schema` untuk tabel, kolom, FK, `_prisma_migrations`;
    membaca `prisma/schema.prisma` dan folder `prisma/migrations` untuk validasi.
@@ -137,26 +139,33 @@ Total baris target: **385**.
    Nama tabel/kolom tidak pernah dikarang: semua divalidasi terhadap DB aktual.
 4. **Fingerprint** — SHA-256 dari `db + versi server + daftar tabel + migration applied +
    jumlah order + max(order.id)`. Wajib sama saat `--execute`.
-5. **Gate eksekusi** (semua wajib): `--execute`, `--confirm-all-orders=DELETE-ALL-ORDERS`,
-   `--database-fingerprint`, `--backup`, `--maintenance-confirmed`, `--writers-stopped`,
-   `--mengantar-clear`, `--obligations-reconciled` (+ `--i-understand-production` untuk DB remote).
-6. **Verifikasi backup** — file ada, > 0 byte, umur ≤ 24 jam, magic gzip / header `-- MySQL dump`,
+5. **Scope** — `--order-id=<id>` membatasi perencanaan, hitungan, kewajiban, dan eksekusi ke satu
+   order. Tanpa flag = semua order. Scope ikut masuk fingerprint, sehingga fingerprint mode satu
+   order tidak bisa dipakai untuk mode semua order (dan sebaliknya).
+6. **Gate eksekusi** (semua wajib): `--execute`, `--database-fingerprint`, `--backup`,
+   `--maintenance-confirmed`, `--writers-stopped`, `--mengantar-clear`, `--obligations-reconciled`,
+   **plus** `--confirm-all-orders=DELETE-ALL-ORDERS` (scope semua) **atau** `--confirm-order=<id>`
+   (scope satu order), (+ `--i-understand-production` untuk DB remote).
+7. **Verifikasi backup** — file ada, > 0 byte, umur ≤ 24 jam, magic gzip / header `-- MySQL dump`,
    dan `sha256` sidecar bila tersedia.
-7. **Eksekusi** — satu transaksi InnoDB, `GET_LOCK`, re-cek fingerprint & kewajiban di dalam
-   transaksi, hapus anak → induk per batch, post-check (order = 0, turunan = 0, semua tabel
-   PRESERVE jumlahnya identik). Gagal → rollback.
-8. **Tanpa** TRUNCATE, DROP DATABASE, `FOREIGN_KEY_CHECKS=0`, panggilan Mengantar/WhatsApp/payment,
+8. **Eksekusi** — satu transaksi InnoDB, `GET_LOCK`, re-cek fingerprint & kewajiban di dalam
+   transaksi, hapus anak → induk per batch, post-check (order scope = 0, turunan scope = 0, semua
+   tabel PRESERVE jumlahnya identik, dan pada mode satu order jumlah order global turun tepat 1).
+   Gagal → rollback.
+9. **Tanpa** TRUNCATE, DROP DATABASE, `FOREIGN_KEY_CHECKS=0`, panggilan Mengantar/WhatsApp/payment,
    dan tanpa menyentuh file upload / direktori auth.
-9. **Output** — ringkasan agregat; tidak mencetak `DATABASE_URL`, password, token, nama/telepon/alamat.
+10. **Output** — ringkasan agregat; tidak mencetak `DATABASE_URL`, password, token, nama/telepon/alamat.
 
 Mode & exit code:
 
 | Argumen | Efek |
 |---|---|
-| *(tanpa argumen)* / `--dry-run` | dry-run, cetak laporan manusia |
+| *(tanpa argumen)* / `--dry-run` | dry-run semua order, cetak laporan manusia |
+| `--order-id=<id>` | batasi scope ke satu order (boleh digabung dengan mode mana pun) |
 | `--report-json` | dry-run, JSON ke stdout |
 | `--report-json=<path>` | dry-run, JSON ke file + ringkasan |
-| `--execute` + semua gate | eksekusi |
+| `--execute --confirm-all-orders=DELETE-ALL-ORDERS` + gate lain | eksekusi semua order |
+| `--execute --order-id=<id> --confirm-order=<id>` + gate lain | eksekusi satu order |
 | exit `0` | READY (dry-run) / eksekusi sukses |
 | exit `2` | BLOCKED atau gate ditolak — **tidak ada perubahan** |
 | exit `1` | kegagalan runtime; transaksi rollback |
@@ -167,9 +176,10 @@ Mode & exit code:
 
 ```
 mode        : dry-run
+scope       : semua order
 status      : BLOCKED
 database    : toko (11.8.8-MariaDB, local)
-fingerprint : 7238ef38f80112a5
+fingerprint : 3674aee2e9dd5c54
 orders      : 163
 rows target : 385
 ```
@@ -199,7 +209,7 @@ Reset AUTO_INCREMENT tidak dilakukan.
 ```bash
 DATABASE_URL="mysql://…/toko" \
   npx tsx __tests__/order-cleanup/order-cascade-cleanup.e2e.ts
-# RESULT: 55 passed, 0 failed
+# RESULT: 93 passed, 0 failed
 ```
 
 Database disposable `toko_cleanup_test_<ts>` dibuat, diisi fixture, lalu **di-drop**.
@@ -220,6 +230,11 @@ fixture memakai `prisma db push` + tabel `_prisma_migrations` yang di-seed.
 | 10 | User, product, variant (+stok), storesetting, voucher, audit, spin, cart, notifikasi unlinked tetap ada | PASS |
 | 11 | FK constraint tetap ada; tidak ada orphan | PASS |
 | 12 | Sumber tidak memuat import eksternal, `fetch`, `child_process`, TRUNCATE, DROP DATABASE, FK disable | PASS |
+| 13 | Dry-run `--order-id` menghitung hanya anak dari order terpilih; fingerprint berbeda dari mode semua order | PASS |
+| 14 | `--execute --order-id` tanpa/salah `--confirm-order` ditolak; `--order-id` + `--confirm-all-orders` ditolak | PASS |
+| 15 | Order ID tidak ada → BLOCKED; order dengan `providerShipmentId` diblokir, order lain tidak tersentuh | PASS |
+| 16 | Eksekusi satu order: order terpilih + anaknya terhapus, order lain, item, user, produk, stok, audit, spin, FK utuh | PASS |
+| 17 | Eksekusi ulang order yang sudah terhapus → BLOCKED, tidak ada perubahan | PASS |
 
 Keterbatasan pengujian:
 
@@ -316,7 +331,46 @@ Exit `0` = READY, exit `2` = BLOCKED (tetap menampilkan laporan lengkap).
 Ambil `fingerprint` (64 hex) dari JSON dry-run. Fingerprint berubah bila jumlah/max id order,
 daftar tabel, atau migration berubah → **ulangi dry-run**.
 
-### 3. Eksekusi (hanya setelah semua gate terpenuhi)
+### 3. Dry-run satu order
+
+```bash
+npx tsx scripts/order-cascade-cleanup.ts --order-id=985
+npx tsx scripts/order-cascade-cleanup.ts --order-id=985 --report-json
+```
+
+Output menampilkan `scope : satu order (id 985)`, jumlah baris per tabel hanya untuk order itu,
+status `BLOCKED` bila order tidak ada, atau bila order itu punya refund/komisi/ShipmentJob/
+shipment Mengantar/COD/payment window yang belum selesai.
+
+### 4. Eksekusi satu order (hanya setelah semua gate terpenuhi)
+
+```bash
+npx tsx scripts/order-cascade-cleanup.ts \
+  --execute \
+  --order-id=985 \
+  --confirm-order=985 \
+  --database-fingerprint=<fingerprint-64-hex-dari-dry-run-order-985> \
+  --backup=/var/backups/mutiara/<dump>.sql.gz \
+  --maintenance-confirmed \
+  --writers-stopped \
+  --mengantar-clear \
+  --obligations-reconciled \
+  --i-understand-production
+```
+
+`--confirm-order` harus sama dengan `--order-id`; menggabungkannya dengan
+`--confirm-all-orders` ditolak (exit 2).
+
+Catatan scoping kewajiban: refund, komisi affiliate, ShipmentJob, status/shipment Mengantar, COD,
+payment window, notifikasi, spin, dan chat WhatsApp dihitung hanya untuk order terpilih.
+`affiliatepayout` tidak punya kolom order (level akun), jadi tetap dihitung global dan payout
+`PENDING/PROCESSING` memblokir eksekusi satu order sampai direkonsiliasi — ini disengaja.
+
+Contoh pada development (read-only, order terakhir): `--order-id=1819` → `status=BLOCKED`,
+`orders=1`, `rows target=1`, alasan: drift schema/migration, payout pending (4, global),
+COD belum selesai untuk order itu (1). Jumlah order development tetap 163.
+
+### 5. Eksekusi semua order (hanya setelah semua gate terpenuhi)
 
 ```bash
 npx tsx scripts/order-cascade-cleanup.ts \
@@ -340,7 +394,7 @@ Urutan yang disarankan:
 5. Jalankan `--execute` dengan gate lengkap.
 6. Verifikasi pasca-eksekusi (order 0, master utuh), lalu nyalakan app + cron.
 
-### 4. Yang TIDAK dilakukan CLI
+### 6. Yang TIDAK dilakukan CLI
 
 - Tidak menghapus user, produk, varian, stok, kategori, settings, voucher master,
   affiliate profile/KYC/payout, audit log, spin entitlement, cart, atau sesi WhatsApp.
