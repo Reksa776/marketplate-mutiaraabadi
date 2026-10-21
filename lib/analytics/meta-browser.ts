@@ -3,7 +3,7 @@
 import { claimPurchase } from "@/lib/analytics/purchase-claim";
 
 export function trackMetaBrowserPurchase(input: { orderNumber: string; total: number }): void {
-    if (typeof window === "undefined" || typeof window.fbq !== "function") return;
+    if (typeof window === "undefined" || !window.__META_PIXEL_READY || typeof window.fbq !== "function") return;
     const pixelId = window.__META_PIXEL_ID ?? document.getElementById("meta-pixel")?.getAttribute("data-pixel-id");
     if (!pixelId || !claimPurchase({ channel: "meta", pixelId, orderNumber: input.orderNumber })) return;
     const eventId = `meta:purchase:${input.orderNumber}`;
