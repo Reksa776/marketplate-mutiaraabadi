@@ -70,6 +70,10 @@ import {
     trackAuthoritativeTikTokPurchase,
 } from "@/components/analytics/PurchaseTracker";
 
+import {
+    resetPurchaseClaimsForTests,
+} from "@/lib/analytics/purchase-claim";
+
 function readFile(relativePath: string): string {
     return readFileSync(
         resolve(process.cwd(), relativePath),
@@ -170,6 +174,13 @@ function installPixel(): FakePixel {
 beforeEach(() => {
     jest.clearAllMocks();
     fetchMock.mockReset();
+    /*
+     * The browser Purchase is claimed once per order + pixel per
+     * tab (C2). These tests reuse one order number to assert the
+     * PAYLOAD, so the module-level claim set is reset per test —
+     * deduplication itself is covered by purchase-claim-hardening.
+     */
+    resetPurchaseClaimsForTests();
     delete process.env.TIKTOK_TEST_EVENT_CODE;
     delete (globalThis as { window?: unknown }).window;
 });

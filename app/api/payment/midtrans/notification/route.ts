@@ -17,6 +17,8 @@ import {
     scheduleShipmentProcessing,
 } from "@/lib/mengantar/shipment-worker";
 
+import { recordUnmatchedPaymentWebhook } from "@/lib/payment/webhook-trace";
+
 export const dynamic =
     "force-dynamic";
 
@@ -224,6 +226,24 @@ export async function POST(
                 "MIDTRANS ORDER NOT FOUND:",
                 orderNumber
             );
+
+            /*
+             * PRESERVED TRACE: the order row is gone (approved
+             * cleanup) but the money is real. Record it in
+             * AdminAuditLog (never deleted by the cleanup) so finance
+             * can reconcile a late settlement. No order/payment state
+             * is created or modified.
+             */
+            await recordUnmatchedPaymentWebhook({
+                provider: "midtrans",
+                orderNumber: String(orderNumber),
+                transactionStatus:
+                    body.transaction_status ?? null,
+                amount: body.gross_amount ?? null,
+                providerReference:
+                    body.transaction_id ?? null,
+                paymentType: body.payment_type ?? null,
+            });
 
             /*
              * Tetap 200 supaya Midtrans tidak retry

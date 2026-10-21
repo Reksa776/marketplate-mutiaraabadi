@@ -53,6 +53,8 @@ const SETTINGS_SELECT = {
     tiktokPixelId: true,
     tiktokPixelName: true,
     tiktokPixelCode: true,
+    metaPixelEnabled: true,
+    metaPixelId: true,
 
     provinceId: true,
     province: true,
@@ -92,6 +94,8 @@ type SettingsProjectionSource = {
     tiktokPixelId: string | null;
     tiktokPixelName: string | null;
     tiktokPixelCode: string | null;
+    metaPixelEnabled: boolean;
+    metaPixelId: string | null;
     provinceId: number | null;
     province: string | null;
     cityId: number | null;
@@ -134,6 +138,8 @@ function toSettingsResponse(
             setting.tiktokPixelName,
         tiktokPixelCode:
             setting.tiktokPixelCode,
+        metaPixelEnabled: setting.metaPixelEnabled,
+        metaPixelId: setting.metaPixelId,
 
         tiktokPixelAccessTokenConfigured:
             accessToken !== null,
@@ -552,6 +558,27 @@ export async function PUT(
         const tiktokPixelEnabled =
             body.tiktokPixelEnabled === true;
 
+        const rawMetaPixelId =
+            typeof body.metaPixelId === "string"
+                ? body.metaPixelId.trim()
+                : "";
+        const metaPixelId = /^\d{5,20}$/.test(rawMetaPixelId)
+            ? rawMetaPixelId
+            : null;
+        if (rawMetaPixelId && !metaPixelId) {
+            return NextResponse.json(
+                { success: false, message: "Meta Pixel ID harus berupa 5–20 digit angka." },
+                { status: 400 }
+            );
+        }
+        const metaPixelEnabled = body.metaPixelEnabled === true;
+        if (metaPixelEnabled && !metaPixelId) {
+            return NextResponse.json(
+                { success: false, message: "Isi Meta Pixel ID sebelum mengaktifkan pixel." },
+                { status: 400 }
+            );
+        }
+
         if (
             tiktokPixelEnabled &&
             !tiktokPixelCode
@@ -776,6 +803,8 @@ export async function PUT(
                     tiktokPixelName,
 
                     tiktokPixelCode,
+                    metaPixelEnabled,
+                    metaPixelId,
 
                     tiktokPixelAccessToken:
                         nextTikTokPixelAccessToken,
@@ -870,6 +899,8 @@ export async function PUT(
                     tiktokPixelName,
 
                     tiktokPixelCode,
+                    metaPixelEnabled,
+                    metaPixelId,
 
                     tiktokPixelAccessToken:
                         nextTikTokPixelAccessToken,

@@ -6,6 +6,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveOrderAccess } from "@/lib/guest-order-access";
 import { buildTikTokBrowserMatch } from "@/lib/analytics/tiktok-user-match";
+import { isBrowserPurchaseEligible } from "@/lib/analytics/purchase-eligibility";
 import PurchaseTracker from "@/components/analytics/PurchaseTracker";
 import WhatsAppConfirmButton from "@/components/orders/WhatsAppConfirmButton";
 
@@ -168,10 +169,11 @@ export default async function CheckoutSuccessPage({
      * conversion. A refunded or cancelled COD order must never fire.
      */
     const canTrackBrowserCompletePayment =
-        order.paymentStatus === "PAID" ||
-        (order.paymentMethod === "COD" &&
-            order.paymentStatus !== "REFUNDED" &&
-            order.status !== "CANCELLED");
+        isBrowserPurchaseEligible({
+            paymentStatus: order.paymentStatus,
+            paymentMethod: order.paymentMethod,
+            status: order.status,
+        });
 
     const paymentMethodLabel: Record<string, string> = {
         COD: "COD",

@@ -90,6 +90,12 @@ export type SendInteractiveResult = SendMessageResult & {
 // ==========================================
 
 const DEFAULT_AUTH_DIR = "data/whatsapp-auth";
+/**
+ * Default to a stable location outside the release checkout. Deploys that
+ * replace/symlink the repository must not make a valid Baileys session
+ * disappear merely because process.cwd() changed.
+ */
+const DEFAULT_PERSISTENT_AUTH_DIR = "/var/lib/marketplate/whatsapp-auth";
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 2000;
 const RECONNECT_MAX_DELAY_MS = 60000;
@@ -162,7 +168,10 @@ class WhatsAppService {
 
     constructor() {
         this.authDir =
-            process.env.WHATSAPP_AUTH_DIR || DEFAULT_AUTH_DIR;
+            process.env.WHATSAPP_AUTH_DIR ||
+            (process.env.NODE_ENV === "production"
+                ? DEFAULT_PERSISTENT_AUTH_DIR
+                : DEFAULT_AUTH_DIR);
     }
 
     // ==========================================

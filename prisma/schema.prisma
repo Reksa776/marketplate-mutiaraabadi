@@ -626,6 +626,10 @@ model StoreSetting {
   // browser and never included in the storefront pixel config.
   tiktokPixelAccessToken String? @db.Text
 
+  // Meta Pixel
+  metaPixelEnabled Boolean @default(false)
+  metaPixelId      String?
+
   province                String?
   city                    String?
   district                String?

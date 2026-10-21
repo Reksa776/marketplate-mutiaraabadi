@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 
 import {
     isAdminPath,
+    TIKTOK_PIXEL_SCRIPT_ID,
     type TikTokPixelConfig,
 } from "@/lib/analytics/tiktok";
 
@@ -60,7 +61,7 @@ export default function TikTokPixel({
 
     return (
         <Script
-            id="tiktok-pixel-base"
+            id={TIKTOK_PIXEL_SCRIPT_ID}
             strategy="afterInteractive"
             data-pixel-id={pixelId ?? undefined}
             data-pixel-name={

@@ -130,6 +130,48 @@ export const TIKTOK_PIXEL_READY_TIMEOUT_MS = 15000;
 /** How often to re-check for `window.ttq`. */
 export const TIKTOK_PIXEL_READY_POLL_MS = 250;
 
+/**
+ * `id` of the <script> element TikTokPixel renders. Must stay in sync
+ * with components/analytics/TikTokPixel.tsx (asserted by a test).
+ */
+export const TIKTOK_PIXEL_SCRIPT_ID = "tiktok-pixel-base";
+
+/**
+ * The Pixel ID currently live in this document, or null.
+ *
+ * SOURCE OF TRUTH ON THE CLIENT:
+ *   The storefront never fetches settings from the browser. The id
+ *   already reaches the page as `data-pixel-id` on the base script
+ *   element (rendered by the server-side AnalyticsProvider), so this
+ *   reads that attribute instead of adding a new API call or a second
+ *   copy of the setting.
+ *
+ * Returns null when the script is absent (pixel disabled / admin
+ * route), when the attribute is missing, or when the value is not a
+ * valid Pixel ID. Callers must never fabricate an id to fill the gap.
+ */
+export function resolveTikTokBrowserPixelId(): string | null {
+    if (typeof document === "undefined") {
+        return null;
+    }
+
+    try {
+        const element = document.getElementById(
+            TIKTOK_PIXEL_SCRIPT_ID
+        );
+
+        if (!element) {
+            return null;
+        }
+
+        return normalizeTikTokPixelId(
+            element.getAttribute("data-pixel-id")
+        );
+    } catch {
+        return null;
+    }
+}
+
 /** True once the TikTok base code has registered `window.ttq`. */
 export function isTikTokPixelReady(): boolean {
     return (

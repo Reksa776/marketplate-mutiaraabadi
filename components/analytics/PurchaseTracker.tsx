@@ -3,6 +3,8 @@
 import { useEffect } from "react";
 import {
     buildTikTokEventId,
+    isTikTokPixelReady,
+    resolveTikTokBrowserPixelId,
     trackTikTokEvent,
     trackTikTokUserMatch,
     type TikTokUserMatchIdentifiers,
@@ -15,6 +17,7 @@ import {
     buildTikTokOrderProperties,
     type TikTokCatalogItemInput,
 } from "@/lib/analytics/tiktok-catalog";
+import { claimPurchase } from "@/lib/analytics/purchase-claim";
 
 type PurchaseTrackerProps = {
     orderId: string;
@@ -35,12 +38,16 @@ type PurchaseTrackerProps = {
      * in that case the event is still sent, without identity.
      */
     identity?: TikTokUserMatchIdentifiers | null;
+    /**
+     * Explicit Pixel ID override. Normal call sites omit it: the id is
+     * resolved from the rendered base script (`data-pixel-id`), which
+     * is the only place the browser receives it.
+     */
+    pixelId?: string | null;
 };
 
 /**
- * Fire the TikTok CompletePayment event with the event's
- * `properties` (value/currency/order_id/contents) and, when
- * available, the AUTHORITATIVE customer identity.
+ * Fire the TikTok CompletePayment event ONCE per purchase, per tab.
  *
  * WHY THIS IS A SEPARATE, EXPORTED FUNCTION:
  *   The browser CompletePayment used to rely only on the shared,
@@ -55,6 +62,24 @@ type PurchaseTrackerProps = {
  *   registered with the Pixel immediately before the event, so the
  *   customer's identifiers survive any session-hydration race.
  *
+ *   It is ALSO the single shared Purchase entry point for all three
+ *   browser confirmation routes (`/checkout/payment/[id]`,
+ *   `/checkout/payment-finish`, `/checkout/success`), which is where
+ *   the duplicate guard belongs: one claim, not three.
+ *
+ * DUPLICATE GUARD:
+ *   `claimPurchase()` is checked AFTER eligibility (the caller only
+ *   calls this for a convertible order), AFTER the Pixel is actually
+ *   available, and BEFORE any event is sent. A payment-finish page
+ *   that re-polls, a React remount, or a navigation to another
+ *   confirmation route finds the claim already taken and sends
+ *   nothing.
+ *
+ *   The deterministic `event_id` below still exists, but it only
+ *   deduplicates this event against the SERVER Events API copy. It is
+ *   not a browser-side deduplication mechanism, so it can never
+ *   replace the claim.
+ *
  * The digests are forwarded AS-IS (`trackTikTokUserMatch` only
  * accepts 64-char SHA-256 hex and never hashes again), keeping the
  * browser digest identical to the server Events API digest for the
@@ -65,12 +90,40 @@ export function trackAuthoritativeTikTokPurchase({
     total,
     items,
     identity,
+    pixelId,
 }: {
     orderId: string;
     total: number;
     items?: TikTokCatalogItemInput[];
     identity?: TikTokUserMatchIdentifiers | null;
+    pixelId?: string | null;
 }): void {
+    /*
+     * No Pixel API → no event AND no claim. Claiming here would burn
+     * the only attempt for this order while nothing was ever sent,
+     * and the claim must never imply a delivery that did not happen.
+     */
+    if (!isTikTokPixelReady()) {
+        return;
+    }
+
+    const claimed = claimPurchase({
+        channel: "tiktok",
+        pixelId:
+            pixelId ??
+            resolveTikTokBrowserPixelId(),
+        orderNumber: orderId,
+    });
+
+    /*
+     * Already emitted for this order + pixel in this tab (other
+     * confirmation route, remount, reload). Stop before identify()
+     * and before the event.
+     */
+    if (!claimed) {
+        return;
+    }
+
     /*
      * Authoritative Advanced Matching first. Registering identity
      * sends no event by itself, so this can never duplicate
@@ -112,7 +165,9 @@ export function trackAuthoritativeTikTokPurchase({
  * Use this inside the order confirmation page. The payload carries
  * the SAME deterministic event_id as the server-side Events API
  * copy fired by the payment webhook, so TikTok deduplicates the two
- * into one conversion.
+ * into one conversion. The shared purchase claim additionally makes
+ * sure a remount or a second confirmation route cannot emit the
+ * browser copy twice.
  *
  * `currency` is not a prop on purpose: the store has exactly one
  * currency (lib/analytics/tiktok-catalog).
@@ -122,6 +177,7 @@ export default function PurchaseTracker({
     total,
     items,
     identity,
+    pixelId,
 }: PurchaseTrackerProps) {
     useEffect(() => {
         return whenTikTokReadyForEvents(() => {
@@ -130,9 +186,10 @@ export default function PurchaseTracker({
                 total,
                 items,
                 identity,
+                pixelId,
             });
         });
-    }, [orderId, total, items, identity]);
+    }, [orderId, total, items, identity, pixelId]);
 
     return null;
 }

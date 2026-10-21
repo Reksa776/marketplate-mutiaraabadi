@@ -48,6 +48,8 @@ type StoreForm = {
     tiktokPixelId: string;
     tiktokPixelName: string;
     tiktokPixelCode: string;
+    metaPixelEnabled: boolean;
+    metaPixelId: string;
 
     /**
      * Server-side Events API credential.
@@ -170,6 +172,8 @@ const initialForm: StoreForm = {
     tiktokPixelId: "",
     tiktokPixelName: "",
     tiktokPixelCode: "",
+    metaPixelEnabled: false,
+    metaPixelId: "",
 
     tiktokPixelAccessToken: "",
     tiktokPixelAccessTokenConfigured: false,
@@ -586,6 +590,8 @@ export default function AdminSettingsForm() {
                  */
                 tiktokPixelCode:
                     data.data.tiktokPixelCode ?? "",
+                metaPixelEnabled: data.data.metaPixelEnabled === true,
+                metaPixelId: data.data.metaPixelId ?? "",
 
                 /*
                  * Token TIDAK pernah di-prefill dari server.
@@ -1632,6 +1638,15 @@ export default function AdminSettingsForm() {
             return;
         }
 
+        if (form.metaPixelId.trim() && !/^\d{5,20}$/.test(form.metaPixelId.trim())) {
+            toast.error("Meta Pixel ID harus berupa 5–20 digit angka.");
+            return;
+        }
+        if (form.metaPixelEnabled && !form.metaPixelId.trim()) {
+            toast.error("Isi Meta Pixel ID sebelum mengaktifkan Meta Pixel.");
+            return;
+        }
+
         if (
             form.tiktokPixelEnabled &&
             analyzeTikTokPixelCode(
@@ -2008,6 +2023,23 @@ export default function AdminSettingsForm() {
                     {/* =====================
                         TIKTOK PIXEL
                     ====================== */}
+
+                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <h2 className="text-lg font-bold text-gray-900">Meta Pixel</h2>
+                        <p className="mt-1 text-sm text-gray-500">Ukur kunjungan halaman toko dengan Meta Pixel.</p>
+                        <label className="mt-5 flex items-start gap-3 rounded-xl border border-gray-200 p-4">
+                            <input type="checkbox" checked={form.metaPixelEnabled} onChange={(e) => updateField("metaPixelEnabled", e.target.checked)} className="mt-0.5 h-4 w-4 accent-blue-600" />
+                            <span>
+                                <span className="block text-sm font-medium text-gray-700">Aktifkan Meta Pixel</span>
+                                <span className="mt-1 block text-xs text-gray-500">Pixel dimuat di halaman toko, tidak di dashboard admin.</span>
+                            </span>
+                        </label>
+                        <div className="mt-5">
+                            <label className="text-sm font-medium text-gray-700">Meta Pixel ID</label>
+                            <input type="text" inputMode="numeric" value={form.metaPixelId} onChange={(e) => updateField("metaPixelId", e.target.value.trim())} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-blue-500" placeholder="Contoh: 123456789012345" autoComplete="off" spellCheck={false} />
+                            <p className="mt-2 text-xs text-gray-500">Masukkan ID dari Meta Events Manager.</p>
+                        </div>
+                    </section>
 
                     <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
                         <h2 className="text-lg font-bold text-gray-900">

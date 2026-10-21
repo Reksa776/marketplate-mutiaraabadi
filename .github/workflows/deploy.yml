@@ -34,6 +34,11 @@ jobs:
 
             cd ~/demo-marketplace
 
+            if [ ! -x ./deploy.sh ]; then
+              echo "ERROR: deploy.sh is missing or not executable; refusing an unreviewed deployment."
+              exit 1
+            fi
+
             ./deploy.sh
 
             echo "=== Deployment finished ==="

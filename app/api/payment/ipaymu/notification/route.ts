@@ -24,6 +24,8 @@ import {
     scheduleShipmentProcessing,
 } from "@/lib/mengantar/shipment-worker";
 
+import { recordUnmatchedPaymentWebhook } from "@/lib/payment/webhook-trace";
+
 export const dynamic = "force-dynamic";
 
 function json(
@@ -307,6 +309,29 @@ export async function POST(
                 "webhook for non-existent order",
                 orderNumber
             );
+
+            /*
+             * PRESERVED TRACE: the order row is gone (approved cleanup)
+             * but the money is real. Record it in AdminAuditLog, which
+             * the cleanup never deletes, so finance can reconcile it.
+             * No order/payment state is created or modified.
+             */
+            await recordUnmatchedPaymentWebhook({
+                provider: "ipaymu",
+                orderNumber: String(orderNumber),
+                transactionStatus:
+                    body.status ?? body.status_code ?? null,
+                amount:
+                    body.amount ?? body.total ?? null,
+                providerReference:
+                    body.trx_id ??
+                    body.TransactionId ??
+                    null,
+                paymentType:
+                    body.channel ??
+                    body.PaymentChannel ??
+                    null,
+            });
 
             /* Return 200 so iPaymu doesn't retry
              * indefinitely for non-existent orders.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -8,6 +8,9 @@ import {
 } from "@/lib/analytics/tiktok-identity";
 import { trackAuthoritativeTikTokPurchase } from "@/components/analytics/PurchaseTracker";
 import type { TikTokUserMatchIdentifiers } from "@/lib/analytics/tiktok";
+import {
+    createPaymentStatusPoller,
+} from "@/lib/payment/payment-status-poll";
 
 type OrderStatus = {
     id: number;
@@ -18,6 +21,24 @@ type OrderStatus = {
     /** Authoritative SHA-256 digests from GET /api/payment/status. */
     identity?: TikTokUserMatchIdentifiers | null;
 };
+
+/**
+ * Payment states the provider can no longer change. Polling stops the
+ * moment one of them is observed.
+ */
+const FINAL_PAYMENT_STATUSES = [
+    "PAID",
+    "FAILED",
+    "EXPIRED",
+];
+
+function isFinalPaymentStatus(
+    paymentStatus: string
+): boolean {
+    return FINAL_PAYMENT_STATUSES.includes(
+        paymentStatus
+    );
+}
 
 export default function PaymentFinishContent() {
     const searchParams = useSearchParams();
@@ -31,110 +52,171 @@ export default function PaymentFinishContent() {
     const [loading, setLoading] =
         useState(true);
 
-    const [attempts, setAttempts] =
-        useState(0);
-
-    const maxAttempts = 15;
+    /*
+     * Per-mount guard: one browser CompletePayment per order per
+     * mount at most. The shared purchase claim additionally covers
+     * remounts, reloads and the other confirmation routes.
+     */
+    const purchaseTracked = useRef<string | null>(
+        null
+    );
 
     useEffect(() => {
+        /*
+         * Without a reference there is nothing to poll: the "not
+         * found" screen is rendered below and `loading` is unused.
+         * (Setting state synchronously here would only add a
+         * cascading render.)
+         */
         if (!reference) {
-            setLoading(false);
             return;
         }
 
-        let cancelled = false;
-
-        async function poll() {
-            try {
-                const response =
-                    await fetch(
+        /*
+         * Bounded polling owned by lib/payment/payment-status-poll:
+         * one request in flight, stops on the first final status,
+         * stops after the attempt budget, and cleared on unmount.
+         * The effect no longer calls the fetcher from a state
+         * updater, so a React re-run can never schedule extra polls.
+         */
+        const poller =
+            createPaymentStatusPoller<OrderStatus>({
+                fetchStatus: async () => {
+                    const response = await fetch(
                         `/api/payment/status?reference=${encodeURIComponent(
-                            reference!
+                            reference
                         )}`,
                         {
                             cache: "no-store",
                         }
                     );
 
-                const result =
-                    await response.json();
-
-                if (cancelled) {
-                    return;
-                }
-
-                if (
-                    response.ok &&
-                    result.success
-                ) {
-                    setOrder(result.data);
-
-                    /*
-                     * Berhenti polling kalau
-                     * status sudah final.
-                     */
-
-                    const isFinal =
-                        result.data
-                            .paymentStatus ===
-                            "PAID" ||
-                        result.data
-                            .paymentStatus ===
-                            "FAILED" ||
-                        result.data
-                            .paymentStatus ===
-                            "EXPIRED";
-
-                    if (isFinal) {
-                        setLoading(false);
-                        return;
+                    if (!response.ok) {
+                        return null;
                     }
-                }
 
-                setAttempts(
-                    (prev) => prev + 1
-                );
-            } catch (error) {
-                console.error(
-                    "POLL PAYMENT STATUS ERROR:",
-                    error
-                );
+                    const result =
+                        await response.json();
 
-                setAttempts(
-                    (prev) => prev + 1
-                );
-            }
-        }
+                    if (
+                        !result?.success ||
+                        !result?.data
+                    ) {
+                        return null;
+                    }
 
-        poll();
+                    return result.data as OrderStatus;
+                },
 
-        const interval = setInterval(() => {
-            setAttempts((current) => {
-                if (
-                    current >= maxAttempts
-                ) {
-                    clearInterval(
-                        interval
-                    );
+                isFinal: (status) =>
+                    isFinalPaymentStatus(
+                        status.paymentStatus
+                    ),
 
+                onStatus: (status) => {
+                    setOrder(status);
+                },
+
+                onDone: () => {
                     setLoading(false);
+                },
 
-                    return current;
-                }
-
-                poll();
-
-                return current;
+                onError: (error) => {
+                    console.error(
+                        "POLL PAYMENT STATUS ERROR:",
+                        error
+                    );
+                },
             });
-        }, 3000);
+
+        poller.start();
 
         return () => {
-            cancelled = true;
-
-            clearInterval(interval);
+            poller.stop();
         };
     }, [reference]);
 
+    const isPaid =
+        order?.paymentStatus === "PAID";
+
+    const isFailed =
+        order?.paymentStatus === "FAILED" || order?.paymentStatus === "EXPIRED";
+
+    const isPending = !isPaid && !isFailed;
+
+    /*
+     * Only primitives (plus the server-built digest object) drive the
+     * Purchase effect. `order` itself is never a dependency again: the
+     * poller used to hand back a NEW object every 3 seconds, which
+     * re-ran this effect and emitted CompletePayment once per tick.
+     */
+    const paidOrderNumber =
+        isPaid && order ? order.orderNumber : null;
+
+    const paidTotal =
+        isPaid && order ? order.total : 0;
+
+    const paidIdentity =
+        isPaid && order ? order.identity ?? null : null;
+
+    /*
+     * ==========================================
+     * TIKTOK PIXEL - COMPLETE PAYMENT
+     * ==========================================
+     *
+     * Fire when payment is confirmed as PAID. The ref guard keeps it
+     * to one call per mount; the shared purchase claim inside
+     * `trackAuthoritativeTikTokPurchase` keeps it to one event per
+     * order + pixel per tab across remounts, reloads and the other
+     * confirmation routes.
+     */
+    useEffect(() => {
+        if (!paidOrderNumber) {
+            return;
+        }
+
+        if (
+            purchaseTracked.current ===
+            paidOrderNumber
+        ) {
+            return;
+        }
+
+        purchaseTracked.current =
+            paidOrderNumber;
+
+        whenTikTokReadyForEvents(() => {
+            /*
+             * Authoritative Advanced Matching + event in one call:
+             * `ttq.identify(<Order → User digests>)` runs BEFORE the
+             * CompletePayment track, so the conversion carries
+             * email / phone even when the session identity store
+             * settles anonymous. event_id stays
+             * `ttq:completepayment:<orderNumber>` for server dedup.
+             *
+             * The status endpoint returns the order total only, so
+             * this copy sends value + currency + order_id; the
+             * authoritative contents[] travel on the server-side copy
+             * of the same event_id.
+             */
+            trackAuthoritativeTikTokPurchase({
+                orderId: paidOrderNumber,
+                total: paidTotal,
+                items: [],
+                identity: paidIdentity,
+            });
+        });
+    }, [
+        paidOrderNumber,
+        paidTotal,
+        paidIdentity,
+    ]);
+
+    /*
+     * The "missing reference" screen is a render decision, not a hook
+     * branch: it lives AFTER every hook so the hook order stays
+     * identical on every render.
+     */
     if (!reference) {
         return (
             <main className="min-h-screen bg-gray-50 px-4 py-8">
@@ -155,50 +237,7 @@ export default function PaymentFinishContent() {
                 </div>
             </main>
         );
-    }    const isPaid =
-        order?.paymentStatus === "PAID";
-
-    const isFailed =
-        order?.paymentStatus === "FAILED" || order?.paymentStatus === "EXPIRED";
-
-    const isPending = !isPaid && !isFailed;
-
-    /*
-     * ==========================================
-     * TIKTOK PIXEL - COMPLETE PAYMENT
-     * ==========================================
-     *
-     * Fire when payment is confirmed as PAID.
-     * Only fires once when isPaid first becomes
-     * true (tracked via order.id dependency).
-     */
-    useEffect(() => {
-        if (!isPaid || !order) {
-            return;
-        }
-
-        whenTikTokReadyForEvents(() => {
-            /*
-             * Authoritative Advanced Matching + event in one call:
-             * `ttq.identify(<Order → User digests>)` runs BEFORE the
-             * CompletePayment track, so the conversion carries
-             * email / phone even when the session identity store
-             * settles anonymous. event_id stays
-             * `ttq:completepayment:<orderNumber>` for server dedup.
-             *
-             * The status endpoint returns the order total only, so
-             * this copy sends value + currency + order_id; the
-             * authoritative contents[] travel on the server-side copy
-             * of the same event_id.
-             */
-            trackAuthoritativeTikTokPurchase({
-                orderId: order.orderNumber,
-                total: order.total,
-                items: [],
-                identity: order.identity ?? null,
-            });
-        });
-    }, [isPaid, order]);
+    }
 
     return (
         <main className="min-h-screen bg-gray-50 px-4 py-8">

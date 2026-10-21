@@ -4,6 +4,7 @@ import TikTokAdvancedMatching from "./TikTokAdvancedMatching";
 import TikTokAttribution from "./TikTokAttribution";
 import TikTokPageViewTracker from "./TikTokPageViewTracker";
 import TikTokPixel from "./TikTokPixel";
+import MetaPixel from "./MetaPixel";
 
 import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
 
@@ -29,9 +30,28 @@ import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
 export default async function AnalyticsProvider() {
     const tiktokPixel =
         await getTikTokPixelConfig();
+    const metaPixel = await (async () => {
+        try {
+            const { prisma } = await import("@/lib/prisma");
+            const setting = await prisma.storeSetting.findUnique({
+                where: { id: 1 },
+                select: { metaPixelEnabled: true, metaPixelId: true },
+            });
+            const pixelId = setting?.metaPixelId?.trim() ?? "";
+            return {
+                enabled: setting?.metaPixelEnabled === true && /^\d{5,20}$/.test(pixelId),
+                pixelId: /^\d{5,20}$/.test(pixelId) ? pixelId : null,
+            };
+        } catch {
+            return { enabled: false, pixelId: null };
+        }
+    })();
 
     return (
         <>
+            <Suspense fallback={null}>
+                <MetaPixel enabled={metaPixel.enabled} pixelId={metaPixel.pixelId} />
+            </Suspense>
             <TikTokPixel
                 enabled={tiktokPixel.enabled}
                 pixelId={tiktokPixel.pixelId}

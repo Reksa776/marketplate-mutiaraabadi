@@ -255,7 +255,7 @@ export function hasSavedSession(authDir: string): boolean {
  * The lock lives NEXT TO the auth directory, never inside it: the
  * session data stays exactly as Baileys left it.
  *
- *   data/whatsapp-auth        ← session (untouched)
+ *   /var/lib/marketplate/whatsapp-auth  ← production session (untouched)
  *   data/.whatsapp-bootstrap-owner.json  ← this lock (ours)
  */
 export function resolveBootstrapLockPath(authDir: string): string {
@@ -394,7 +394,11 @@ export type BootstrapDeps = {
 
 function defaultDeps(): BootstrapDeps {
     const env = process.env;
-    const authDir = env.WHATSAPP_AUTH_DIR || "data/whatsapp-auth";
+    const authDir =
+        env.WHATSAPP_AUTH_DIR ||
+        (env.NODE_ENV === PRODUCTION_ENV
+            ? "/var/lib/marketplate/whatsapp-auth"
+        : "data/whatsapp-auth");
     const lockPath = resolveBootstrapLockPath(authDir);
 
     return {
@@ -608,7 +612,10 @@ export function releaseBootstrapLock(): void {
     lockOwned = false;
 
     const authDir =
-        process.env.WHATSAPP_AUTH_DIR || "data/whatsapp-auth";
+        process.env.WHATSAPP_AUTH_DIR ||
+        (process.env.NODE_ENV === PRODUCTION_ENV
+            ? "/var/lib/marketplate/whatsapp-auth"
+            : "data/whatsapp-auth");
 
     defaultReleaseLock(resolveBootstrapLockPath(authDir));
 }

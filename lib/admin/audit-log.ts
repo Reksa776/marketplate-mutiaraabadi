@@ -69,7 +69,15 @@ export type AuditAction =
     | "STORE_FAVICON_UPDATED"
     | "STORE_FAVICON_REMOVED"
     // System
-    | "AFFILIATE_COMMISSION_AUTO_CANCELLED";
+    | "AFFILIATE_COMMISSION_AUTO_CANCELLED"
+    /**
+     * A provider payment callback arrived for an orderNumber that no
+     * longer exists (e.g. after an approved order-history cleanup).
+     * The payment must NOT be silently lost: this row is the permanent
+     * trace for finance reconciliation. No order/payment state is
+     * created or modified.
+     */
+    | "PAYMENT_WEBHOOK_ORPHAN";
 
 export type EntityType =
     | "AffiliateProfile"
