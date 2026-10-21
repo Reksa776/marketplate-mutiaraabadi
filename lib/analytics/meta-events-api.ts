@@ -33,10 +33,13 @@ export async function trackMetaServerPurchase(input: {
     try {
         let eventSourceUrl: string | null = null;
         try {
-            const candidate = input.pageUrl || process.env.NEXT_PUBLIC_APP_URL;
-            if (candidate) {
-                const parsed = new URL(candidate);
-                if (parsed.protocol === "https:" || parsed.protocol === "http:") eventSourceUrl = parsed.toString();
+            const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+            const base = appUrl ? new URL(appUrl) : null;
+            const parsed = input.pageUrl
+                ? new URL(input.pageUrl, base ?? undefined)
+                : base;
+            if (parsed && (parsed.protocol === "https:" || parsed.protocol === "http:")) {
+                eventSourceUrl = parsed.toString();
             }
         } catch {
             eventSourceUrl = null;

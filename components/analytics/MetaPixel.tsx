@@ -18,8 +18,9 @@ export default function MetaPixel({ enabled, pixelId, script }: MetaPixelProps) 
     const lastPageView = useRef("");
     const routeKey = `${pathname}?${query}`;
     const trackPageView = useCallback(() => {
-        if (!active || typeof window.fbq !== "function" || lastPageView.current === routeKey) return;
+        if (!active || typeof window.fbq !== "function" || lastPageView.current === routeKey || window.__META_LAST_PAGE_VIEW === routeKey) return;
         lastPageView.current = routeKey;
+        window.__META_LAST_PAGE_VIEW = routeKey;
         window.fbq("track", "PageView");
     }, [active, routeKey]);
 
@@ -29,18 +30,15 @@ export default function MetaPixel({ enabled, pixelId, script }: MetaPixelProps) 
 
     if (!active || !script.trim()) return null;
 
-    return (
-        <Script id="meta-pixel" data-pixel-id={pixelId ?? undefined} strategy="afterInteractive" onReady={() => {
-            trackPageView();
-            window.dispatchEvent(new Event("meta-pixel-ready"));
-        }}>
-            {script}
-        </Script>
-    );
+    const executableScript = `${script}\n;window.__META_PIXEL_ID='${pixelId}';if(window.fbq){window.fbq('track','PageView');window.__META_LAST_PAGE_VIEW=window.location.pathname+window.location.search;window.dispatchEvent(new Event('meta-pixel-ready'));}`;
+
+    return <Script id="meta-pixel" strategy="afterInteractive">{executableScript}</Script>;
 }
 
 declare global {
     interface Window {
         fbq?: ((...args: unknown[]) => void) & { callMethod?: (...args: unknown[]) => void; queue?: unknown[]; push?: (...args: unknown[]) => void; loaded?: boolean; version?: string; }
+        __META_PIXEL_ID?: string;
+        __META_LAST_PAGE_VIEW?: string;
     }
 }

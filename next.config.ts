@@ -46,6 +46,7 @@ const nextConfig: NextConfig = {
             "'self'",
             "https://analytics.tiktok.com",
             "https://www.facebook.com",
+            "https://connect.facebook.net",
             "https://graph.facebook.com",
         ];
 
