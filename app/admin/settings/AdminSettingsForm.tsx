@@ -16,6 +16,7 @@ import {
     findTikTokPixelIdMismatch,
 } from "@/lib/analytics/tiktok-pixel-code";
 import { normalizeTikTokPixelId } from "@/lib/analytics/tiktok";
+import { extractMetaPixelId, MAX_META_PIXEL_CODE_LENGTH, normalizeMetaAccessToken, normalizeMetaPixelCode } from "@/lib/analytics/meta-pixel-code";
 import {
     MAX_TIKTOK_PIXEL_ACCESS_TOKEN_LENGTH,
     normalizeTikTokPixelAccessToken,
@@ -50,6 +51,11 @@ type StoreForm = {
     tiktokPixelCode: string;
     metaPixelEnabled: boolean;
     metaPixelId: string;
+    metaPixelCode: string;
+    metaPixelAccessToken: string;
+    metaPixelAccessTokenConfigured: boolean;
+    metaPixelAccessTokenLast4: string;
+    clearMetaPixelAccessToken: boolean;
 
     /**
      * Server-side Events API credential.
@@ -174,6 +180,11 @@ const initialForm: StoreForm = {
     tiktokPixelCode: "",
     metaPixelEnabled: false,
     metaPixelId: "",
+    metaPixelCode: "",
+    metaPixelAccessToken: "",
+    metaPixelAccessTokenConfigured: false,
+    metaPixelAccessTokenLast4: "",
+    clearMetaPixelAccessToken: false,
 
     tiktokPixelAccessToken: "",
     tiktokPixelAccessTokenConfigured: false,
@@ -592,6 +603,11 @@ export default function AdminSettingsForm() {
                     data.data.tiktokPixelCode ?? "",
                 metaPixelEnabled: data.data.metaPixelEnabled === true,
                 metaPixelId: data.data.metaPixelId ?? "",
+                metaPixelCode: data.data.metaPixelCode ?? "",
+                metaPixelAccessToken: "",
+                metaPixelAccessTokenConfigured: data.data.metaPixelAccessTokenConfigured === true,
+                metaPixelAccessTokenLast4: data.data.metaPixelAccessTokenLast4 ?? "",
+                clearMetaPixelAccessToken: false,
 
                 /*
                  * Token TIDAK pernah di-prefill dari server.
@@ -1638,12 +1654,20 @@ export default function AdminSettingsForm() {
             return;
         }
 
-        if (form.metaPixelId.trim() && !/^\d{5,20}$/.test(form.metaPixelId.trim())) {
-            toast.error("Meta Pixel ID harus berupa 5–20 digit angka.");
+        if (form.metaPixelCode.length > MAX_META_PIXEL_CODE_LENGTH) {
+            toast.error(`Kode Meta Pixel maksimal ${MAX_META_PIXEL_CODE_LENGTH} karakter.`);
             return;
         }
-        if (form.metaPixelEnabled && !form.metaPixelId.trim()) {
-            toast.error("Isi Meta Pixel ID sebelum mengaktifkan Meta Pixel.");
+        if (form.metaPixelCode.trim() && !extractMetaPixelId(normalizeMetaPixelCode(form.metaPixelCode))) {
+            toast.error("Pixel ID tidak ditemukan. Pastikan kode memiliki satu fbq('init', 'ID').");
+            return;
+        }
+        if (form.metaPixelEnabled && !extractMetaPixelId(normalizeMetaPixelCode(form.metaPixelCode))) {
+            toast.error("Tempel kode base Meta Pixel sebelum mengaktifkannya.");
+            return;
+        }
+        if (form.metaPixelAccessToken.trim() && !normalizeMetaAccessToken(form.metaPixelAccessToken)) {
+            toast.error("Meta Conversions API Access Token tidak valid.");
             return;
         }
 
@@ -2026,7 +2050,7 @@ export default function AdminSettingsForm() {
 
                     <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
                         <h2 className="text-lg font-bold text-gray-900">Meta Pixel</h2>
-                        <p className="mt-1 text-sm text-gray-500">Ukur kunjungan halaman toko dengan Meta Pixel.</p>
+                        <p className="mt-1 text-sm text-gray-500">Tempel kode Pixel dari Meta Events Manager. ID Pixel diambil otomatis dari kode.</p>
                         <label className="mt-5 flex items-start gap-3 rounded-xl border border-gray-200 p-4">
                             <input type="checkbox" checked={form.metaPixelEnabled} onChange={(e) => updateField("metaPixelEnabled", e.target.checked)} className="mt-0.5 h-4 w-4 accent-blue-600" />
                             <span>
@@ -2035,9 +2059,15 @@ export default function AdminSettingsForm() {
                             </span>
                         </label>
                         <div className="mt-5">
-                            <label className="text-sm font-medium text-gray-700">Meta Pixel ID</label>
-                            <input type="text" inputMode="numeric" value={form.metaPixelId} onChange={(e) => updateField("metaPixelId", e.target.value.trim())} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-blue-500" placeholder="Contoh: 123456789012345" autoComplete="off" spellCheck={false} />
-                            <p className="mt-2 text-xs text-gray-500">Masukkan ID dari Meta Events Manager.</p>
+                            <label className="text-sm font-medium text-gray-700">Kode base Meta Pixel</label>
+                            <textarea rows={8} value={form.metaPixelCode} onChange={(e) => updateField("metaPixelCode", e.target.value)} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-xs outline-none transition focus:border-blue-500" placeholder="Tempel kode base Pixel dari Meta Events Manager" autoComplete="off" spellCheck={false} />
+                            <p className="mt-2 text-xs text-gray-500">{extractMetaPixelId(form.metaPixelCode) ? `Pixel ID terdeteksi: ${extractMetaPixelId(form.metaPixelCode)}` : "Pixel ID akan dideteksi dari fbq('init', 'ID') pada kode."}</p>
+                        </div>
+                        <div className="mt-5">
+                            <label className="text-sm font-medium text-gray-700">Meta Conversions API Access Token</label>
+                            <input type="password" value={form.metaPixelAccessToken} onChange={(e) => updateField("metaPixelAccessToken", e.target.value)} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-blue-500" placeholder={form.metaPixelAccessTokenConfigured ? `Token tersimpan ••••${form.metaPixelAccessTokenLast4}; kosongkan untuk mempertahankan` : "Tempel Access Token dari Meta Events Manager"} autoComplete="new-password" spellCheck={false} />
+                            {form.metaPixelAccessTokenConfigured && <label className="mt-3 flex items-center gap-2 text-xs text-red-700"><input type="checkbox" checked={form.clearMetaPixelAccessToken} onChange={(e) => updateField("clearMetaPixelAccessToken", e.target.checked)} /> Hapus token tersimpan</label>}
+                            <p className="mt-2 text-xs text-gray-500">Token hanya disimpan dan digunakan di server; tidak pernah dikirim ke browser.</p>
                         </div>
                     </section>
 

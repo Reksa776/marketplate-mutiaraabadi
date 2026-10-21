@@ -551,6 +551,18 @@ export async function POST(
                         null,
                 });
 
+                /* Meta CAPI Purchase is sent only after authoritative payment settlement. */
+                const { trackMetaServerPurchase } = await import("@/lib/analytics/meta-events-api");
+                void trackMetaServerPurchase({
+                    orderNumber: existingOrder.orderNumber,
+                    total: Number(existingOrder.total),
+                    email: existingOrder.user?.email ?? null,
+                    phone: existingOrder.user?.phone ?? existingOrder.phone ?? null,
+                    pageUrl: existingOrder.landingUrl ?? null,
+                    ip: existingOrder.clientIp ?? null,
+                    userAgent: existingOrder.clientUserAgent ?? null,
+                });
+
                 /*
                  * AUTO MENGANTAR SHIPPING — run the shipment job AFTER
                  * the response is sent so the webhook never blocks on

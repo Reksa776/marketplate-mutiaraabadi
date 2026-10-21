@@ -18,6 +18,7 @@ import {
     type TikTokCatalogItemInput,
 } from "@/lib/analytics/tiktok-catalog";
 import { claimPurchase } from "@/lib/analytics/purchase-claim";
+import { trackMetaBrowserPurchase } from "@/lib/analytics/meta-browser";
 
 type PurchaseTrackerProps = {
     orderId: string;
@@ -98,6 +99,9 @@ export function trackAuthoritativeTikTokPurchase({
     identity?: TikTokUserMatchIdentifiers | null;
     pixelId?: string | null;
 }): void {
+    /* Meta browser Purchase is independent of TikTok being enabled. */
+    trackMetaBrowserPurchase({ orderNumber: orderId, total });
+
     /*
      * No Pixel API → no event AND no claim. Claiming here would burn
      * the only attempt for this order while nothing was ever sent,
@@ -180,7 +184,10 @@ export default function PurchaseTracker({
     pixelId,
 }: PurchaseTrackerProps) {
     useEffect(() => {
-        return whenTikTokReadyForEvents(() => {
+        const trackMeta = () => trackMetaBrowserPurchase({ orderNumber: orderId, total });
+        trackMeta();
+        window.addEventListener("meta-pixel-ready", trackMeta);
+        const cancelTikTokWait = whenTikTokReadyForEvents(() => {
             trackAuthoritativeTikTokPurchase({
                 orderId,
                 total,
@@ -189,6 +196,10 @@ export default function PurchaseTracker({
                 pixelId,
             });
         });
+        return () => {
+            window.removeEventListener("meta-pixel-ready", trackMeta);
+            cancelTikTokWait();
+        };
     }, [orderId, total, items, identity, pixelId]);
 
     return null;

@@ -629,6 +629,8 @@ model StoreSetting {
   // Meta Pixel
   metaPixelEnabled Boolean @default(false)
   metaPixelId      String?
+  metaPixelCode    String? @db.Text
+  metaPixelAccessToken String? @db.Text
 
   province                String?
   city                    String?

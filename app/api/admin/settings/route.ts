@@ -5,6 +5,13 @@ import { prisma } from "@/lib/prisma";
 import { rajaOngkirFetch } from "@/lib/rajaongkir";
 import { normalizeTikTokPixelId } from "@/lib/analytics/tiktok";
 import {
+    extractMetaPixelId,
+    last4OfMetaAccessToken,
+    MAX_META_PIXEL_CODE_LENGTH,
+    normalizeMetaAccessToken,
+    normalizeMetaPixelCode,
+} from "@/lib/analytics/meta-pixel-code";
+import {
     MAX_TIKTOK_PIXEL_CODE_LENGTH,
     analyzeTikTokPixelCode,
     findTikTokPixelIdMismatch,
@@ -55,6 +62,7 @@ const SETTINGS_SELECT = {
     tiktokPixelCode: true,
     metaPixelEnabled: true,
     metaPixelId: true,
+    metaPixelCode: true,
 
     provinceId: true,
     province: true,
@@ -96,6 +104,7 @@ type SettingsProjectionSource = {
     tiktokPixelCode: string | null;
     metaPixelEnabled: boolean;
     metaPixelId: string | null;
+    metaPixelCode: string | null;
     provinceId: number | null;
     province: string | null;
     cityId: number | null;
@@ -115,7 +124,8 @@ type SettingsProjectionSource = {
 
 function toSettingsResponse(
     setting: SettingsProjectionSource,
-    accessToken: string | null
+    accessToken: string | null,
+    metaAccessToken: string | null
 ) {
     return {
         storeName: setting.storeName,
@@ -140,6 +150,9 @@ function toSettingsResponse(
             setting.tiktokPixelCode,
         metaPixelEnabled: setting.metaPixelEnabled,
         metaPixelId: setting.metaPixelId,
+        metaPixelCode: setting.metaPixelCode,
+        metaPixelAccessTokenConfigured: metaAccessToken !== null,
+        metaPixelAccessTokenLast4: last4OfMetaAccessToken(metaAccessToken),
 
         tiktokPixelAccessTokenConfigured:
             accessToken !== null,
@@ -299,6 +312,7 @@ export async function GET() {
                 select: {
                     ...SETTINGS_SELECT,
                     tiktokPixelAccessToken: true,
+                    metaPixelAccessToken: true,
                 },
             });
 
@@ -308,7 +322,8 @@ export async function GET() {
                 ? toSettingsResponse(
                       setting,
                       setting.tiktokPixelAccessToken ??
-                          null
+                          null,
+                      setting.metaPixelAccessToken ?? null
                   )
                 : null,
         });
@@ -558,25 +573,27 @@ export async function PUT(
         const tiktokPixelEnabled =
             body.tiktokPixelEnabled === true;
 
-        const rawMetaPixelId =
-            typeof body.metaPixelId === "string"
-                ? body.metaPixelId.trim()
-                : "";
-        const metaPixelId = /^\d{5,20}$/.test(rawMetaPixelId)
-            ? rawMetaPixelId
-            : null;
-        if (rawMetaPixelId && !metaPixelId) {
+        const rawMetaPixelCode = typeof body.metaPixelCode === "string" ? body.metaPixelCode : "";
+        if (rawMetaPixelCode.length > MAX_META_PIXEL_CODE_LENGTH) {
+            return NextResponse.json({ success: false, message: `Kode Meta Pixel maksimal ${MAX_META_PIXEL_CODE_LENGTH} karakter.` }, { status: 400 });
+        }
+        const metaPixelCode = normalizeMetaPixelCode(rawMetaPixelCode);
+        const metaPixelId = extractMetaPixelId(metaPixelCode);
+        if (metaPixelCode && !metaPixelId) {
+            return NextResponse.json({ success: false, message: "Pixel ID tidak ditemukan atau lebih dari satu pada kode Meta. Tempel kode base Pixel yang berisi satu fbq('init', 'ID')." }, { status: 400 });
+        }
+        const metaPixelEnabled = body.metaPixelEnabled === true;
+        if (metaPixelEnabled && (!metaPixelId || !metaPixelCode)) {
             return NextResponse.json(
-                { success: false, message: "Meta Pixel ID harus berupa 5–20 digit angka." },
+                { success: false, message: "Tempel kode base Meta Pixel sebelum mengaktifkan pixel." },
                 { status: 400 }
             );
         }
-        const metaPixelEnabled = body.metaPixelEnabled === true;
-        if (metaPixelEnabled && !metaPixelId) {
-            return NextResponse.json(
-                { success: false, message: "Isi Meta Pixel ID sebelum mengaktifkan pixel." },
-                { status: 400 }
-            );
+        const clearMetaPixelAccessToken = body.clearMetaPixelAccessToken === true;
+        const rawMetaPixelAccessToken = typeof body.metaPixelAccessToken === "string" ? body.metaPixelAccessToken : "";
+        const providedMetaPixelAccessToken = normalizeMetaAccessToken(rawMetaPixelAccessToken);
+        if (rawMetaPixelAccessToken.trim() && !providedMetaPixelAccessToken) {
+            return NextResponse.json({ success: false, message: "Meta Conversions API Access Token tidak valid." }, { status: 400 });
         }
 
         if (
@@ -616,6 +633,10 @@ export async function PUT(
                     tiktokPixelName: true,
                     tiktokPixelCode: true,
                     tiktokPixelAccessToken: true,
+                    metaPixelAccessToken: true,
+                    metaPixelEnabled: true,
+                    metaPixelId: true,
+                    metaPixelCode: true,
                     mengantarOriginAreaId: true,
                     mengantarPickupAddressId: true,
                     mengantarPickupTimeId: true,
@@ -632,6 +653,9 @@ export async function PUT(
                   previousSetting
                       ?.tiktokPixelAccessToken ??
                   null;
+        const nextMetaPixelAccessToken = clearMetaPixelAccessToken
+            ? null
+            : providedMetaPixelAccessToken ?? previousSetting?.metaPixelAccessToken ?? null;
 
         /*
          * ============================
@@ -805,6 +829,8 @@ export async function PUT(
                     tiktokPixelCode,
                     metaPixelEnabled,
                     metaPixelId,
+                    metaPixelCode,
+                    metaPixelAccessToken: nextMetaPixelAccessToken,
 
                     tiktokPixelAccessToken:
                         nextTikTokPixelAccessToken,
@@ -901,6 +927,8 @@ export async function PUT(
                     tiktokPixelCode,
                     metaPixelEnabled,
                     metaPixelId,
+                    metaPixelCode,
+                    metaPixelAccessToken: nextMetaPixelAccessToken,
 
                     tiktokPixelAccessToken:
                         nextTikTokPixelAccessToken,
@@ -1027,6 +1055,28 @@ export async function PUT(
             });
         }
 
+        const metaPixelChanged = !previousSetting ||
+            previousSetting.metaPixelEnabled !== metaPixelEnabled ||
+            previousSetting.metaPixelId !== metaPixelId ||
+            previousSetting.metaPixelCode !== metaPixelCode ||
+            (previousSetting.metaPixelAccessToken ?? null) !== nextMetaPixelAccessToken;
+        if (metaPixelChanged) {
+            await createAuditLog({
+                adminId,
+                action: "META_PIXEL_UPDATED",
+                entityType: "StoreSetting",
+                entityId: 1,
+                description: "Pengaturan Meta Pixel diperbarui.",
+                metadata: {
+                    enabled: metaPixelEnabled,
+                    pixelId: metaPixelId,
+                    pixelCodeConfigured: Boolean(metaPixelCode),
+                    accessTokenConfigured: Boolean(nextMetaPixelAccessToken),
+                    accessTokenCleared: clearMetaPixelAccessToken,
+                },
+            });
+        }
+
         /*
          * ============================
          * MENGANTAR AUDIT LOG
@@ -1077,7 +1127,8 @@ export async function PUT(
              */
             data: toSettingsResponse(
                 setting,
-                nextTikTokPixelAccessToken
+                nextTikTokPixelAccessToken,
+                nextMetaPixelAccessToken
             ),
 
             /*

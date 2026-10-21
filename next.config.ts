@@ -35,6 +35,7 @@ const nextConfig: NextConfig = {
             "'self'",
             "'unsafe-inline'",
             "https://analytics.tiktok.com",
+            "https://connect.facebook.net",
             ...(isDevelopment ? ["'unsafe-eval'"] : []),
         ];
 
@@ -44,6 +45,8 @@ const nextConfig: NextConfig = {
         const connectSrcDirectives = [
             "'self'",
             "https://analytics.tiktok.com",
+            "https://www.facebook.com",
+            "https://graph.facebook.com",
         ];
 
         return [
@@ -102,7 +105,7 @@ const nextConfig: NextConfig = {
                             "default-src 'self'",
                             `script-src ${scriptSrcDirectives.join(" ")}`,
                             "style-src 'self' 'unsafe-inline'",
-                            "img-src 'self' https://down-id.img.susercontent.com https://unpkg.com https://*.tile.openstreetmap.org https://my.ipaymu.com https://sandbox.ipaymu.com data:",
+                            "img-src 'self' https://www.facebook.com https://down-id.img.susercontent.com https://unpkg.com https://*.tile.openstreetmap.org https://my.ipaymu.com https://sandbox.ipaymu.com data:",
                             "font-src 'self'",
                             `connect-src ${connectSrcDirectives.join(" ")}`,
                             "frame-src 'none'",

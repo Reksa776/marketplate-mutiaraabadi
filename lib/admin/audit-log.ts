@@ -65,6 +65,7 @@ export type AuditAction =
     | "REPAYMENT_INITIATED"
     // Settings
     | "TIKTOK_PIXEL_UPDATED"
+    | "META_PIXEL_UPDATED"
     | "MENGANTAR_SETTINGS_UPDATED"
     | "STORE_FAVICON_UPDATED"
     | "STORE_FAVICON_REMOVED"
