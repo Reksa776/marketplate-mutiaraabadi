@@ -59,7 +59,6 @@ type AddressForm = {
 
     recipientName: string;
     phone: string;
-    email: string;
     address: string;
 
     province: string;
@@ -197,7 +196,6 @@ const emptyAddressForm: AddressForm = {
 
     recipientName: "",
     phone: "",
-    email: "",
     address: "",
 
     province: "",
@@ -239,7 +237,6 @@ const emptyAddressForm: AddressForm = {
 type GuestAddress = {
     recipientName: string;
     phone: string;
-    email: string;
     address: string;
     province: string;
     city: string;
@@ -271,7 +268,6 @@ function toGuestAddress(
     return {
         recipientName: form.recipientName.trim(),
         phone: form.phone.trim(),
-        email: form.email.trim(),
         address: form.address.trim(),
         province: form.province,
         city: form.city,
@@ -1733,14 +1729,6 @@ export default function BuyNowPage({
          * validates and resolves it (lib/guest-address.ts).
          */
         if (!data?.authenticated) {
-            if (!addressForm.email.trim()) {
-                toast.error(
-                    "Email wajib diisi untuk konfirmasi pesanan."
-                );
-
-                return;
-            }
-
             setGuestAddress(
                 toGuestAddress(addressForm)
             );
@@ -3432,45 +3420,6 @@ export default function BuyNowPage({
                                                 placeholder="08xxxxxxxxxx"
                                                 className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm outline-none focus:border-rose-500"
                                             />
-                                        </div>
-
-                                        {/* EMAIL */}
-
-                                        <div>
-                                            <label className="text-sm font-medium">
-                                                Email
-                                                {!data.authenticated &&
-                                                    " *"}
-                                            </label>
-
-                                            <input
-                                                type="email"
-                                                value={
-                                                    addressForm.email
-                                                }
-                                                onChange={(
-                                                    e
-                                                ) =>
-                                                    setAddressForm(
-                                                        (
-                                                            prev
-                                                        ) => ({
-                                                            ...prev,
-                                                            email:
-                                                                e
-                                                                    .target
-                                                                    .value,
-                                                        })
-                                                    )
-                                                }
-                                                placeholder="nama@email.com"
-                                                className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 text-sm outline-none focus:border-rose-500"
-                                            />
-
-                                            <p className="mt-1 text-xs text-gray-500">
-                                                Untuk konfirmasi &
-                                                resi pesanan.
-                                            </p>
                                         </div>
 
                                         {/* ADDRESS */}

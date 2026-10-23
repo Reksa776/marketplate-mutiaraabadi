@@ -335,10 +335,20 @@ export async function createDirectOrderPayment(
         input.paymentChannel
     );
 
+    /*
+     * iPaymu requires an email-shaped buyer field even when the buyer
+     * chose not to provide an email. Use the reserved .invalid domain so
+     * the provider request remains valid without inventing a deliverable
+     * contact address or implying that the buyer supplied one.
+     */
+    const buyerEmail =
+        input.buyerEmail.trim() ||
+        `guest-${input.orderId}@noemail.invalid`;
+
     const response = await createDirectPayment({
         name: input.buyerName,
         phone: input.buyerPhone,
-        email: input.buyerEmail,
+        email: buyerEmail,
         amount: input.amount,
         notifyUrl: input.notifyUrl,
         referenceId: input.orderNumber,

@@ -71,7 +71,7 @@ export type GuestAddressInput = {
 export type ResolvedGuestAddress = {
     recipientName: string;
     phone: string;
-    email: string;
+    email: string | null;
     address: string;
     note: string | null;
     province: string;
@@ -259,9 +259,9 @@ export async function resolveGuestAddress(
     const email = normalizeEmail(input.email);
 
     if (
-        !email ||
-        email.length > MAX_EMAIL ||
-        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+        email &&
+        (email.length > MAX_EMAIL ||
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     ) {
         throw new GuestAddressError(
             "Email tidak valid."
