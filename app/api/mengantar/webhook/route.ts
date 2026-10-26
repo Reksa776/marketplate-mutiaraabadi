@@ -7,6 +7,7 @@ import {
     verifyMengantarWebhookSignature,
 } from "@/lib/mengantar";
 import { decideMengantarShipmentTransition } from "@/lib/mengantar/status";
+import { approveCommissionForOrder } from "@/lib/affiliate/approve-commission";
 
 export const dynamic = "force-dynamic";
 
@@ -132,6 +133,9 @@ export async function POST(request: Request) {
         const orderSelect = {
             id: true,
             orderNumber: true,
+            status: true,
+            paymentMethod: true,
+            paymentStatus: true,
             shipmentStatus: true,
             trackingNumber: true,
             shippingCourier: true,
@@ -221,39 +225,107 @@ export async function POST(request: Request) {
          * double-apply. A zero count means another delivery already
          * moved the shipment — acknowledge without a second effect.
          */
-        const updated = await prisma.order.updateMany({
-            where: {
-                id: order.id,
-                shipmentStatus:
-                    order.shipmentStatus ?? null,
-            },
-            data: {
-                shipmentStatus: nextStatus,
-                // Backfill provider identifiers / resi / courier the
-                // create flow had not recorded yet. NEVER overwrite an
-                // existing value, and never replace a
-                // providerShipmentId (a rollback is impossible here).
-                ...(order.providerShipmentId || !providerShipmentId
-                    ? {}
-                    : { providerShipmentId }),
-                ...(order.providerBatchId || !batchId
-                    ? {}
-                    : { providerBatchId: batchId }),
-                ...(order.trackingNumber || !trackingNumber
-                    ? {}
-                    : { trackingNumber }),
-                ...(order.shippingCourier || !courierName
-                    ? {}
-                    : {
-                          shippingCourier:
-                              toInternalCourier(
-                                  courierName
-                              ),
-                      }),
-            },
+        const nextOrderStatus = (() => {
+            if (
+                order.status === "CANCELLED" ||
+                order.status === "REFUND_PENDING" ||
+                order.status === "COMPLETED"
+            ) {
+                return null;
+            }
+
+            // A tracking event may advance the marketplace order only
+            // after online payment, or for COD (which intentionally
+            // remains UNPAID until the courier collects the cash).
+            const eligibleForFulfillment =
+                order.paymentStatus === "PAID" ||
+                order.paymentMethod === "COD";
+
+            if (!eligibleForFulfillment) return null;
+
+            if (
+                nextStatus === "PICKED_UP" ||
+                nextStatus === "IN_TRANSIT" ||
+                nextStatus === "UNDELIVERED"
+            ) {
+                return order.status === "SHIPPED"
+                    ? null
+                    : "SHIPPED";
+            }
+
+            if (nextStatus === "DELIVERED") {
+                return "COMPLETED";
+            }
+
+            return null;
+        })();
+
+        const result = await prisma.$transaction(async (tx) => {
+            const shipmentUpdate = await tx.order.updateMany({
+                where: {
+                    id: order.id,
+                    shipmentStatus:
+                        order.shipmentStatus ?? null,
+                },
+                data: {
+                    shipmentStatus: nextStatus,
+                    // Backfill provider identifiers / resi / courier the
+                    // create flow had not recorded yet. NEVER overwrite an
+                    // existing value, and never replace a
+                    // providerShipmentId (a rollback is impossible here).
+                    ...(order.providerShipmentId || !providerShipmentId
+                        ? {}
+                        : { providerShipmentId }),
+                    ...(order.providerBatchId || !batchId
+                        ? {}
+                        : { providerBatchId: batchId }),
+                    ...(order.trackingNumber || !trackingNumber
+                        ? {}
+                        : { trackingNumber }),
+                    ...(order.shippingCourier || !courierName
+                        ? {}
+                        : {
+                              shippingCourier:
+                                  toInternalCourier(
+                                      courierName
+                                  ),
+                          }),
+                },
+            });
+
+            if (shipmentUpdate.count === 0) {
+                return { applied: false, orderStatusChanged: false };
+            }
+
+            let orderStatusChanged = false;
+
+            if (nextOrderStatus) {
+                const orderUpdate = await tx.order.updateMany({
+                    where: {
+                        id: order.id,
+                        status: order.status,
+                    },
+                    data: { status: nextOrderStatus },
+                });
+
+                orderStatusChanged = orderUpdate.count > 0;
+
+                if (
+                    orderStatusChanged &&
+                    nextOrderStatus === "COMPLETED"
+                ) {
+                    await approveCommissionForOrder(
+                        tx,
+                        order.id,
+                        "ORDER_DELIVERED"
+                    );
+                }
+            }
+
+            return { applied: true, orderStatusChanged };
         });
 
-        if (updated.count === 0) {
+        if (!result.applied) {
             return NextResponse.json({
                 success: true,
                 message: "Concurrent update already applied.",
@@ -276,6 +348,18 @@ export async function POST(request: Request) {
                 order.shipmentStatus,
                 nextStatus
             );
+
+            if (result.orderStatusChanged && nextOrderStatus) {
+                const { onOrderStatusChanged } =
+                    await import(
+                        "@/lib/notification/order-status-handler"
+                    );
+                await onOrderStatusChanged(
+                    order.id,
+                    order.status,
+                    nextOrderStatus
+                );
+            }
         } catch (notificationError) {
             console.error(
                 "MENGANTAR WEBHOOK NOTIFICATION ERROR:",
