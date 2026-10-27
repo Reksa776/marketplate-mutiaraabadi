@@ -66,8 +66,8 @@ export const MAX_FAILED_BINDS = 5;
 /** Minimum gap between two bot replies in the same chat. */
 export const REPLY_COOLDOWN_MS = 3000;
 
-/** Unsolicited welcome/menu message may be sent once per chat per day. */
-export const AUTO_WELCOME_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/** Unrequested bot replies may be sent once per chat per day. */
+export const AUTO_REPLY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /** Replies allowed per chat per window (anti-flood). */
 export const MAX_REPLIES_PER_WINDOW = 20;
@@ -109,6 +109,7 @@ export type ChatState = {
     windowStartedAt: Date | null;
     lastActivityAt: Date;
     lastReplyAt: Date | null;
+    lastAutoReplyAt: Date | null;
 };
 
 export function defaultChatState(
@@ -128,6 +129,7 @@ export function defaultChatState(
         windowStartedAt: null,
         lastActivityAt: now,
         lastReplyAt: null,
+        lastAutoReplyAt: null,
     };
 }
 
@@ -225,18 +227,124 @@ export function isCooldownActive(
 }
 
 /** Has this chat already received a bot reply in the last 24 hours? */
-export function isAutoWelcomeCooldownActive(
+export function isAutoReplyCooldownActive(
     state: ChatState,
     now: Date = new Date()
 ): boolean {
-    if (!state.lastReplyAt) {
+    if (!state.lastAutoReplyAt) {
         return false;
     }
 
     return (
-        now.getTime() - state.lastReplyAt.getTime() <
-        AUTO_WELCOME_COOLDOWN_MS
+        now.getTime() - state.lastAutoReplyAt.getTime() <
+        AUTO_REPLY_COOLDOWN_MS
     );
+}
+
+/**
+ * Atomically reserve the one unsolicited automatic reply allowed per
+ * chat/day. This closes the race where several inbound messages load
+ * the same stale state and all try to send a reply at once.
+ */
+export async function claimAutoReply(input: {
+    chatId: string;
+    now: Date;
+}): Promise<{
+    claimed: boolean;
+    previousLastAutoReplyAt: Date | null;
+}> {
+    try {
+        return await prisma.$transaction(async (tx) => {
+            const current =
+                await tx.whatsAppChatState.findUnique({
+                    where: { chatId: input.chatId },
+                    select: { lastAutoReplyAt: true },
+                });
+
+            if (!current) {
+                try {
+                    await tx.whatsAppChatState.create({
+                        data: {
+                            chatId: input.chatId,
+                            lastAutoReplyAt: input.now,
+                        },
+                    });
+
+                    return {
+                        claimed: true,
+                        previousLastAutoReplyAt: null,
+                    };
+                } catch (error) {
+                    if (
+                        (error as { code?: string })?.code ===
+                        "P2002"
+                    ) {
+                        return {
+                            claimed: false,
+                            previousLastAutoReplyAt: null,
+                        };
+                    }
+
+                    throw error;
+                }
+            }
+
+            if (
+                current.lastAutoReplyAt &&
+                input.now.getTime() -
+                    current.lastAutoReplyAt.getTime() <
+                    AUTO_REPLY_COOLDOWN_MS
+            ) {
+                return {
+                    claimed: false,
+                    previousLastAutoReplyAt:
+                        current.lastAutoReplyAt,
+                };
+            }
+
+            const updated =
+                await tx.whatsAppChatState.updateMany({
+                    where: {
+                        chatId: input.chatId,
+                        lastAutoReplyAt:
+                            current.lastAutoReplyAt,
+                    },
+                    data: { lastAutoReplyAt: input.now },
+                });
+
+            return {
+                claimed: updated.count === 1,
+                previousLastAutoReplyAt:
+                    current.lastAutoReplyAt,
+            };
+        });
+    } catch (error) {
+        if ((error as { code?: string })?.code === "P2002") {
+            return {
+                claimed: false,
+                previousLastAutoReplyAt: null,
+            };
+        }
+
+        throw error;
+    }
+}
+
+/** Roll back an automatic-reply reservation only if it is still ours. */
+export async function releaseAutoReplyClaim(input: {
+    chatId: string;
+    now: Date;
+    previousLastAutoReplyAt: Date | null;
+}): Promise<void> {
+    await prisma.whatsAppChatState.updateMany({
+        where: {
+            chatId: input.chatId,
+            lastAutoReplyAt: input.now,
+        },
+        data: {
+            lastAutoReplyAt: input.previousLastAutoReplyAt,
+        },
+    });
 }
 
 /** Reply budget for the current window exhausted? */
@@ -295,6 +403,7 @@ export async function loadChatState(
         windowStartedAt: toDate(row.windowStartedAt),
         lastActivityAt: toDate(row.lastActivityAt) ?? now,
         lastReplyAt: toDate(row.lastReplyAt),
+        lastAutoReplyAt: toDate(row.lastAutoReplyAt),
     };
 
     /*
@@ -386,7 +495,10 @@ export async function persistChatState(input: {
         replyCount,
         windowStartedAt,
         lastActivityAt: now,
-        lastReplyAt: replied ? now : state.lastReplyAt,
+        // A silent/concurrent inbound must not overwrite a newer
+        // welcome reservation or successful reply using its stale
+        // in-memory state.
+        ...(replied ? { lastReplyAt: now } : {}),
     };
 
     await prisma.whatsAppChatState.upsert({

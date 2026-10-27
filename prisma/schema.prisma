@@ -552,10 +552,11 @@ model WhatsAppChatState {
   replyCount      Int       @default(0)
   windowStartedAt DateTime?
 
-  lastActivityAt DateTime  @default(now())
-  lastReplyAt    DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  lastActivityAt  DateTime  @default(now())
+  lastReplyAt     DateTime?
+  lastAutoReplyAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([pauseUntil])
   @@index([lastActivityAt])

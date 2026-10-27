@@ -472,6 +472,26 @@ async function process(input: {
         return "IGNORED";
     }
 
+    const isServiceRequest = isCustomerServiceRequest(
+        parsed,
+        state
+    );
+    const rateLimitAutomaticReply = !isServiceRequest;
+
+    if (
+        rateLimitAutomaticReply &&
+        chatState.isAutoReplyCooldownActive(state, now)
+    ) {
+        await chatState.persistChatState({
+            state,
+            patch: decision.patch,
+            now,
+            replied: false,
+        });
+
+        return "SUPPRESSED";
+    }
+
     /*
      * Anti-flood: cooldown and the per-chat budget suppress the SEND
      * (the state still advances, so the customer's last command is
@@ -491,13 +511,56 @@ async function process(input: {
         return "SUPPRESSED";
     }
 
-    const sent = await deliver({
-        deps,
-        chatId,
-        reply: decision.reply,
-    });
+    const autoReplyClaim = rateLimitAutomaticReply
+        ? await chatState.claimAutoReply({ chatId, now })
+        : null;
+
+    if (autoReplyClaim && !autoReplyClaim.claimed) {
+        await chatState.persistChatState({
+            state,
+            patch: decision.patch,
+            now,
+            replied: false,
+        });
+
+        return "SUPPRESSED";
+    }
+
+    let sent: SendResult;
+
+    try {
+        sent = await deliver({
+            deps,
+            chatId,
+            reply: decision.reply,
+        });
+    } catch (error) {
+        if (autoReplyClaim?.claimed) {
+            await chatState
+                .releaseAutoReplyClaim({
+                    chatId,
+                    now,
+                    previousLastAutoReplyAt:
+                        autoReplyClaim.previousLastAutoReplyAt,
+                })
+                .catch(() => undefined);
+        }
+
+        throw error;
+    }
 
     if (!sent?.success) {
+        if (autoReplyClaim?.claimed) {
+            await chatState
+                .releaseAutoReplyClaim({
+                    chatId,
+                    now,
+                    previousLastAutoReplyAt:
+                        autoReplyClaim.previousLastAutoReplyAt,
+                })
+                .catch(() => undefined);
+        }
+
         /*
          * The customer never received it → this message stays
          * re-claimable and the state is left untouched, so a
@@ -595,6 +658,35 @@ type Decision = {
     reply: string | null;
     patch: chatState.ChatStatePatch;
 };
+
+/** Explicit customer-service actions bypass the unsolicited-reply cap. */
+function isCustomerServiceRequest(
+    parsed: ParsedInbound,
+    state: chatState.ChatState
+): boolean {
+    if (
+        parsed.command === "DIGIT" ||
+        parsed.command === "TRACK" ||
+        parsed.command === "ORDER_NUMBER" ||
+        parsed.command === "COMPLAINT" ||
+        parsed.command === "CANCEL"
+    ) {
+        return true;
+    }
+
+    if (parsed.command === "MENU") {
+        return parsed.explicitMenu;
+    }
+
+    // Keep an already-requested service flow usable if the customer
+    // needs to retry an invalid order number or clarify their request.
+    return (
+        Boolean(state.pendingIntent) ||
+        state.state === CHAT_STATE.AWAITING_ORDER ||
+        state.state === CHAT_STATE.VERIFIED_TRACKING ||
+        state.state === CHAT_STATE.VERIFIED_DELIVERED
+    );
+}
 
 type DecideInput = {
     chatId: string;
@@ -773,14 +865,6 @@ async function decide(
     }
 
     if (state.state === CHAT_STATE.IDLE) {
-        // This is an unsolicited welcome, not a customer-selected
-        // action. Limit it to once per chat per 24 hours using the
-        // durable lastReplyAt timestamp; explicit menu/service requests
-        // above remain available at any time.
-        if (chatState.isAutoWelcomeCooldownActive(state, now)) {
-            return { reply: null, patch: resumePatch };
-        }
-
         return {
             reply: menu.mainMenu(),
             patch: patchOf(resumePatch, {
