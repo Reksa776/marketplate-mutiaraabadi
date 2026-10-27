@@ -66,6 +66,9 @@ export const MAX_FAILED_BINDS = 5;
 /** Minimum gap between two bot replies in the same chat. */
 export const REPLY_COOLDOWN_MS = 3000;
 
+/** Unsolicited welcome/menu message may be sent once per chat per day. */
+export const AUTO_WELCOME_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 /** Replies allowed per chat per window (anti-flood). */
 export const MAX_REPLIES_PER_WINDOW = 20;
 export const REPLY_WINDOW_MS = 60 * 60 * 1000;
@@ -218,6 +221,21 @@ export function isCooldownActive(
     return (
         now.getTime() - state.lastReplyAt.getTime() <
         REPLY_COOLDOWN_MS
+    );
+}
+
+/** Has this chat already received a bot reply in the last 24 hours? */
+export function isAutoWelcomeCooldownActive(
+    state: ChatState,
+    now: Date = new Date()
+): boolean {
+    if (!state.lastReplyAt) {
+        return false;
+    }
+
+    return (
+        now.getTime() - state.lastReplyAt.getTime() <
+        AUTO_WELCOME_COOLDOWN_MS
     );
 }
 

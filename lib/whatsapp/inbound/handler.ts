@@ -773,6 +773,14 @@ async function decide(
     }
 
     if (state.state === CHAT_STATE.IDLE) {
+        // This is an unsolicited welcome, not a customer-selected
+        // action. Limit it to once per chat per 24 hours using the
+        // durable lastReplyAt timestamp; explicit menu/service requests
+        // above remain available at any time.
+        if (chatState.isAutoWelcomeCooldownActive(state, now)) {
+            return { reply: null, patch: resumePatch };
+        }
+
         return {
             reply: menu.mainMenu(),
             patch: patchOf(resumePatch, {

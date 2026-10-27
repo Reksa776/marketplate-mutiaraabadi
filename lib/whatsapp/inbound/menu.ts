@@ -14,9 +14,9 @@
  *     ADDITION (only when explicitly enabled) and their payload body is
  *     this very text — so the numbered menu remains complete and usable
  *     even when WhatsApp draws no button at all.
- *   * A URL is allowed, a CREDENTIAL never is. The only link the bot may
- *     send is the official tracking page on our own origin
- *     (`/lacak`, built by ./tracking-url) — and it carries at most an
+ *   * URLs are allowed, CREDENTIALS never are. Links are limited to the
+ *     official product page and tracking page on our own origin — and
+ *     tracking carries at most an
  *     order-number PREFILL hint, which grants nothing on its own: the
  *     page still needs the guest access token cookie or the two-phase
  *     OTP recovery. No access token, OTP, cookie, hash, payment
@@ -28,6 +28,13 @@
  *     DATA says the courier marked it delivered.
  */
 
+import { OFFICIAL_TRACKING_PAGE_URL } from "./tracking-url";
+
+const OFFICIAL_SHOP_URL = new URL(
+    "/products",
+    OFFICIAL_TRACKING_PAGE_URL
+).toString();
+
 /** The first message a customer gets (also the "0. Menu Utama" target). */
 export const MAIN_MENU_TEXT = [
     "Halo! Selamat datang di Mutiara Abadi 👋",
@@ -35,6 +42,8 @@ export const MAIN_MENU_TEXT = [
     "Terima kasih sudah menghubungi kami.",
     "",
     "Silakan pilih layanan yang kamu butuhkan:",
+    "",
+    `🛍️ Belanja & pesan: ${OFFICIAL_SHOP_URL}`,
     "",
     "1. 📦 Lacak Resi",
     "2. 📋 Status Pesanan",
