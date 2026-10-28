@@ -22,6 +22,7 @@ import {
 } from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
 import { buildGuestIdentityKey } from "@/lib/guest-identity";
+import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
 import {
     issueGuestOrderAccessCookie,
     listGuestAccessibleOrderIds,
@@ -356,6 +357,9 @@ export async function POST(
 
                     guestIdentityKey:
                         guestIdentity,
+
+                    promoClaimVisitorKeyHash:
+                        promoVisitorHashFromCookieHeader(request.headers.get("cookie")),
 
                     customerEmail:
                         session?.user?.email ??

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
+import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
 import type { CartStockStatus } from "@/lib/cart-validation";
 import {
     resolveCartScope,
@@ -220,7 +221,9 @@ export async function GET(request: NextRequest) {
                     ),
                     category:
                         item.product.category,
-                }))
+                })),
+                new Date(),
+                promoVisitorHashFromCookieHeader(request.headers.get("cookie"))
             );
 
         const pricingMap = new Map(

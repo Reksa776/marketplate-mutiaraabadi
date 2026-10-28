@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 
 const PROMO_TIME_ZONE = "Asia/Jakarta";
+export const PROMO_VISITOR_COOKIE = "promo_claim_visitor";
 
 export function promoQuotaDate(now = new Date()): Date {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -25,6 +26,22 @@ export function hashPromoVisitorKey(key: string): string {
     return createHash("sha256").update(key).digest("hex");
 }
 
+export function promoVisitorHashFromCookieValue(value: string | null | undefined): string | null {
+    return value ? hashPromoVisitorKey(value) : null;
+}
+
+export function promoVisitorHashFromCookieHeader(header: string | null | undefined): string | null {
+    if (!header) return null;
+    const prefix = `${PROMO_VISITOR_COOKIE}=`;
+    const entry = header.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+    if (!entry) return null;
+    try {
+        return promoVisitorHashFromCookieValue(decodeURIComponent(entry.slice(prefix.length)));
+    } catch {
+        return null;
+    }
+}
+
 export function isPromoActive(
     promo: { isActive: boolean; startAt: Date; endAt: Date },
     now = new Date()
@@ -32,26 +49,8 @@ export function isPromoActive(
     return promo.isActive && promo.startAt <= now && promo.endAt >= now;
 }
 
-export function isVoucherClaimable(
-    voucher: {
-        isActive: boolean;
-        startDate: Date | null;
-        endDate: Date | null;
-        quota: number | null;
-        usedCount: number;
-    },
-    now = new Date()
-): boolean {
-    return (
-        voucher.isActive &&
-        (!voucher.startDate || voucher.startDate <= now) &&
-        (!voucher.endDate || voucher.endDate >= now) &&
-        (voucher.quota === null || voucher.usedCount < voucher.quota)
-    );
-}
-
 export type PromoClaimResult =
-    | { status: "CLAIMED"; voucherCode: string; alreadyClaimed: boolean }
+    | { status: "CLAIMED"; alreadyClaimed: boolean }
     | { status: "NOT_FOUND" | "INACTIVE" | "QUOTA_EXHAUSTED" };
 
 export async function claimDailyPromo(input: {
@@ -66,13 +65,13 @@ export async function claimDailyPromo(input: {
         return await prisma.$transaction(async (tx) => {
             const promo = await tx.promoLanding.findUnique({
                 where: { slug: input.slug },
-                include: { voucher: true },
             });
 
             if (!promo) return { status: "NOT_FOUND" };
             if (
                 !isPromoActive(promo, now) ||
-                !isVoucherClaimable(promo.voucher, now)
+                promo.variantId === null ||
+                promo.promoPrice === null
             ) {
                 return { status: "INACTIVE" };
             }
@@ -90,7 +89,6 @@ export async function claimDailyPromo(input: {
             if (priorClaim) {
                 return {
                     status: "CLAIMED",
-                    voucherCode: priorClaim.voucherCode,
                     alreadyClaimed: true,
                 };
             }
@@ -124,13 +122,11 @@ export async function claimDailyPromo(input: {
                     promoId: promo.id,
                     quotaDate,
                     visitorKeyHash: input.visitorKeyHash,
-                    voucherCode: promo.voucher.code,
                 },
             });
 
             return {
                 status: "CLAIMED",
-                voucherCode: promo.voucher.code,
                 alreadyClaimed: false,
             };
         });
@@ -155,7 +151,6 @@ export async function claimDailyPromo(input: {
             if (priorClaim) {
                 return {
                     status: "CLAIMED",
-                    voucherCode: priorClaim.voucherCode,
                     alreadyClaimed: true,
                 };
             }

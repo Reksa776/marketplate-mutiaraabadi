@@ -230,6 +230,9 @@ export type CreateCheckoutInput = {
      */
     cartGuestTokenHash?: string | null;
 
+    /** Hashed promo-claim visitor cookie; only the server may supply it. */
+    promoClaimVisitorKeyHash?: string | null;
+
     /**
      * Hashed guest identity (normalized email + phone) used for the
      * per-identity abuse scopes (voucher / flash-sale / COD caps,
@@ -594,7 +597,8 @@ function parsePositiveInteger(
  * regardless of item count.
  */
 async function resolveBatchMarketingPricing(
-    items: CheckoutItem[]
+    items: CheckoutItem[],
+    promoClaimVisitorKeyHash?: string | null
 ) {
     if (items.length === 0) return;
 
@@ -604,7 +608,9 @@ async function resolveBatchMarketingPricing(
             variantId: i.variantId,
             originalPrice: i.price,
             quantity: i.quantity,
-        }))
+        })),
+        new Date(),
+        promoClaimVisitorKeyHash
     );
 
     for (let idx = 0; idx < items.length; idx++) {
@@ -1712,7 +1718,8 @@ export async function createCheckoutOrder(
              * Flash Sale > Product Discount > Campaign > Original
              */
             await resolveBatchMarketingPricing(
-                checkoutItems
+                checkoutItems,
+                input.promoClaimVisitorKeyHash
             );
 
             /*

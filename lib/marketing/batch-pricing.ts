@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { promoQuotaDate } from "@/lib/promo-claim";
 import { getActiveCampaigns, isCampaignActive } from "./campaign";
 
 /**
@@ -107,7 +108,8 @@ export async function resolveOrderCampaignId(
  */
 export async function resolveBatchPrices(
     items: BatchPricingItemInput[],
-    now: Date = new Date()
+    now: Date = new Date(),
+    promoClaimVisitorKeyHash?: string | null
 ): Promise<BatchPricingResult[]> {
     if (items.length === 0) return [];
 
@@ -136,8 +138,26 @@ export async function resolveBatchPrices(
         flashSales.map((fs) => [fs.variantId, fs])
     );
 
-    const promoLandings = await prisma.promoLanding.findMany({
+    const claimedPromoIds = promoClaimVisitorKeyHash
+        ? await prisma.promoClaim.findMany({
+              where: {
+                  visitorKeyHash: promoClaimVisitorKeyHash,
+                  quotaDate: promoQuotaDate(now),
+                  promo: {
+                      isActive: true,
+                      startAt: { lte: now },
+                      endAt: { gte: now },
+                      variantId: { in: variantIds },
+                      promoPrice: { not: null },
+                  },
+              },
+              select: { promoId: true },
+          })
+        : [];
+    const promoLandings = claimedPromoIds.length
+        ? await prisma.promoLanding.findMany({
         where: {
+            id: { in: claimedPromoIds.map((claim) => claim.promoId) },
             variantId: { in: variantIds },
             promoPrice: { not: null },
             isActive: true,
@@ -146,7 +166,8 @@ export async function resolveBatchPrices(
         },
         orderBy: { startAt: "desc" },
         select: { variantId: true, promoPrice: true },
-    });
+          })
+        : [];
     const promoPriceMap = new Map<number, number>();
     for (const promo of promoLandings) {
         if (promo.variantId !== null && promo.promoPrice !== null) {

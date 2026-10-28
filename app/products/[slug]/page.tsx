@@ -1,10 +1,12 @@
 import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
 import type { Metadata } from "next";
 
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
 import { pageMetadata, toMetaText } from "@/lib/site-metadata";
+import { PROMO_VISITOR_COOKIE, promoVisitorHashFromCookieValue } from "@/lib/promo-claim";
 
 import ProductDetail from "@/components/products/ProductDetail";
 import BottomNavbar from "@/components/products/BottomNavbar";
@@ -107,7 +109,9 @@ export default async function ProductDetailPage({
                 originalPrice: Number(v.price),
                 quantity: 1,
                 category: product.category,
-            }))
+            })),
+            new Date(),
+            promoVisitorHashFromCookieValue((await cookies()).get(PROMO_VISITOR_COOKIE)?.value)
         );
 
     const pricingMap = new Map(

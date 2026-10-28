@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
+import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
         const session = await auth();
 
@@ -58,7 +59,9 @@ export async function GET() {
 
         const pricingResults =
             await resolveBatchPrices(
-                allVariantInputs
+                allVariantInputs,
+                new Date(),
+                promoVisitorHashFromCookieHeader(request.headers.get("cookie"))
             );
 
         // Build lookup: variantId → pricing result

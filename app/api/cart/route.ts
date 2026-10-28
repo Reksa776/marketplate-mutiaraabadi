@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
@@ -16,6 +16,7 @@ import {
     rateLimiters,
 } from "@/lib/rate-limit";
 import { rejectCrossSite } from "@/lib/checkout-idempotency";
+import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
 
 /**
  * ==========================================
@@ -83,7 +84,8 @@ async function formatCartResponse(
             product: { id: number; name: string; slug: string; image: string | null; category: string | null };
             variant: { id: number; name: string; price: any; comparePrice: any; stock: number; image: string | null; weight: number };
         }>;
-    } | null
+    } | null,
+    promoClaimVisitorKeyHash?: string | null
 ) {
     if (!cartData) {
         return { cart: null };
@@ -98,7 +100,9 @@ async function formatCartResponse(
             originalPrice: Number(item.variant.price),
             quantity: Number(item.quantity),
             category: item.product.category,
-        }))
+        })),
+        new Date(),
+        promoClaimVisitorKeyHash
     );
 
     const pricingMap = new Map(
@@ -233,7 +237,7 @@ function guestCartRateLimited(
     ).allowed;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
     try {
         const scope = await resolveCartScope();
 
@@ -242,7 +246,7 @@ export async function GET() {
         // ==========================================
         // FORMAT WITH MARKETING PRICES
         // ==========================================
-        const result = await formatCartResponse(cart);
+        const result = await formatCartResponse(cart, promoVisitorHashFromCookieHeader(request.headers.get("cookie")));
 
         return NextResponse.json(result);
     } catch (error) {
@@ -504,7 +508,7 @@ export async function POST(
                 null,
         });
 
-        const result = await formatCartResponse(updatedCart);
+        const result = await formatCartResponse(updatedCart, promoVisitorHashFromCookieHeader(request.headers.get("cookie")));
 
         const response = NextResponse.json(
             {
@@ -686,7 +690,7 @@ export async function PATCH(
         // Return formatted cart with marketing prices
         const cart = await loadScopedCart(scope);
 
-        const result = await formatCartResponse(cart);
+        const result = await formatCartResponse(cart, promoVisitorHashFromCookieHeader(request.headers.get("cookie")));
 
         return NextResponse.json({
             message:
@@ -792,7 +796,7 @@ export async function DELETE(
         // Return formatted cart with marketing prices
         const cart = await loadScopedCart(scope);
 
-        const result = await formatCartResponse(cart);
+        const result = await formatCartResponse(cart, promoVisitorHashFromCookieHeader(request.headers.get("cookie")));
 
         return NextResponse.json({
             message:

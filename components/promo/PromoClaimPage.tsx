@@ -3,12 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { FiCheck, FiCopy, FiGift, FiShoppingBag } from "react-icons/fi";
+import { FiCheck, FiGift, FiShoppingBag } from "react-icons/fi";
 
 type PromoState = {
     active: boolean;
     claimed: boolean;
-    voucherCode: string | null;
     dailyQuota: number;
     claimedCount: number;
     remaining: number;
@@ -38,7 +37,6 @@ export default function PromoClaimPage({
     const [loading, setLoading] = useState(true);
     const [claiming, setClaiming] = useState(false);
     const [error, setError] = useState("");
-    const [copied, setCopied] = useState(false);
 
     const refresh = useCallback(async () => {
         setLoading(true);
@@ -105,13 +103,6 @@ export default function PromoClaimPage({
         }
     }
 
-    async function copyCode() {
-        if (!status?.voucherCode) return;
-        await navigator.clipboard.writeText(status.voucherCode);
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1800);
-    }
-
     const exhausted = !loading && status && !status.claimed && (!status.active || !status.claimable);
 
     return (
@@ -136,21 +127,15 @@ export default function PromoClaimPage({
                             <FiShoppingBag /> Ambil promo yang nggak kalah lainnya di sini
                         </Link>
                     </>
-                ) : status?.claimed && status.voucherCode ? (
+                ) : status?.claimed ? (
                     <>
                         <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
                             <FiCheck size={30} />
                         </div>
-                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Voucher berhasil diklaim</p>
-                        <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950">Selamat, promonya buat kamu!</h1>
-                        <p className="mt-3 text-sm leading-6 text-gray-600">Gunakan kode voucher ini saat checkout. Klaim browser ini sudah tercatat untuk hari ini.</p>
+                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Promo berhasil diklaim</p>
+                        <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950">Selamat, harga promo sudah aktif!</h1>
+                        <p className="mt-3 text-sm leading-6 text-gray-600">Harga promo untuk produk ini otomatis diterapkan saat checkout hari ini di browser ini.</p>
                         {product && <ProductPriceCard product={product} />}
-                        <div className="mx-auto mt-6 flex max-w-sm items-center justify-between gap-3 rounded-xl border border-dashed border-emerald-400 bg-emerald-50 px-4 py-3">
-                            <code className="text-lg font-black tracking-widest text-emerald-900">{status.voucherCode}</code>
-                            <button type="button" onClick={() => void copyCode()} className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-emerald-800 shadow-sm">
-                                {copied ? <FiCheck /> : <FiCopy />} {copied ? "Tersalin" : "Salin"}
-                            </button>
-                        </div>
                         <Link href={product ? `/products/${product.slug}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
                             <FiShoppingBag /> {product ? `Beli ${product.name}` : "Lihat produk"}
                         </Link>
@@ -167,7 +152,7 @@ export default function PromoClaimPage({
                         {product && <ProductPriceCard product={product} />}
                         <p className="mt-5 text-sm text-gray-500">Kuota klaim hari ini tersisa <strong className="text-gray-900">{status?.remaining ?? 0}</strong>.</p>
                         <button type="button" disabled={claiming || !status?.claimable} onClick={() => void claim()} className="mt-6 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-6 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-wait disabled:opacity-60">
-                            <FiGift /> {claiming ? "Memproses klaim..." : "Klaim Voucher"}
+                            <FiGift /> {claiming ? "Mengaktifkan promo..." : "Klaim Promo"}
                         </button>
                     </>
                 )}

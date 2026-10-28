@@ -30,7 +30,6 @@ function parsePromoBody(body: Record<string, unknown>) {
         .replace(/^-+|-+$/g, "");
     const title = String(body.title ?? "").trim();
     const description = String(body.description ?? "").trim();
-    const voucherId = Number(body.voucherId);
     const productId = Number(body.productId);
     const variantId = Number(body.variantId);
     const promoPrice = Number(body.promoPrice);
@@ -41,7 +40,6 @@ function parsePromoBody(body: Record<string, unknown>) {
     if (!slug || slug.length > 191) throw new Error("Link promo wajib diisi dengan slug yang valid.");
     if (!title || title.length > 191) throw new Error("Judul promo wajib diisi.");
     if (description.length > 5000) throw new Error("Deskripsi promo terlalu panjang.");
-    if (!Number.isInteger(voucherId) || voucherId < 1) throw new Error("Voucher wajib dipilih.");
     if (!Number.isInteger(productId) || productId < 1) throw new Error("Produk promo wajib dipilih.");
     if (!Number.isInteger(variantId) || variantId < 1) throw new Error("Varian promo wajib dipilih.");
     if (!Number.isInteger(promoPrice) || promoPrice <= 0) throw new Error("Harga promo harus berupa rupiah bulat lebih dari nol.");
@@ -56,7 +54,6 @@ function parsePromoBody(body: Record<string, unknown>) {
         slug,
         title,
         description: description || null,
-        voucherId,
         productId,
         variantId,
         promoPrice,
@@ -76,9 +73,6 @@ export async function GET() {
         const items = await prisma.promoLanding.findMany({
             orderBy: { createdAt: "desc" },
             include: {
-                voucher: {
-                    select: { id: true, code: true, type: true, value: true, isActive: true },
-                },
                 product: { select: { name: true, slug: true } },
                 variant: { select: { name: true, price: true } },
                 daily: {
@@ -96,11 +90,6 @@ export async function GET() {
                 slug: item.slug,
                 title: item.title,
                 description: item.description,
-                voucherId: item.voucherId,
-                voucherCode: item.voucher.code,
-                voucherType: item.voucher.type,
-                voucherValue: Number(item.voucher.value),
-                voucherActive: item.voucher.isActive,
                 productId: item.productId,
                 productName: item.product?.name ?? null,
                 productSlug: item.product?.slug ?? null,
@@ -132,27 +121,6 @@ export async function POST(request: Request) {
     try {
         const body = await request.json();
         const data = parsePromoBody(body);
-        const voucher = await prisma.voucher.findUnique({
-            where: { id: data.voucherId },
-            include: {
-                productRestrictions: { select: { productId: true } },
-                categoryRestrictions: { select: { category: true } },
-            },
-        });
-        if (!voucher) {
-            return NextResponse.json(
-                { success: false, message: "Voucher yang dipilih tidak ditemukan." },
-                { status: 400 }
-            );
-        }
-        if (
-            !voucher.isActive ||
-            (voucher.startDate && voucher.startDate > data.startAt) ||
-            (voucher.endDate && voucher.endDate < data.endAt)
-        ) {
-            return NextResponse.json({ success: false, message: "Periode voucher harus mencakup seluruh periode promo dan voucher harus aktif." }, { status: 400 });
-        }
-
         const variant = await prisma.productVariant.findFirst({
             where: { id: data.variantId, productId: data.productId, product: { isArchived: false } },
             select: { price: true, product: { select: { category: true } } },
@@ -162,18 +130,6 @@ export async function POST(request: Request) {
         }
         if (data.promoPrice >= Number(variant.price)) {
             return NextResponse.json({ success: false, message: "Harga promo harus lebih rendah dari harga normal varian." }, { status: 400 });
-        }
-        if (
-            voucher.productRestrictions.length > 0 &&
-            !voucher.productRestrictions.some((restriction) => restriction.productId === data.productId)
-        ) {
-            return NextResponse.json({ success: false, message: "Voucher tidak berlaku untuk produk promo yang dipilih." }, { status: 400 });
-        }
-        if (
-            voucher.categoryRestrictions.length > 0 &&
-            !voucher.categoryRestrictions.some((restriction) => restriction.category.toLowerCase() === (variant.product.category ?? "").toLowerCase())
-        ) {
-            return NextResponse.json({ success: false, message: "Voucher tidak berlaku untuk kategori produk promo yang dipilih." }, { status: 400 });
         }
         const [conflict, flashSaleConflict] = data.isActive
             ? await Promise.all([

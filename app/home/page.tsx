@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 
 import { pageMetadata } from "@/lib/site-metadata";
 import Link from "next/link";
@@ -15,6 +16,7 @@ import { ProductProvider } from "@/components/products/ProductContext";
 import { auth } from "@/auth";
 import BottomNavbar from "@/components/products/BottomNavbar";
 import { getActivePromotions } from "@/lib/marketing/promotion";
+import { PROMO_VISITOR_COOKIE, promoVisitorHashFromCookieValue } from "@/lib/promo-claim";
 import SpinWheelContainer from "@/components/SpinWheelContainer";
 
 export const metadata: Metadata = pageMetadata({
@@ -168,7 +170,12 @@ async function getProducts() {
         }))
     );
 
-    const pricingResults = await resolveBatchPrices(allVariantInputs);
+    const promoCookie = (await cookies()).get(PROMO_VISITOR_COOKIE)?.value;
+    const pricingResults = await resolveBatchPrices(
+        allVariantInputs,
+        new Date(),
+        promoVisitorHashFromCookieValue(promoCookie)
+    );
 
     const pricingMap = new Map(
         pricingResults.map((r) => [r.variantId, r])

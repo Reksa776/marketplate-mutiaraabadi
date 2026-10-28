@@ -6,13 +6,12 @@ import {
     claimDailyPromo,
     hashPromoVisitorKey,
     isPromoActive,
-    isVoucherClaimable,
+    PROMO_VISITOR_COOKIE,
     promoQuotaDate,
 } from "@/lib/promo-claim";
 
 export const dynamic = "force-dynamic";
 
-const VISITOR_COOKIE = "promo_claim_visitor";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
 function rateLimited(request: NextRequest) {
@@ -22,7 +21,7 @@ function rateLimited(request: NextRequest) {
 }
 
 function setVisitorCookie(response: NextResponse, value: string) {
-    response.cookies.set(VISITOR_COOKIE, value, {
+    response.cookies.set(PROMO_VISITOR_COOKIE, value, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
@@ -43,23 +42,13 @@ export async function GET(
     }
 
     const { slug } = await params;
-    const visitorKey = request.cookies.get(VISITOR_COOKIE)?.value ??
+    const visitorKey = request.cookies.get(PROMO_VISITOR_COOKIE)?.value ??
         randomBytes(32).toString("base64url");
     const visitorKeyHash = hashPromoVisitorKey(visitorKey);
     const quotaDate = promoQuotaDate();
     const promo = await prisma.promoLanding.findUnique({
         where: { slug },
         include: {
-            voucher: {
-                select: {
-                    code: true,
-                    isActive: true,
-                    startDate: true,
-                    endDate: true,
-                    quota: true,
-                    usedCount: true,
-                },
-            },
             daily: {
                 where: { quotaDate },
                 select: { claimedCount: true },
@@ -83,18 +72,19 @@ export async function GET(
                 visitorKeyHash,
             },
         },
-        select: { voucherCode: true },
+        select: { id: true },
     });
     const claimedCount = promo.daily[0]?.claimedCount ?? 0;
     const active =
-        isPromoActive(promo) && isVoucherClaimable(promo.voucher);
+        isPromoActive(promo) &&
+        promo.variantId !== null &&
+        promo.promoPrice !== null;
     const remaining = Math.max(0, promo.dailyQuota - claimedCount);
     const response = NextResponse.json({
         success: true,
         data: {
             active,
             claimed: Boolean(claim),
-            voucherCode: claim?.voucherCode ?? null,
             dailyQuota: promo.dailyQuota,
             claimedCount,
             remaining,
@@ -104,7 +94,7 @@ export async function GET(
         },
     }, { headers: { "Cache-Control": "no-store, private" } });
 
-    if (!request.cookies.has(VISITOR_COOKIE)) {
+    if (!request.cookies.has(PROMO_VISITOR_COOKIE)) {
         setVisitorCookie(response, visitorKey);
     }
 
@@ -122,7 +112,7 @@ export async function POST(
         );
     }
 
-    const visitorKey = request.cookies.get(VISITOR_COOKIE)?.value;
+    const visitorKey = request.cookies.get(PROMO_VISITOR_COOKIE)?.value;
     if (!visitorKey) {
         return NextResponse.json(
             { success: false, message: "Muat ulang halaman promo lalu coba lagi." },
@@ -164,7 +154,6 @@ export async function POST(
     return NextResponse.json({
         success: true,
         data: {
-            voucherCode: result.voucherCode,
             alreadyClaimed: result.alreadyClaimed,
         },
     }, { headers: { "Cache-Control": "no-store, private" } });

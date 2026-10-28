@@ -777,7 +777,6 @@ model Voucher {
   productRestrictions  VoucherProduct[]
   categoryRestrictions VoucherCategory[]
   userUsages           VoucherUserUsage[]
-  promoLandings        PromoLanding[]
 
   @@index([isActive])
   @@map("voucher")
@@ -1125,7 +1124,6 @@ model PromoLanding {
   slug        String   @unique
   title       String
   description String?  @db.Text
-  voucherId   Int
   // Optional so databases that applied the original promo migration before
   // product pricing was added can be upgraded without inventing a target.
   productId   Int?
@@ -1138,14 +1136,12 @@ model PromoLanding {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  voucher Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
   product Product?         @relation(fields: [productId], references: [id], onDelete: Cascade)
   variant ProductVariant?  @relation(fields: [variantId], references: [id], onDelete: Cascade)
   daily   PromoDailyQuota[]
   claims  PromoClaim[]
 
   @@index([isActive, startAt, endAt])
-  @@index([voucherId])
   @@index([productId])
   @@index([variantId, isActive, startAt, endAt])
   @@map("promolanding")
@@ -1170,7 +1166,6 @@ model PromoClaim {
   promoId         Int
   quotaDate       DateTime @db.Date
   visitorKeyHash  String   @db.Char(64)
-  voucherCode     String
   claimedAt       DateTime @default(now())
 
   promo PromoLanding @relation(fields: [promoId], references: [id], onDelete: Cascade)
@@ -1201,7 +1196,6 @@ model VoucherProduct {
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@unique([voucherId, productId])
-  @@index([voucherId])
   @@index([productId])
   @@map("voucherproduct")
 }

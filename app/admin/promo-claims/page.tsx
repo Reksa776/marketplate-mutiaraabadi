@@ -4,7 +4,6 @@ import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { FiGift, FiExternalLink, FiPlus, FiRefreshCw } from "react-icons/fi";
 
-type Voucher = { id: number; code: string; isActive: boolean };
 type Product = {
     id: number;
     name: string;
@@ -16,9 +15,6 @@ type Promo = {
     slug: string;
     title: string;
     description: string | null;
-    voucherId: number;
-    voucherCode: string;
-    voucherActive: boolean;
     productId: number | null;
     productName: string | null;
     productSlug: string | null;
@@ -37,7 +33,6 @@ type FormState = {
     slug: string;
     title: string;
     description: string;
-    voucherId: string;
     productId: string;
     variantId: string;
     promoPrice: string;
@@ -51,7 +46,6 @@ const emptyForm: FormState = {
     slug: "",
     title: "",
     description: "",
-    voucherId: "",
     productId: "",
     variantId: "",
     promoPrice: "",
@@ -91,7 +85,6 @@ function readableDate(value: string) {
 
 export default function PromoClaimsAdminPage() {
     const [items, setItems] = useState<Promo[]>([]);
-    const [vouchers, setVouchers] = useState<Voucher[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
     const [form, setForm] = useState<FormState>(emptyForm);
     const [editingId, setEditingId] = useState<number | null>(null);
@@ -104,27 +97,21 @@ export default function PromoClaimsAdminPage() {
         setLoading(true);
         setError("");
         try {
-            const [promoResponse, voucherResponse, productResponse] = await Promise.all([
+            const [promoResponse, productResponse] = await Promise.all([
                 fetch("/api/admin/promo-claims", { cache: "no-store" }),
-                fetch("/api/admin/vouchers?limit=100&isActive=true", { cache: "no-store" }),
                 fetch("/api/admin/products?limit=100&archived=false", { cache: "no-store" }),
             ]);
-            const [promoResult, voucherResult, productResult] = await Promise.all([
+            const [promoResult, productResult] = await Promise.all([
                 promoResponse.json(),
-                voucherResponse.json(),
                 productResponse.json(),
             ]);
             if (!promoResponse.ok || !promoResult.success) {
                 throw new Error(promoResult.message || "Gagal memuat promo.");
             }
-            if (!voucherResponse.ok || !voucherResult.success) {
-                throw new Error(voucherResult.message || "Gagal memuat voucher.");
-            }
             if (!productResponse.ok || !productResult.success) {
                 throw new Error(productResult.message || "Gagal memuat produk.");
             }
             setItems(promoResult.data ?? []);
-            setVouchers(voucherResult.data?.items ?? []);
             setProducts(productResult.data?.items ?? []);
         } catch (cause) {
             setError(cause instanceof Error ? cause.message : "Gagal memuat data.");
@@ -143,7 +130,6 @@ export default function PromoClaimsAdminPage() {
             slug: item.slug,
             title: item.title,
             description: item.description ?? "",
-            voucherId: String(item.voucherId),
             productId: item.productId === null ? "" : String(item.productId),
             variantId: item.variantId === null ? "" : String(item.variantId),
             promoPrice: item.promoPrice === null ? "" : String(item.promoPrice),
@@ -172,7 +158,6 @@ export default function PromoClaimsAdminPage() {
         try {
             const payload = {
                 ...form,
-                voucherId: Number(form.voucherId),
                 productId: Number(form.productId),
                 variantId: Number(form.variantId),
                 promoPrice: Number(form.promoPrice),
@@ -225,7 +210,7 @@ export default function PromoClaimsAdminPage() {
                         <FiGift /> Promo Klaim Harian
                     </h1>
                     <p className="mt-1 text-sm text-gray-500">
-                        Atur halaman klaim voucher dan batas klaim per hari. Kuota direset pukul 00.00 WIB; sisa kuota tidak dibawa ke hari berikutnya.
+                        Atur harga promo produk dan batas klaim per hari. Setelah klaim, harga promo otomatis berlaku di checkout pada browser yang sama. Kuota direset pukul 00.00 WIB.
                     </p>
                 </header>
 
@@ -248,14 +233,6 @@ export default function PromoClaimsAdminPage() {
                                 <span className="text-gray-400">/promo/</span>
                                 <input required value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, "-") })} className="min-w-0 flex-1 outline-none" placeholder="promo-hari-ini" />
                             </div>
-                        </label>
-                        <label className="text-sm font-medium text-gray-700">
-                            Voucher yang diberikan
-                            <select required value={form.voucherId} onChange={(e) => setForm({ ...form, voucherId: e.target.value })} className="mt-1 h-10 w-full rounded-lg border border-gray-300 bg-white px-3">
-                                <option value="">Pilih voucher aktif</option>
-                                {vouchers.map((voucher) => <option key={voucher.id} value={voucher.id}>{voucher.code}</option>)}
-                            </select>
-                            {vouchers.length === 0 && <span className="mt-1 block text-xs text-amber-700">Belum ada voucher aktif. Buat voucher terlebih dahulu.</span>}
                         </label>
                         <label className="text-sm font-medium text-gray-700">
                             Produk promo
@@ -297,7 +274,7 @@ export default function PromoClaimsAdminPage() {
                         <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
                         Promo aktif
                     </label>
-                    <button disabled={saving || vouchers.length === 0 || products.length === 0} className="inline-flex h-10 items-center gap-2 rounded-lg bg-gray-950 px-4 text-sm font-semibold text-white disabled:opacity-50">
+                    <button disabled={saving || products.length === 0} className="inline-flex h-10 items-center gap-2 rounded-lg bg-gray-950 px-4 text-sm font-semibold text-white disabled:opacity-50">
                         {saving ? <FiRefreshCw className="animate-spin" /> : <FiPlus />}
                         {saving ? "Menyimpan..." : editingId ? "Simpan perubahan" : "Buat promo"}
                     </button>
@@ -319,9 +296,8 @@ export default function PromoClaimsAdminPage() {
                                         <div className="flex flex-wrap items-center gap-2">
                                             <h3 className="font-semibold text-gray-900">{item.title}</h3>
                                             <span className={`rounded-full px-2 py-0.5 text-xs ${item.isActive ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{item.isActive ? "Aktif" : "Nonaktif"}</span>
-                                            {!item.voucherActive && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">Voucher nonaktif</span>}
                                         </div>
-                                        <p className="mt-1 text-sm text-gray-600">Voucher <strong>{item.voucherCode}</strong> · klaim hari ini <strong>{item.claimedToday}/{item.dailyQuota}</strong></p>
+                                        <p className="mt-1 text-sm text-gray-600">Klaim hari ini <strong>{item.claimedToday}/{item.dailyQuota}</strong></p>
                                         <p className="mt-1 text-sm text-gray-600">Produk: <strong>{item.productName ? `${item.productName} / ${item.variantName ?? ""}` : "Belum disetel"}</strong>{item.promoPrice !== null && item.regularPrice !== null ? <> · Rp {item.promoPrice.toLocaleString("id-ID")} <span className="text-gray-400 line-through">Rp {item.regularPrice.toLocaleString("id-ID")}</span></> : null}</p>
                                         <p className="mt-1 text-xs text-gray-400">{readableDate(item.startAt)} — {readableDate(item.endAt)}</p>
                                         <Link href={`/promo/${item.slug}`} target="_blank" className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 underline">

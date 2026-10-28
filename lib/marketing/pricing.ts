@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { promoQuotaDate } from "@/lib/promo-claim";
 import { Voucher_type } from "@prisma/client";
 import { getActiveFlashSaleForVariant } from "./flash-sale";
 import { getActiveProductDiscount, calculateDiscountedPrice } from "./discount";
@@ -13,7 +14,7 @@ import { resolveCampaignForProduct, isCampaignActive } from "./campaign";
  *
  * Pricing priority (highest to lowest):
  * 1. FLASH SALE
- * 2. PROMO_LANDING — configured price for one variant
+ * 2. PROMO_LANDING — configured price for a variant claimed today
  * 3. PRODUCT DISCOUNT
  * 4. CAMPAIGN DISCOUNT
  * 5. ORIGINAL PRICE
@@ -86,7 +87,8 @@ export async function resolveProductPrice(
     variantId: number,
     productId: number,
     productCategory: string | null,
-    now: Date = new Date()
+    now: Date = new Date(),
+    promoClaimVisitorKeyHash?: string | null
 ): Promise<ItemPricingResult> {
     // Fetch the variant to get the original price
     const variant = await prisma.productVariant.findUnique({
@@ -124,8 +126,25 @@ export async function resolveProductPrice(
         };
     }
 
-    const promoLanding = await prisma.promoLanding.findFirst({
+    const claimedPromo = promoClaimVisitorKeyHash
+        ? await prisma.promoClaim.findFirst({
+              where: {
+                  visitorKeyHash: promoClaimVisitorKeyHash,
+                  quotaDate: promoQuotaDate(now),
+                  promo: {
+                      variantId,
+                      promoPrice: { not: null },
+                      isActive: true,
+                      startAt: { lte: now },
+                      endAt: { gte: now },
+                  },
+              },
+              select: { promoId: true },
+          })
+        : null;
+    const promoLanding = claimedPromo ? await prisma.promoLanding.findFirst({
         where: {
+            id: claimedPromo.promoId,
             variantId,
             promoPrice: { not: null },
             isActive: true,
@@ -134,7 +153,7 @@ export async function resolveProductPrice(
         },
         orderBy: { startAt: "desc" },
         select: { promoPrice: true },
-    });
+    }) : null;
     if (promoLanding && promoLanding.promoPrice !== null) {
         const promoPrice = Math.round(Number(promoLanding.promoPrice));
         if (promoPrice > 0 && promoPrice < originalPrice) {
@@ -325,7 +344,8 @@ export type PricingItemInput = {
  */
 export async function calculateItemPricing(
     items: PricingItemInput[],
-    now: Date = new Date()
+    now: Date = new Date(),
+    promoClaimVisitorKeyHash?: string | null
 ): Promise<OrderPricingResult> {
     const results: ItemPricingResult[] = [];
     let originalSubtotal = 0;
@@ -353,7 +373,8 @@ export async function calculateItemPricing(
             item.variantId,
             item.productId,
             productCategory,
-            now
+            now,
+            promoClaimVisitorKeyHash
         );
 
         // Apply quantity
@@ -429,7 +450,8 @@ export async function calculateOrderPricing(
  */
 export async function getDisplayPrice(
     variantId: number,
-    now: Date = new Date()
+    now: Date = new Date(),
+    promoClaimVisitorKeyHash?: string | null
 ) {
     const variant = await prisma.productVariant.findUnique({
         where: { id: variantId },
@@ -444,7 +466,8 @@ export async function getDisplayPrice(
         variantId,
         variant.productId,
         variant.product.category,
-        now
+        now,
+        promoClaimVisitorKeyHash
     );
 
     return {

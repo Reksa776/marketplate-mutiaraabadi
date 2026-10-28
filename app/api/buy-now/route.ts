@@ -18,6 +18,7 @@ import {
 } from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
 import { buildGuestIdentityKey } from "@/lib/guest-identity";
+import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
 import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
 import {
     readIdempotencyKey,
@@ -341,7 +342,7 @@ export async function GET(
                     quantity,
                     category: product.category,
                 },
-            ]);
+            ], new Date(), promoVisitorHashFromCookieHeader(request.headers.get("cookie")));
 
         const price =
             pricing?.effectivePrice ?? rawPrice;
@@ -710,6 +711,8 @@ export async function POST(
                 guestAddress:
                     guestAddress ?? undefined,
                 guestIdentityKey: guestIdentity,
+                promoClaimVisitorKeyHash:
+                    promoVisitorHashFromCookieHeader(request.headers.get("cookie")),
                 customerEmail:
                     user?.email ?? null,
                 idempotencyKey,
