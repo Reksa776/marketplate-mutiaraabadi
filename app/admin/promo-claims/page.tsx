@@ -19,13 +19,13 @@ type Promo = {
     voucherId: number;
     voucherCode: string;
     voucherActive: boolean;
-    productId: number;
-    productName: string;
-    productSlug: string;
-    variantId: number;
-    variantName: string;
-    regularPrice: number;
-    promoPrice: number;
+    productId: number | null;
+    productName: string | null;
+    productSlug: string | null;
+    variantId: number | null;
+    variantName: string | null;
+    regularPrice: number | null;
+    promoPrice: number | null;
     dailyQuota: number;
     claimedToday: number;
     startAt: string;
@@ -144,9 +144,9 @@ export default function PromoClaimsAdminPage() {
             title: item.title,
             description: item.description ?? "",
             voucherId: String(item.voucherId),
-            productId: String(item.productId),
-            variantId: String(item.variantId),
-            promoPrice: String(item.promoPrice),
+            productId: item.productId === null ? "" : String(item.productId),
+            variantId: item.variantId === null ? "" : String(item.variantId),
+            promoPrice: item.promoPrice === null ? "" : String(item.promoPrice),
             dailyQuota: String(item.dailyQuota),
             startAt: localDateTime(item.startAt),
             endAt: localDateTime(item.endAt),
@@ -322,7 +322,7 @@ export default function PromoClaimsAdminPage() {
                                             {!item.voucherActive && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">Voucher nonaktif</span>}
                                         </div>
                                         <p className="mt-1 text-sm text-gray-600">Voucher <strong>{item.voucherCode}</strong> · klaim hari ini <strong>{item.claimedToday}/{item.dailyQuota}</strong></p>
-                                        <p className="mt-1 text-sm text-gray-600">Produk: <strong>{item.productName} / {item.variantName}</strong> · Rp {item.promoPrice.toLocaleString("id-ID")} <span className="text-gray-400 line-through">Rp {item.regularPrice.toLocaleString("id-ID")}</span></p>
+                                        <p className="mt-1 text-sm text-gray-600">Produk: <strong>{item.productName ? `${item.productName} / ${item.variantName ?? ""}` : "Belum disetel"}</strong>{item.promoPrice !== null && item.regularPrice !== null ? <> · Rp {item.promoPrice.toLocaleString("id-ID")} <span className="text-gray-400 line-through">Rp {item.regularPrice.toLocaleString("id-ID")}</span></> : null}</p>
                                         <p className="mt-1 text-xs text-gray-400">{readableDate(item.startAt)} — {readableDate(item.endAt)}</p>
                                         <Link href={`/promo/${item.slug}`} target="_blank" className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 underline">
                                             /promo/{item.slug} <FiExternalLink />

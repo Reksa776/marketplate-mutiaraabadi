@@ -24,19 +24,23 @@ export default async function PromoLandingPage({
 
     if (!promo) notFound();
 
+    const product = promo.product && promo.variant && promo.promoPrice !== null
+        ? {
+              name: promo.product.name,
+              slug: promo.product.slug,
+              image: promo.product.image,
+              variant: promo.variant.name,
+              regularPrice: Number(promo.variant.price),
+              promoPrice: Number(promo.promoPrice),
+          }
+        : null;
+
     return (
         <PromoClaimPage
             slug={promo.slug}
             title={promo.title}
             description={promo.description}
-            product={{
-                name: promo.product.name,
-                slug: promo.product.slug,
-                image: promo.product.image,
-                variant: promo.variant.name,
-                regularPrice: Number(promo.variant.price),
-                promoPrice: Number(promo.promoPrice),
-            }}
+            product={product}
         />
     );
 }

@@ -32,7 +32,7 @@ export default function PromoClaimPage({
         variant: string;
         regularPrice: number;
         promoPrice: number;
-    };
+    } | null;
 }) {
     const [status, setStatus] = useState<PromoState | null>(null);
     const [loading, setLoading] = useState(true);
@@ -132,7 +132,7 @@ export default function PromoClaimPage({
                         <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">
                             Kuota klaim promo hari ini sudah habis atau periode promonya telah berakhir. Tenang, masih ada promo menarik lainnya.
                         </p>
-                        <Link href={`/products/${product.slug}`} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
+                        <Link href={product ? `/products/${product.slug}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
                             <FiShoppingBag /> Ambil promo yang nggak kalah lainnya di sini
                         </Link>
                     </>
@@ -144,15 +144,15 @@ export default function PromoClaimPage({
                         <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Voucher berhasil diklaim</p>
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950">Selamat, promonya buat kamu!</h1>
                         <p className="mt-3 text-sm leading-6 text-gray-600">Gunakan kode voucher ini saat checkout. Klaim browser ini sudah tercatat untuk hari ini.</p>
-                        <ProductPriceCard product={product} />
+                        {product && <ProductPriceCard product={product} />}
                         <div className="mx-auto mt-6 flex max-w-sm items-center justify-between gap-3 rounded-xl border border-dashed border-emerald-400 bg-emerald-50 px-4 py-3">
                             <code className="text-lg font-black tracking-widest text-emerald-900">{status.voucherCode}</code>
                             <button type="button" onClick={() => void copyCode()} className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-emerald-800 shadow-sm">
                                 {copied ? <FiCheck /> : <FiCopy />} {copied ? "Tersalin" : "Salin"}
                             </button>
                         </div>
-                        <Link href={`/products/${product.slug}`} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
-                            <FiShoppingBag /> Beli {product.name}
+                        <Link href={product ? `/products/${product.slug}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
+                            <FiShoppingBag /> {product ? `Beli ${product.name}` : "Lihat produk"}
                         </Link>
                     </>
                 ) : (
@@ -164,7 +164,7 @@ export default function PromoClaimPage({
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950 sm:text-4xl">Selamat!</h1>
                         <h2 className="mt-2 text-xl font-bold text-gray-800">{title}</h2>
                         {description && <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">{description}</p>}
-                        <ProductPriceCard product={product} />
+                        {product && <ProductPriceCard product={product} />}
                         <p className="mt-5 text-sm text-gray-500">Kuota klaim hari ini tersisa <strong className="text-gray-900">{status?.remaining ?? 0}</strong>.</p>
                         <button type="button" disabled={claiming || !status?.claimable} onClick={() => void claim()} className="mt-6 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-6 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-wait disabled:opacity-60">
                             <FiGift /> {claiming ? "Memproses klaim..." : "Klaim Voucher"}

@@ -127,6 +127,7 @@ export async function resolveProductPrice(
     const promoLanding = await prisma.promoLanding.findFirst({
         where: {
             variantId,
+            promoPrice: { not: null },
             isActive: true,
             startAt: { lte: now },
             endAt: { gte: now },
@@ -134,7 +135,7 @@ export async function resolveProductPrice(
         orderBy: { startAt: "desc" },
         select: { promoPrice: true },
     });
-    if (promoLanding) {
+    if (promoLanding && promoLanding.promoPrice !== null) {
         const promoPrice = Math.round(Number(promoLanding.promoPrice));
         if (promoPrice > 0 && promoPrice < originalPrice) {
             return {

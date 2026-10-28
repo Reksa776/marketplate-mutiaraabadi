@@ -139,6 +139,7 @@ export async function resolveBatchPrices(
     const promoLandings = await prisma.promoLanding.findMany({
         where: {
             variantId: { in: variantIds },
+            promoPrice: { not: null },
             isActive: true,
             startAt: { lte: now },
             endAt: { gte: now },
@@ -146,9 +147,12 @@ export async function resolveBatchPrices(
         orderBy: { startAt: "desc" },
         select: { variantId: true, promoPrice: true },
     });
-    const promoPriceMap = new Map(
-        promoLandings.map((promo) => [promo.variantId, Number(promo.promoPrice)])
-    );
+    const promoPriceMap = new Map<number, number>();
+    for (const promo of promoLandings) {
+        if (promo.variantId !== null && promo.promoPrice !== null) {
+            promoPriceMap.set(promo.variantId, Number(promo.promoPrice));
+        }
+    }
 
     // ==========================================
     // BATCH 2: Product Discounts
