@@ -775,6 +775,7 @@ model Voucher {
   productRestrictions  VoucherProduct[]
   categoryRestrictions VoucherCategory[]
   userUsages           VoucherUserUsage[]
+  promoLandings        PromoLanding[]
 
   @@index([isActive])
   @@map("voucher")
@@ -1111,6 +1112,61 @@ model Promotion {
   @@index([placement, isActive])
   @@index([startAt, endAt])
   @@map("promotion")
+}
+
+// ------------------------------------------
+// CLAIMABLE PROMO LANDING PAGES
+// ------------------------------------------
+
+model PromoLanding {
+  id          Int      @id @default(autoincrement())
+  slug        String   @unique
+  title       String
+  description String?  @db.Text
+  voucherId   Int
+  dailyQuota  Int
+  startAt     DateTime
+  endAt       DateTime
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  voucher Voucher          @relation(fields: [voucherId], references: [id], onDelete: Restrict)
+  daily   PromoDailyQuota[]
+  claims  PromoClaim[]
+
+  @@index([isActive, startAt, endAt])
+  @@index([voucherId])
+  @@map("promolanding")
+}
+
+model PromoDailyQuota {
+  id           Int      @id @default(autoincrement())
+  promoId      Int
+  quotaDate    DateTime @db.Date
+  claimedCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  promo PromoLanding @relation(fields: [promoId], references: [id], onDelete: Cascade)
+
+  @@unique([promoId, quotaDate])
+  @@map("promodailyquota")
+}
+
+model PromoClaim {
+  id              Int      @id @default(autoincrement())
+  promoId         Int
+  quotaDate       DateTime @db.Date
+  visitorKeyHash  String   @db.Char(64)
+  voucherCode     String
+  claimedAt       DateTime @default(now())
+
+  promo PromoLanding @relation(fields: [promoId], references: [id], onDelete: Cascade)
+
+  @@unique([promoId, quotaDate, visitorKeyHash])
+  @@index([promoId, quotaDate])
+  @@map("promoclaim")
 }
 
 enum PromotionPlacement {

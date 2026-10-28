@@ -39,6 +39,7 @@ import {
     FiHeart,
     FiDisc,
     FiRefreshCw,
+    FiGift,
 } from "react-icons/fi";
 import { useState } from "react";
 
@@ -94,6 +95,7 @@ const menuItems: NavItem[] = [
             { label: "Kampanye", href: "/admin/campaigns", icon: FiTarget },
             { label: "Diskon Produk", href: "/admin/discounts", icon: FiPercent },
             { label: "Voucher & Promo Code", href: "/admin/vouchers", icon: FiTag },
+            { label: "Promo Klaim Harian", href: "/admin/promo-claims", icon: FiGift },
             { label: "Beli Banyak Lebih Hemat", href: "/admin/bulk-discounts", icon: FiShoppingCart },
             { label: "Diskon Ongkir", href: "/admin/shipping-discounts", icon: FiTruck },
             { label: "Promosi / Banner", href: "/admin/promotions", icon: FiImage },
