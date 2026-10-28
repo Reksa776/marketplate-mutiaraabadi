@@ -4,6 +4,9 @@ CREATE TABLE `promolanding` (
     `title` VARCHAR(191) NOT NULL,
     `description` TEXT NULL,
     `voucherId` INTEGER NOT NULL,
+    `productId` INTEGER NOT NULL,
+    `variantId` INTEGER NOT NULL,
+    `promoPrice` DECIMAL(12, 2) NOT NULL,
     `dailyQuota` INTEGER NOT NULL,
     `startAt` DATETIME(3) NOT NULL,
     `endAt` DATETIME(3) NOT NULL,
@@ -14,6 +17,8 @@ CREATE TABLE `promolanding` (
     UNIQUE INDEX `promolanding_slug_key`(`slug`),
     INDEX `promolanding_isActive_startAt_endAt_idx`(`isActive`, `startAt`, `endAt`),
     INDEX `promolanding_voucherId_idx`(`voucherId`),
+    INDEX `promolanding_productId_idx`(`productId`),
+    INDEX `promolanding_variantId_isActive_startAt_endAt_idx`(`variantId`, `isActive`, `startAt`, `endAt`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -46,6 +51,16 @@ ALTER TABLE `promolanding`
     ADD CONSTRAINT `promolanding_voucherId_fkey`
     FOREIGN KEY (`voucherId`) REFERENCES `voucher`(`id`)
     ON DELETE RESTRICT ON UPDATE CASCADE;
+
+ALTER TABLE `promolanding`
+    ADD CONSTRAINT `promolanding_productId_fkey`
+    FOREIGN KEY (`productId`) REFERENCES `product`(`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE `promolanding`
+    ADD CONSTRAINT `promolanding_variantId_fkey`
+    FOREIGN KEY (`variantId`) REFERENCES `productvariant`(`id`)
+    ON DELETE CASCADE ON UPDATE CASCADE;
 
 ALTER TABLE `promodailyquota`
     ADD CONSTRAINT `promodailyquota_promoId_fkey`

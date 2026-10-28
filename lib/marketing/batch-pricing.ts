@@ -14,11 +14,12 @@ import { getActiveCampaigns, isCampaignActive } from "./campaign";
  * - Checkout order creation (authoritative)
  * - Buy Now page (display)
  *
- * Pricing priority (Phase 3 rules):
- * 1. FLASH_SALE — highest, overrides all
- * 2. PRODUCT_DISCOUNT — per-product/variant
- * 3. CAMPAIGN_DISCOUNT — campaign-wide
- * 4. ORIGINAL — raw variant.price
+ * Pricing priority:
+ * 1. FLASH_SALE
+ * 2. PROMO_LANDING — one configured variant price
+ * 3. PRODUCT_DISCOUNT
+ * 4. CAMPAIGN_DISCOUNT
+ * 5. ORIGINAL — raw variant.price
  */
 
 export type BatchPricingItemInput = {
@@ -38,6 +39,7 @@ export type BatchPricingResult = {
     source:
         | "ORIGINAL"
         | "FLASH_SALE"
+        | "PROMO_LANDING"
         | "PRODUCT_DISCOUNT"
         | "CAMPAIGN"
         | "BULK_DISCOUNT";
@@ -94,9 +96,8 @@ export async function resolveOrderCampaignId(
  * Resolve marketing prices for a batch of items.
  *
  * Performs 3 batch queries regardless of item count:
- * 1. Flash sales (batch by variant IDs)
- * 2. Product discounts (batch by product/variant IDs)
- * 3. Active campaigns (single query)
+ * Active price and discount rows are fetched in batches, including
+ * landing-page promo prices for their configured variants.
  *
  * Then resolves pricing in-memory per item.
  *
@@ -133,6 +134,20 @@ export async function resolveBatchPrices(
 
     const flashSaleMap = new Map(
         flashSales.map((fs) => [fs.variantId, fs])
+    );
+
+    const promoLandings = await prisma.promoLanding.findMany({
+        where: {
+            variantId: { in: variantIds },
+            isActive: true,
+            startAt: { lte: now },
+            endAt: { gte: now },
+        },
+        orderBy: { startAt: "desc" },
+        select: { variantId: true, promoPrice: true },
+    });
+    const promoPriceMap = new Map(
+        promoLandings.map((promo) => [promo.variantId, Number(promo.promoPrice)])
     );
 
     // ==========================================
@@ -279,7 +294,16 @@ export async function resolveBatchPrices(
             return result;
         }
 
-        // 2. PRODUCT DISCOUNT
+        // 2. CLAIMABLE PROMO PRODUCT PRICE
+        const promoPrice = promoPriceMap.get(item.variantId);
+        if (promoPrice !== undefined && promoPrice > 0 && promoPrice < item.originalPrice) {
+            result.effectivePrice = Math.round(promoPrice);
+            result.discountAmount = item.originalPrice - result.effectivePrice;
+            result.source = "PROMO_LANDING";
+            return result;
+        }
+
+        // 3. PRODUCT DISCOUNT
         const discount =
             discountMap.get(item.variantId) ??
             discountMap.get(-item.productId);
@@ -306,7 +330,7 @@ export async function resolveBatchPrices(
             return result;
         }
 
-        // 3. CAMPAIGN DISCOUNT
+        // 4. CAMPAIGN DISCOUNT
         for (const campaign of activeCampaigns) {
             let targets = false;
             if (campaign.type === "GENERAL") {

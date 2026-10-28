@@ -12,10 +12,11 @@ import { resolveCampaignForProduct, isCampaignActive } from "./campaign";
  * The most important service in the marketing system.
  *
  * Pricing priority (highest to lowest):
- * 1. FLASH SALE — highest priority, overrides everything
- * 2. PRODUCT DISCOUNT — per-product/variant discount
- * 3. CAMPAIGN DISCOUNT — campaign-wide discount
- * 4. ORIGINAL PRICE — no discount
+ * 1. FLASH SALE
+ * 2. PROMO_LANDING — configured price for one variant
+ * 3. PRODUCT DISCOUNT
+ * 4. CAMPAIGN DISCOUNT
+ * 5. ORIGINAL PRICE
  *
  * IMPORTANT RULES:
  * - Flash Sale has highest priority
@@ -35,6 +36,7 @@ import { resolveCampaignForProduct, isCampaignActive } from "./campaign";
 
 export type PriceSource =
     | "ORIGINAL"
+    | "PROMO_LANDING"
     | "PRODUCT_DISCOUNT"
     | "CAMPAIGN_DISCOUNT"
     | "FLASH_SALE";
@@ -122,8 +124,38 @@ export async function resolveProductPrice(
         };
     }
 
+    const promoLanding = await prisma.promoLanding.findFirst({
+        where: {
+            variantId,
+            isActive: true,
+            startAt: { lte: now },
+            endAt: { gte: now },
+        },
+        orderBy: { startAt: "desc" },
+        select: { promoPrice: true },
+    });
+    if (promoLanding) {
+        const promoPrice = Math.round(Number(promoLanding.promoPrice));
+        if (promoPrice > 0 && promoPrice < originalPrice) {
+            return {
+                productId,
+                variantId,
+                originalPrice,
+                finalPrice: promoPrice,
+                discountAmount: originalPrice - promoPrice,
+                discountType: "FIXED",
+                source: "PROMO_LANDING",
+                campaignId: null,
+                productDiscountId: null,
+                flashSaleId: null,
+                quantity: 1,
+                itemSubtotal: promoPrice,
+            };
+        }
+    }
+
     // ==========================================
-    // 2. PRODUCT DISCOUNT
+    // 3. PRODUCT DISCOUNT
     // ==========================================
 
     const productDiscount = await getActiveProductDiscount(

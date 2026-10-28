@@ -16,10 +16,27 @@ export default async function PromoLandingPage({
             slug: true,
             title: true,
             description: true,
+            promoPrice: true,
+            product: { select: { name: true, slug: true, image: true } },
+            variant: { select: { name: true, price: true } },
         },
     });
 
     if (!promo) notFound();
 
-    return <PromoClaimPage {...promo} />;
+    return (
+        <PromoClaimPage
+            slug={promo.slug}
+            title={promo.title}
+            description={promo.description}
+            product={{
+                name: promo.product.name,
+                slug: promo.product.slug,
+                image: promo.product.image,
+                variant: promo.variant.name,
+                regularPrice: Number(promo.variant.price),
+                promoPrice: Number(promo.promoPrice),
+            }}
+        />
+    );
 }
