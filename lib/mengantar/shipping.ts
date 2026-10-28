@@ -343,7 +343,9 @@ export async function buildMengantarShippingOptions({
             (c) => c.toLowerCase() === courierName.toLowerCase()
         );
 
-        if (!matched) continue;
+        if (!matched || (matched !== "JNE" && matched !== "JT")) {
+            continue;
+        }
 
         const option = entryToOption(
             matched as MengantarCourier,
@@ -377,9 +379,9 @@ export async function verifyMengantarShippingCost({
 }): Promise<number | null> {
     const shippingCourier = toMengantarCourier(courier);
 
-    if (!shippingCourier) {
+    if (!shippingCourier || (shippingCourier !== "JNE" && shippingCourier !== "JT")) {
         throw new MengantarError(
-            "Kurir tidak tersedia di Mengantar."
+            "Saat ini hanya kurir JNE dan J&T yang tersedia."
         );
     }
 

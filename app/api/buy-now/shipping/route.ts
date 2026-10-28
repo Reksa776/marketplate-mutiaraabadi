@@ -54,7 +54,7 @@ export async function POST(request: Request) {
             origin,
             destination,
             weight,
-            courier = "jne:jnt:sicepat",
+            courier = "jne:jnt",
         } = body;
 
         const originId = Number(origin);
@@ -127,11 +127,11 @@ export async function POST(request: Request) {
 
         /*
          * Courier allowlist: only known couriers are forwarded to
-         * RajaOngkir. Default remains jne:jnt:sicepat.
+         * RajaOngkir. Only JNE and J&T are allowed.
          */
         const allowedCouriers =
             sanitizeCouriers(courier) ||
-            sanitizeCouriers("jne:jnt:sicepat");
+            sanitizeCouriers("jne:jnt");
 
         if (!allowedCouriers) {
             return NextResponse.json(

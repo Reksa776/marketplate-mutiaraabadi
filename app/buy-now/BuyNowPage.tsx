@@ -2089,8 +2089,7 @@ export default function BuyNowPage({
 
                                                     weight,
 
-                                                    courier:
-                                                        "jne:jnt:sicepat",
+                                                    courier: "jne:jnt",
 
                                                     price:
                                                         "lowest",
@@ -3909,7 +3908,9 @@ export default function BuyNowPage({
                                                             <div>
                                                                 <div className="font-bold uppercase">
                                                                     {
-                                                                        courier
+                                                                        courier === "JT"
+                                                                            ? "JNT"
+                                                                            : courier
                                                                     }
                                                                 </div>
 

@@ -15,21 +15,6 @@ export const RAJAONGKIR_API_KEY =
 export const COURIER_ALLOWLIST = [
     "jne",
     "jnt",
-    "sicepat",
-    "ide",
-    "sap",
-    "ninja",
-    "tiki",
-    "lion",
-    "anteraja",
-    "pos",
-    "ncs",
-    "rex",
-    "rpx",
-    "sentral",
-    "star",
-    "wahana",
-    "dse",
 ] as const;
 
 type RajaOngkirResponse<T = unknown> = {
@@ -162,7 +147,7 @@ export async function calculateDomesticCost({
 
     const allowedCouriers = sanitizeCouriers(
         courier ||
-            "jne:jnt:sicepat:ide:sap:ninja:tiki:lion:anteraja:pos:ncs:rex:rpx:sentral:star:wahana:dse"
+            "jne:jnt"
     );
 
     if (!allowedCouriers) {

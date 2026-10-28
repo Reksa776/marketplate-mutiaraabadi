@@ -1588,8 +1588,7 @@ export default function CheckoutPage() {
 
                             weight,
 
-                            courier:
-                                "jne:jnt:sicepat",
+                            courier: "jne:jnt",
 
                             price: "lowest",
                         }),
@@ -3088,7 +3087,9 @@ export default function CheckoutPage() {
 
                                                                 <div className="font-bold uppercase">
                                                                     {
-                                                                        courier
+                                                                        courier === "JT"
+                                                                            ? "JNT"
+                                                                            : courier
                                                                     }
                                                                 </div>
 
