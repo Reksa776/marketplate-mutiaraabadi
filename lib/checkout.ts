@@ -195,6 +195,8 @@ export type CheckoutItem = {
     quantity: number;
     subtotal: number;
     promoLandingId?: number;
+    /** Regular unit price used for units beyond the single promo unit. */
+    promoRegularPrice?: number;
 };
 
 export type MidtransItem = {
@@ -620,6 +622,9 @@ async function resolveBatchMarketingPricing(
         const pricing = results[idx];
         if (!pricing) continue;
 
+        if (pricing.promoLandingId !== null) {
+            item.promoRegularPrice = pricing.originalPrice;
+        }
         item.price = pricing.effectivePrice;
         item.subtotal = pricing.effectivePrice * item.quantity;
         item.promoLandingId = pricing.promoLandingId ?? undefined;
@@ -1725,20 +1730,51 @@ export async function createCheckoutOrder(
                 input.promoClaimVisitorKeyHash
             );
 
+            // A claim discounts one unit across the whole order. Split the
+            // priced line so payment and order items charge regular price
+            // for any remaining units (including duplicate cart lines).
+            const promoUnitsAllocated = new Map<number, number>();
+            checkoutItems = checkoutItems.flatMap((item) => {
+                if (item.promoLandingId === undefined) return [item];
+
+                const promoId = item.promoLandingId;
+                const alreadyAllocated = promoUnitsAllocated.get(promoId) ?? 0;
+                const promoQuantity = Math.min(
+                    item.quantity,
+                    Math.max(0, 1 - alreadyAllocated)
+                );
+                const regularQuantity = item.quantity - promoQuantity;
+                const regularPrice = item.promoRegularPrice ?? item.price;
+                const line = { ...item };
+                delete line.promoRegularPrice;
+
+                if (promoQuantity > 0) {
+                    promoUnitsAllocated.set(promoId, alreadyAllocated + promoQuantity);
+                }
+
+                const lines: CheckoutItem[] = [];
+                if (promoQuantity > 0) {
+                    lines.push({
+                        ...line,
+                        quantity: promoQuantity,
+                        subtotal: item.price * promoQuantity,
+                    });
+                }
+                if (regularQuantity > 0) {
+                    lines.push({
+                        ...line,
+                        price: regularPrice,
+                        quantity: regularQuantity,
+                        subtotal: regularPrice * regularQuantity,
+                        promoLandingId: undefined,
+                    });
+                }
+                return lines;
+            });
+
             const appliedPromoItems = checkoutItems.filter(
                 (item) => item.promoLandingId !== undefined
             );
-            const promoQuantityById = new Map<number, number>();
-            for (const item of appliedPromoItems) {
-                const promoId = item.promoLandingId!;
-                promoQuantityById.set(
-                    promoId,
-                    (promoQuantityById.get(promoId) ?? 0) + item.quantity
-                );
-            }
-            if ([...promoQuantityById.values()].some((quantity) => quantity > 1)) {
-                throw new Error("Promo hanya berlaku untuk 1 produk per checkout.");
-            }
             if (input.paymentMethod === "COD" && appliedPromoItems.length > 0) {
                 throw new Error("Promo klaim hanya berlaku untuk pembayaran non-COD.");
             }
