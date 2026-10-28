@@ -1728,6 +1728,17 @@ export async function createCheckoutOrder(
             const appliedPromoItems = checkoutItems.filter(
                 (item) => item.promoLandingId !== undefined
             );
+            const promoQuantityById = new Map<number, number>();
+            for (const item of appliedPromoItems) {
+                const promoId = item.promoLandingId!;
+                promoQuantityById.set(
+                    promoId,
+                    (promoQuantityById.get(promoId) ?? 0) + item.quantity
+                );
+            }
+            if ([...promoQuantityById.values()].some((quantity) => quantity > 1)) {
+                throw new Error("Promo hanya berlaku untuk 1 produk per checkout.");
+            }
             if (input.paymentMethod === "COD" && appliedPromoItems.length > 0) {
                 throw new Error("Promo klaim hanya berlaku untuk pembayaran non-COD.");
             }
