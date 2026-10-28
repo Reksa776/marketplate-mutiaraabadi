@@ -1166,6 +1166,7 @@ model PromoClaim {
   promoId         Int
   quotaDate       DateTime @db.Date
   visitorKeyHash  String   @db.Char(64)
+  checkoutOrderId Int?     @unique
   claimedAt       DateTime @default(now())
 
   promo PromoLanding @relation(fields: [promoId], references: [id], onDelete: Cascade)

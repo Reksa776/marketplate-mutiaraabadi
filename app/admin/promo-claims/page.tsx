@@ -297,7 +297,7 @@ export default function PromoClaimsAdminPage() {
                                             <h3 className="font-semibold text-gray-900">{item.title}</h3>
                                             <span className={`rounded-full px-2 py-0.5 text-xs ${item.isActive ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-500"}`}>{item.isActive ? "Aktif" : "Nonaktif"}</span>
                                         </div>
-                                        <p className="mt-1 text-sm text-gray-600">Klaim hari ini <strong>{item.claimedToday}/{item.dailyQuota}</strong></p>
+                                        <p className="mt-1 text-sm text-gray-600">Checkout promo hari ini <strong>{item.claimedToday}/{item.dailyQuota}</strong></p>
                                         <p className="mt-1 text-sm text-gray-600">Produk: <strong>{item.productName ? `${item.productName} / ${item.variantName ?? ""}` : "Belum disetel"}</strong>{item.promoPrice !== null && item.regularPrice !== null ? <> · Rp {item.promoPrice.toLocaleString("id-ID")} <span className="text-gray-400 line-through">Rp {item.regularPrice.toLocaleString("id-ID")}</span></> : null}</p>
                                         <p className="mt-1 text-xs text-gray-400">{readableDate(item.startAt)} — {readableDate(item.endAt)}</p>
                                         <Link href={`/promo/${item.slug}`} target="_blank" className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 underline">

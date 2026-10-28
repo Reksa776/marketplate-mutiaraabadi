@@ -50,6 +50,7 @@ export type BatchPricingResult = {
     bulkDiscountName: string | null;
     bulkMinQuantity: number | null;
     campaignId: number | null;
+    promoLandingId: number | null;
 };
 
 /**
@@ -143,6 +144,7 @@ export async function resolveBatchPrices(
               where: {
                   visitorKeyHash: promoClaimVisitorKeyHash,
                   quotaDate: promoQuotaDate(now),
+                  checkoutOrderId: null,
                   promo: {
                       isActive: true,
                       startAt: { lte: now },
@@ -165,13 +167,13 @@ export async function resolveBatchPrices(
             endAt: { gte: now },
         },
         orderBy: { startAt: "desc" },
-        select: { variantId: true, promoPrice: true },
+        select: { id: true, variantId: true, promoPrice: true },
           })
         : [];
-    const promoPriceMap = new Map<number, number>();
+    const promoPriceMap = new Map<number, { price: number; promoId: number }>();
     for (const promo of promoLandings) {
         if (promo.variantId !== null && promo.promoPrice !== null) {
-            promoPriceMap.set(promo.variantId, Number(promo.promoPrice));
+            promoPriceMap.set(promo.variantId, { price: Number(promo.promoPrice), promoId: promo.id });
         }
     }
 
@@ -301,6 +303,7 @@ export async function resolveBatchPrices(
             bulkDiscountName: null,
             bulkMinQuantity: null,
             campaignId: null,
+            promoLandingId: null,
         };
 
         // 1. FLASH SALE — highest priority
@@ -320,11 +323,12 @@ export async function resolveBatchPrices(
         }
 
         // 2. CLAIMABLE PROMO PRODUCT PRICE
-        const promoPrice = promoPriceMap.get(item.variantId);
-        if (promoPrice !== undefined && promoPrice > 0 && promoPrice < item.originalPrice) {
-            result.effectivePrice = Math.round(promoPrice);
+        const promo = promoPriceMap.get(item.variantId);
+        if (promo && promo.price > 0 && promo.price < item.originalPrice) {
+            result.effectivePrice = Math.round(promo.price);
             result.discountAmount = item.originalPrice - result.effectivePrice;
             result.source = "PROMO_LANDING";
+            result.promoLandingId = promo.promoId;
             return result;
         }
 

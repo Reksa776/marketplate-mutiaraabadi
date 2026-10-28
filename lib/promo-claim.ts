@@ -93,27 +93,16 @@ export async function claimDailyPromo(input: {
                 };
             }
 
-            await tx.promoDailyQuota.upsert({
+            const daily = await tx.promoDailyQuota.findUnique({
                 where: {
                     promoId_quotaDate: {
                         promoId: promo.id,
                         quotaDate,
                     },
                 },
-                create: { promoId: promo.id, quotaDate },
-                update: {},
+                select: { claimedCount: true },
             });
-
-            const reservation = await tx.promoDailyQuota.updateMany({
-                where: {
-                    promoId: promo.id,
-                    quotaDate,
-                    claimedCount: { lt: promo.dailyQuota },
-                },
-                data: { claimedCount: { increment: 1 } },
-            });
-
-            if (reservation.count !== 1) {
+            if ((daily?.claimedCount ?? 0) >= promo.dailyQuota) {
                 return { status: "QUOTA_EXHAUSTED" };
             }
 
@@ -131,8 +120,7 @@ export async function claimDailyPromo(input: {
             };
         });
     } catch (error) {
-        // Concurrent requests from the same browser are idempotent. The
-        // losing transaction rolls its quota increment back before this read.
+        // Concurrent requests from the same browser are idempotent.
         if ((error as { code?: string })?.code === "P2002") {
             const promo = await prisma.promoLanding.findUnique({
                 where: { slug: input.slug },

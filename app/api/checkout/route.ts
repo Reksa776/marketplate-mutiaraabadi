@@ -336,6 +336,7 @@ export async function GET(request: NextRequest) {
                         null,
 
                     price: effectivePrice,
+                    priceSource: pricing?.source ?? "ORIGINAL",
                     originalPrice:
                         pricing
                             ?.originalPrice ??
@@ -353,11 +354,6 @@ export async function GET(request: NextRequest) {
                         (pricing
                             ?.discountAmount ??
                             0) > 0,
-                    priceSource:
-                        pricing
-                            ?.source ??
-                        "ORIGINAL",
-
                     quantity,
                     availableStock,
                     stockStatus,
@@ -406,6 +402,8 @@ export async function GET(request: NextRequest) {
 
             data: {
                 items,
+
+                promoClaimed: items.some((item) => item.priceSource === "PROMO_LANDING"),
 
                 subtotal,
 

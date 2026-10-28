@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { FiCheck, FiGift, FiShoppingBag } from "react-icons/fi";
 
@@ -17,11 +18,15 @@ type PromoState = {
 
 export default function PromoClaimPage({
     slug,
+    productId,
+    variantId,
     title,
     description,
     product,
 }: {
     slug: string;
+    productId: number | null;
+    variantId: number | null;
     title: string;
     description: string | null;
     product: {
@@ -33,6 +38,7 @@ export default function PromoClaimPage({
         promoPrice: number;
     } | null;
 }) {
+    const router = useRouter();
     const [status, setStatus] = useState<PromoState | null>(null);
     const [loading, setLoading] = useState(true);
     const [claiming, setClaiming] = useState(false);
@@ -93,11 +99,15 @@ export default function PromoClaimPage({
                 return;
             }
             if (!response.ok || !result.success) {
-                throw new Error(result.message || "Voucher belum bisa diklaim.");
+                throw new Error(result.message || "Promo belum bisa diklaim.");
+            }
+            if (productId && variantId) {
+                router.replace(`/buy-now?productId=${productId}&variantId=${variantId}&quantity=1&promo=${encodeURIComponent(slug)}`);
+                return;
             }
             await refresh();
         } catch (cause) {
-            setError(cause instanceof Error ? cause.message : "Voucher belum bisa diklaim.");
+            setError(cause instanceof Error ? cause.message : "Promo belum bisa diklaim.");
         } finally {
             setClaiming(false);
         }
@@ -121,7 +131,7 @@ export default function PromoClaimPage({
                         <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">{title}</p>
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950 sm:text-4xl">Kamu terlambat</h1>
                         <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">
-                            Kuota klaim promo hari ini sudah habis atau periode promonya telah berakhir. Tenang, masih ada promo menarik lainnya.
+                            Kuota promo hari ini sudah habis atau periode promonya telah berakhir. Tenang, masih ada promo menarik lainnya.
                         </p>
                         <Link href={product ? `/products/${product.slug}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
                             <FiShoppingBag /> Ambil promo yang nggak kalah lainnya di sini
@@ -150,7 +160,7 @@ export default function PromoClaimPage({
                         <h2 className="mt-2 text-xl font-bold text-gray-800">{title}</h2>
                         {description && <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">{description}</p>}
                         {product && <ProductPriceCard product={product} />}
-                        <p className="mt-5 text-sm text-gray-500">Kuota klaim hari ini tersisa <strong className="text-gray-900">{status?.remaining ?? 0}</strong>.</p>
+                        <p className="mt-5 text-sm text-gray-500">Kuota promo hari ini tersisa <strong className="text-gray-900">{status?.remaining ?? 0}</strong>.</p>
                         <button type="button" disabled={claiming || !status?.claimable} onClick={() => void claim()} className="mt-6 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-6 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-wait disabled:opacity-60">
                             <FiGift /> {claiming ? "Mengaktifkan promo..." : "Klaim Promo"}
                         </button>

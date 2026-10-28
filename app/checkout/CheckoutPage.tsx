@@ -55,6 +55,7 @@ type CheckoutItem = {
     image: string | null;
 
     price: number;
+    priceSource?: string;
     originalPrice?: number;
     /** DISPLAY-ONLY "Harga Coret" (never charged). */
     comparePrice?: number | null;
@@ -78,6 +79,7 @@ type CheckoutItem = {
 
 type CheckoutData = {
     items: CheckoutItem[];
+    promoClaimed?: boolean;
     subtotal: number;
     totalWeight: number;
     invalidCount: number;
@@ -1153,6 +1155,10 @@ export default function CheckoutPage() {
             }
 
             setData(result.data);
+            if (result.data.promoClaimed) {
+                setPaymentMethod("BANK_TRANSFER");
+                setPaymentChannel("bca");
+            }
 
             const defaultAddress =
                 result.data.addresses.find(
@@ -3140,7 +3146,8 @@ export default function CheckoutPage() {
                                 Metode Pembayaran
                             </h3>
 
-                            {/* COD */}
+                            {/* Claimed promo requires prepaid payment. */}
+                            {!data?.promoClaimed && (
                             <label className="flex cursor-pointer items-center gap-3 rounded-lg border p-4">
                                 <input
                                     type="radio"
@@ -3163,6 +3170,7 @@ export default function CheckoutPage() {
                                     </div>
                                 </div>
                             </label>
+                            )}
 
                             {/* BANK TRANSFER */}
                             <div className={`rounded-lg border p-4 ${iPaymuMinBlocked ? "opacity-60" : ""}`}>

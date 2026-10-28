@@ -407,6 +407,8 @@ export async function GET(
 
             subtotal,
 
+            promoClaimed: pricing?.source === "PROMO_LANDING",
+
             totalWeight,
 
             /*

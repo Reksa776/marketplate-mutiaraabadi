@@ -16,6 +16,7 @@ import {
     resolveBatchPrices,
     resolveOrderCampaignId,
 } from "./marketing/batch-pricing";
+import { promoQuotaDate } from "./promo-claim";
 import {
     calculateShippingDiscount,
     reserveShippingDiscountUsage,
@@ -193,6 +194,7 @@ export type CheckoutItem = {
     price: number;
     quantity: number;
     subtotal: number;
+    promoLandingId?: number;
 };
 
 export type MidtransItem = {
@@ -620,6 +622,7 @@ async function resolveBatchMarketingPricing(
 
         item.price = pricing.effectivePrice;
         item.subtotal = pricing.effectivePrice * item.quantity;
+        item.promoLandingId = pricing.promoLandingId ?? undefined;
 
         if (pricing.flashSaleId) {
             (item as any).flashSaleId = pricing.flashSaleId;
@@ -1722,6 +1725,13 @@ export async function createCheckoutOrder(
                 input.promoClaimVisitorKeyHash
             );
 
+            const appliedPromoItems = checkoutItems.filter(
+                (item) => item.promoLandingId !== undefined
+            );
+            if (input.paymentMethod === "COD" && appliedPromoItems.length > 0) {
+                throw new Error("Promo klaim hanya berlaku untuk pembayaran non-COD.");
+            }
+
             /*
              * ==========================================
              * CAMPAIGN CONTEXT FOR VOUCHER
@@ -2567,6 +2577,50 @@ export async function createCheckoutOrder(
                     },
                 });
 
+            // Reserve the daily quota only after the non-COD order has
+            // been created successfully. This is inside the same database
+            // transaction, so a failed checkout rolls back the quota and
+            // claim reservation together with the order.
+            if (appliedPromoItems.length > 0) {
+                if (!input.promoClaimVisitorKeyHash) {
+                    throw new Error("Klaim promo tidak ditemukan di browser ini.");
+                }
+                const quotaDate = promoQuotaDate();
+                for (const promoId of new Set(appliedPromoItems.map((item) => item.promoLandingId!))) {
+                    const promo = await tx.promoLanding.findUnique({
+                        where: { id: promoId },
+                        select: { dailyQuota: true, isActive: true, startAt: true, endAt: true },
+                    });
+                    if (!promo || !promo.isActive || promo.startAt > new Date() || promo.endAt < new Date()) {
+                        throw new Error("Promo sudah tidak aktif. Silakan periksa kembali checkout.");
+                    }
+                    await tx.promoDailyQuota.upsert({
+                        where: { promoId_quotaDate: { promoId, quotaDate } },
+                        create: { promoId, quotaDate },
+                        update: {},
+                    });
+                    const reserved = await tx.promoDailyQuota.updateMany({
+                        where: { promoId, quotaDate, claimedCount: { lt: promo.dailyQuota } },
+                        data: { claimedCount: { increment: 1 } },
+                    });
+                    if (reserved.count !== 1) {
+                        throw new Error("Kuota promo hari ini sudah habis.");
+                    }
+                    const claim = await tx.promoClaim.updateMany({
+                        where: {
+                            promoId,
+                            quotaDate,
+                            visitorKeyHash: input.promoClaimVisitorKeyHash,
+                            checkoutOrderId: null,
+                        },
+                        data: { checkoutOrderId: order.id },
+                    });
+                    if (claim.count !== 1) {
+                        throw new Error("Klaim promo ini sudah digunakan untuk checkout.");
+                    }
+                }
+            }
+
             /*
              * ==========================================
              * COD AUTO-SHIPMENT ENQUEUE
@@ -3182,6 +3236,25 @@ export async function cancelOrderForReservations(
 
                 if (!order) {
                     return false;
+                }
+
+                const promoClaims = await tx.promoClaim.findMany({
+                    where: { checkoutOrderId: order.id },
+                    select: { id: true, promoId: true, quotaDate: true },
+                });
+                for (const claim of promoClaims) {
+                    await tx.promoDailyQuota.updateMany({
+                        where: {
+                            promoId: claim.promoId,
+                            quotaDate: claim.quotaDate,
+                            claimedCount: { gt: 0 },
+                        },
+                        data: { claimedCount: { decrement: 1 } },
+                    });
+                    await tx.promoClaim.update({
+                        where: { id: claim.id },
+                        data: { checkoutOrderId: null },
+                    });
                 }
 
                 /*

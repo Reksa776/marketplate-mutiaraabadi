@@ -17,6 +17,8 @@ export default async function PromoLandingPage({
             title: true,
             description: true,
             promoPrice: true,
+            productId: true,
+            variantId: true,
             product: { select: { name: true, slug: true, image: true } },
             variant: { select: { name: true, price: true } },
         },
@@ -38,6 +40,8 @@ export default async function PromoLandingPage({
     return (
         <PromoClaimPage
             slug={promo.slug}
+            productId={promo.productId}
+            variantId={promo.variantId}
             title={promo.title}
             description={promo.description}
             product={product}

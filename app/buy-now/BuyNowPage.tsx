@@ -123,6 +123,8 @@ type BuyNowData = {
 
     subtotal: number;
 
+    promoClaimed?: boolean;
+
     totalWeight: number;
 
     addresses: Address[];
@@ -1460,6 +1462,10 @@ export default function BuyNowPage({
             setData(
                 checkoutData
             );
+            if (checkoutData.promoClaimed) {
+                setPaymentMethod("BANK_TRANSFER");
+                setPaymentChannel("bca");
+            }
 
             /*
              * Reset shipping ketika reload.
@@ -3964,8 +3970,9 @@ export default function BuyNowPage({
 
                             <div className="mt-5 space-y-3">
 
-                                {/* COD */}
+                                {/* Promo claims can only be checked out with prepaid payment. */}
 
+                                {!data?.promoClaimed && (
                                 <label
                                     className={`flex cursor-pointer items-center gap-3 rounded-2xl border p-4 ${paymentMethod ===
                                         "COD"
@@ -4000,6 +4007,7 @@ export default function BuyNowPage({
                                         </div>
                                     </div>
                                 </label>
+                                )}
 
                                 {/* BANK TRANSFER */}
 
