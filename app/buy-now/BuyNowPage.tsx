@@ -3005,6 +3005,34 @@ export default function BuyNowPage({
                                 </div>
 
                                 <div className="min-w-0 flex-1">
+                                    {(() => {
+                                        const fallbackApplied = Boolean(fallbackPromoSlug);
+                                        const baseUnitPrice = Number(
+                                            data.variant.effectivePrice ?? data.variant.price
+                                        );
+                                        const fallbackReferenceUnitPrice = Math.max(
+                                            Number(data.variant.comparePrice ?? 0),
+                                            Number(data.variant.originalPrice ?? data.variant.price),
+                                            Number(data.variant.price)
+                                        );
+                                        const fallbackUnitDiscount = Math.min(
+                                            Number(data.fallbackVoucherDiscount ?? 0),
+                                            Number(data.variant.price)
+                                        );
+                                        const fallbackUnitPrice = Math.max(
+                                            0,
+                                            Number(data.variant.price) - fallbackUnitDiscount
+                                        );
+                                        const displayedLineTotal = fallbackApplied
+                                            ? Number(data.subtotal) - fallbackUnitDiscount
+                                            : Number(data.subtotal);
+                                        const displayedReferenceTotal = fallbackApplied
+                                            ? fallbackReferenceUnitPrice +
+                                              Math.max(0, data.quantity - 1) * Number(data.variant.price)
+                                            : 0;
+
+                                        return (
+                                            <>
                                     <h3 className="font-bold text-gray-900">
                                         {
                                             data.product
@@ -3020,18 +3048,26 @@ export default function BuyNowPage({
                                     </p>
 
                                     <div className="mt-2">
-                                        <p className="text-sm">
-                                            {data.quantity} × Rp{" "}
-                                            {Number(
-                                                data.variant
-                                                    .effectivePrice ??
-                                                data.variant
-                                                    .price
-                                            ).toLocaleString(
-                                                "id-ID"
-                                            )}
-                                        </p>
-                                        {(() => {
+                                        {fallbackApplied ? (
+                                            <>
+                                                <p className="text-sm font-semibold text-rose-600">
+                                                    1 × Rp {fallbackUnitPrice.toLocaleString("id-ID")}
+                                                    {data.quantity > 1 && (
+                                                        <span className="font-normal text-gray-600">
+                                                            {` + ${data.quantity - 1} × Rp ${Number(data.variant.price).toLocaleString("id-ID")}`}
+                                                        </span>
+                                                    )}
+                                                </p>
+                                                <p className="mt-0.5 text-xs text-gray-400">
+                                                    Voucher 50% untuk 1 unit
+                                                </p>
+                                            </>
+                                        ) : (
+                                            <p className="text-sm">
+                                                {data.quantity} × Rp {baseUnitPrice.toLocaleString("id-ID")}
+                                            </p>
+                                        )}
+                                        {!fallbackApplied && (() => {
                                             const display =
                                                 resolvePriceDisplay({
                                                     effectivePrice:
@@ -3082,14 +3118,19 @@ export default function BuyNowPage({
                                     </p>
                                 </div>
 
-                                <div className="font-bold">
-                                    Rp{" "}
-                                    {Number(
-                                        data.subtotal
-                                    ).toLocaleString(
-                                        "id-ID"
+                                <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-2 font-bold">
+                                    <span className={fallbackApplied ? "text-rose-600" : ""}>
+                                        Rp {displayedLineTotal.toLocaleString("id-ID")}
+                                    </span>
+                                    {fallbackApplied && (
+                                        <span className="text-xs font-medium text-gray-400">
+                                            Rp {displayedReferenceTotal.toLocaleString("id-ID")}
+                                        </span>
                                     )}
                                 </div>
+                                            </>
+                                        );
+                                    })()}
                             </div>
                         </section>
 
