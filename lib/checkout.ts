@@ -260,6 +260,8 @@ export type CreateCheckoutInput = {
     paymentMethod: CheckoutPaymentMethod;
 
     voucherCode?: string | null;
+    /** A 50% one-unit fallback voucher for a claimed promo whose quota is exhausted. */
+    fallbackPromoSlug?: string | null;
 
     /**
      * Affiliate referral code from cookie.
@@ -647,7 +649,8 @@ function createMidtransItemDetails(
     discount: number,
     voucherId: number | null,
     voucherCode: string | null,
-    spinWheelDiscount: number = 0
+    spinWheelDiscount: number = 0,
+    promoFallbackId: number | null = null
 ): MidtransItem[] {
     const itemDetails =
         checkoutItems.map(
@@ -685,11 +688,12 @@ function createMidtransItemDetails(
 
     if (
         discount > 0 &&
-        voucherId !== null
+        (voucherId !== null || promoFallbackId !== null)
     ) {
         itemDetails.push({
-            id:
-                `VOUCHER-${voucherId}`,
+            id: voucherId !== null
+                ? `VOUCHER-${voucherId}`
+                : `PROMO-FALLBACK-${promoFallbackId}`,
 
             price:
                 -discount,
@@ -1456,6 +1460,13 @@ export async function createCheckoutOrder(
             async (tx) => {
             let checkoutItems:
                 CheckoutItem[] = [];
+            let fallbackPromoContext: {
+                id: number;
+                slug: string;
+                quotaDate: Date;
+                visitorKeyHash: string;
+            } | null = null;
+            let fallbackPromoDiscount = 0;
 
             let cartId:
                 | number
@@ -1730,6 +1741,112 @@ export async function createCheckoutOrder(
                 input.promoClaimVisitorKeyHash
             );
 
+            if (input.fallbackPromoSlug) {
+                if (mode !== "BUY_NOW" || input.paymentMethod === "COD") {
+                    throw new Error("Voucher 50% hanya berlaku untuk checkout non-COD.");
+                }
+                if (input.voucherCode?.trim() || input.spinWheelSpinId) {
+                    throw new Error("Voucher 50% tidak dapat digabung dengan voucher atau reward lain.");
+                }
+
+                const visitorKeyHash = input.promoClaimVisitorKeyHash;
+                if (!visitorKeyHash) {
+                    throw new Error("Klaim voucher 50% tidak ditemukan di browser ini.");
+                }
+
+                const fallbackPromo = await tx.promoLanding.findUnique({
+                    where: { slug: input.fallbackPromoSlug },
+                    select: {
+                        id: true,
+                        slug: true,
+                        productId: true,
+                        variantId: true,
+                        dailyQuota: true,
+                        isActive: true,
+                        startAt: true,
+                        endAt: true,
+                    },
+                });
+                const quotaDate = promoQuotaDate();
+                const dailyQuota = fallbackPromo
+                    ? await tx.promoDailyQuota.findUnique({
+                          where: {
+                              promoId_quotaDate: {
+                                  promoId: fallbackPromo.id,
+                                  quotaDate,
+                              },
+                          },
+                          select: { claimedCount: true },
+                      })
+                    : null;
+                const claim = fallbackPromo
+                    ? await tx.promoClaim.findUnique({
+                          where: {
+                              promoId_quotaDate_visitorKeyHash: {
+                                  promoId: fallbackPromo.id,
+                                  quotaDate,
+                                  visitorKeyHash,
+                              },
+                          },
+                          select: { checkoutOrderId: true },
+                      })
+                    : null;
+                const now = new Date();
+
+                if (
+                    !fallbackPromo ||
+                    !fallbackPromo.isActive ||
+                    fallbackPromo.startAt > now ||
+                    fallbackPromo.endAt < now ||
+                    fallbackPromo.productId !== input.productId ||
+                    fallbackPromo.variantId !== input.variantId ||
+                    !claim ||
+                    claim.checkoutOrderId !== null ||
+                    (dailyQuota?.claimedCount ?? 0) < fallbackPromo.dailyQuota
+                ) {
+                    throw new Error("Voucher 50% sudah tidak tersedia.");
+                }
+
+                const variantPrice = await tx.productVariant.findUnique({
+                    where: { id: fallbackPromo.variantId! },
+                    select: { price: true, productId: true },
+                });
+                if (!variantPrice || variantPrice.productId !== fallbackPromo.productId) {
+                    throw new Error("Produk voucher 50% tidak ditemukan.");
+                }
+
+                const targetItems = checkoutItems.filter(
+                    (item) => item.productId === fallbackPromo.productId && item.variantId === fallbackPromo.variantId
+                );
+                if (targetItems.length !== 1) {
+                    throw new Error("Produk voucher 50% tidak cocok dengan checkout.");
+                }
+
+                const regularUnitPrice = Math.round(Number(variantPrice.price));
+                if (!Number.isFinite(regularUnitPrice) || regularUnitPrice <= 0) {
+                    throw new Error("Harga produk voucher 50% tidak valid.");
+                }
+
+                for (const item of targetItems) {
+                    item.price = regularUnitPrice;
+                    item.subtotal = regularUnitPrice * item.quantity;
+                    item.promoLandingId = undefined;
+                    delete item.promoRegularPrice;
+                    delete (item as any).flashSaleId;
+                }
+
+                fallbackPromoDiscount = Math.min(
+                    regularUnitPrice,
+                    Math.round(regularUnitPrice * 0.5)
+                );
+                fallbackPromoContext = {
+                    id: fallbackPromo.id,
+                    slug: fallbackPromo.slug,
+                    quotaDate,
+                    visitorKeyHash,
+                };
+            }
+
             // A claim discounts one unit across the whole order. Split the
             // priced line so payment and order items charge regular price
             // for any remaining units (including duplicate cart lines).
@@ -1862,7 +1979,10 @@ export async function createCheckoutOrder(
                 | string
                 | null = null;
 
-            let discount = 0;
+            let discount = fallbackPromoDiscount;
+            if (fallbackPromoContext) {
+                appliedVoucherCode = `VOUCHER50-${fallbackPromoContext.slug.toUpperCase()}`;
+            }
 
             if (
                 typeof input.voucherCode ===
@@ -2223,7 +2343,8 @@ export async function createCheckoutOrder(
                     discount,
                     voucherId,
                     appliedVoucherCode,
-                    spinWheelDiscount
+                        spinWheelDiscount,
+                        fallbackPromoContext?.id ?? null
                 );
 
             if (
@@ -2623,6 +2744,23 @@ export async function createCheckoutOrder(
                         items: true,
                     },
                 });
+
+            // Consume this visitor's fallback claim atomically with order
+            // creation so concurrent submissions cannot reuse the discount.
+            if (fallbackPromoContext) {
+                const consumedClaim = await tx.promoClaim.updateMany({
+                    where: {
+                        promoId: fallbackPromoContext.id,
+                        quotaDate: fallbackPromoContext.quotaDate,
+                        visitorKeyHash: fallbackPromoContext.visitorKeyHash,
+                        checkoutOrderId: null,
+                    },
+                    data: { checkoutOrderId: order.id },
+                });
+                if (consumedClaim.count !== 1) {
+                    throw new Error("Klaim voucher 50% sudah digunakan untuk checkout.");
+                }
+            }
 
             // Reserve the daily quota only after the non-COD order has
             // been created successfully. This is inside the same database

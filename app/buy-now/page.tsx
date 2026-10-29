@@ -16,6 +16,7 @@ type Props = {
         variantId?: string;
         quantity?: string;
         promo?: string | string[];
+        fallbackPromo?: string | string[];
     }>;
 };
 
@@ -51,6 +52,7 @@ export default async function BuyNow(
                 params.quantity ?? "1"
             }
             promoSlug={typeof params.promo === "string" ? params.promo : undefined}
+            fallbackPromoSlug={typeof params.fallbackPromo === "string" ? params.fallbackPromo : undefined}
         />
     );
 }

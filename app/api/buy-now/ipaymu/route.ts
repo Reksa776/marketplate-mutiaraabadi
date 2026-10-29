@@ -77,6 +77,7 @@ type Body = {
     /** Optional provider channel chosen by the customer (e.g. bca, dana). */
     paymentChannel?: string | null;
     voucherCode?: string | null;
+    fallbackPromoSlug?: string | null;
     spinWheelSpinId?: number | null;
     idempotencyKey?: string | null;
 };
@@ -385,6 +386,10 @@ export async function POST(
                 paymentMethod,
                 voucherCode:
                     voucherCode ?? undefined,
+                fallbackPromoSlug:
+                    typeof body.fallbackPromoSlug === "string"
+                        ? body.fallbackPromoSlug
+                        : undefined,
                 productId,
                 variantId,
                 quantity,

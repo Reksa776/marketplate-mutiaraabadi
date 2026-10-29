@@ -95,6 +95,8 @@ export default function ProductDetail({
         useState(promoLate);
     const [promoUnavailable, setPromoUnavailable] =
         useState(promoLate);
+    const [fallbackVoucherAvailable, setFallbackVoucherAvailable] =
+        useState(false);
 
     useEffect(() => {
         if (promoLate) {
@@ -516,6 +518,9 @@ export default function ProductDetail({
                 }
 
                 const promoStatus = result.data;
+                setFallbackVoucherAvailable(
+                    promoStatus.active && promoStatus.remaining <= 0
+                );
                 if (!promoStatus.active || promoStatus.remaining <= 0) {
                     setPromoUnavailable(true);
                     setShowPromoLateDialog(true);
@@ -569,8 +574,26 @@ export default function ProductDetail({
                     >
                         <h2 id="promo-late-title" className="text-2xl font-black text-gray-950">Kamu terlambat</h2>
                         <p className="mt-3 text-sm leading-6 text-gray-600">
-                            Kuota promo hari ini sudah habis atau periodenya telah berakhir. Lihat promo menarik lainnya di menu produk.
+                            Tenang, masih ada promo lain yang nggak kalah menarik di sini.
                         </p>
+                        {fallbackVoucherAvailable && promoSlug && selectedVariant && (
+                            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-left">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                        <p className="text-sm font-bold text-emerald-900">Voucher 50% diskon</p>
+                                        <p className="mt-1 text-xs text-emerald-800">Berlaku untuk 1 unit produk promo ini.</p>
+                                    </div>
+                                    <span className="rounded-full bg-emerald-600 px-3 py-1 text-sm font-black text-white">50%</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => router.push(`/buy-now?productId=${product.id}&variantId=${selectedVariant.id}&quantity=${quantity}&promo=${encodeURIComponent(promoSlug)}&promoVariantId=${selectedVariant.id}&fallbackPromo=${encodeURIComponent(promoSlug)}`)}
+                                    className="mt-4 min-h-11 w-full rounded-lg bg-emerald-700 px-4 text-sm font-bold text-white transition hover:bg-emerald-800"
+                                >
+                                    Pakai voucher 50% & checkout
+                                </button>
+                            </div>
+                        )}
                         <Link
                             href="/products"
                             onClick={() => setShowPromoLateDialog(false)}

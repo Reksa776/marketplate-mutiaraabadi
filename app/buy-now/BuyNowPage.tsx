@@ -124,6 +124,7 @@ type BuyNowData = {
     subtotal: number;
 
     promoClaimed?: boolean;
+    fallbackVoucherDiscount?: number;
 
     totalWeight: number;
 
@@ -192,6 +193,7 @@ type Props = {
     variantId: string;
     quantity: string;
     promoSlug?: string;
+    fallbackPromoSlug?: string;
 };
 
 const emptyAddressForm: AddressForm = {
@@ -445,6 +447,7 @@ export default function BuyNowPage({
     variantId,
     quantity,
     promoSlug,
+    fallbackPromoSlug,
 }: Props) {
     const router = useRouter();
 
@@ -1426,6 +1429,9 @@ export default function BuyNowPage({
                                 numericQuantity
                             )
                         );
+                        if (fallbackPromoSlug) {
+                            params.set("fallbackPromo", fallbackPromoSlug);
+                        }
 
                         const response =
                             await fetch(
@@ -1464,6 +1470,9 @@ export default function BuyNowPage({
             setData(
                 checkoutData
             );
+            if (checkoutData.fallbackVoucherDiscount) {
+                setVoucherDiscount(checkoutData.fallbackVoucherDiscount);
+            }
             if (checkoutData.promoClaimed) {
                 setPaymentMethod("BANK_TRANSFER");
                 setPaymentChannel("bca");
@@ -2455,6 +2464,7 @@ export default function BuyNowPage({
                                 voucherCode:
                                     appliedVoucherCode ||
                                     null,
+                                fallbackPromoSlug: fallbackPromoSlug ?? null,
                                 spinWheelSpinId: selectedSpinReward,
                             }),
                     }
@@ -2628,6 +2638,7 @@ export default function BuyNowPage({
                                     voucherCode:
                                         appliedVoucherCode ||
                                         null,
+                                    fallbackPromoSlug: fallbackPromoSlug ?? null,
                                     spinWheelSpinId: selectedSpinReward,
                                 }),
                     }
@@ -4292,7 +4303,7 @@ export default function BuyNowPage({
                                     <span className="text-sm font-semibold">
                                         Voucher
                                     </span>
-                                    {!appliedVoucherCode && !selectedSpinReward && (
+                                    {!fallbackPromoSlug && !appliedVoucherCode && !selectedSpinReward && (
                                         <button
                                             type="button"
                                             onClick={() => setShowVoucherPicker(true)}
@@ -4301,7 +4312,7 @@ export default function BuyNowPage({
                                             Pilih Voucher {'>'}
                                         </button>
                                     )}
-                                    {(appliedVoucherCode || selectedSpinReward) && (
+                                    {!fallbackPromoSlug && (appliedVoucherCode || selectedSpinReward) && (
                                         <button
                                             type="button"
                                             onClick={() => setShowVoucherPicker(true)}
@@ -4312,7 +4323,17 @@ export default function BuyNowPage({
                                     )}
                                 </div>
 
-                                {appliedVoucherCode ? (
+                                {fallbackPromoSlug ? (
+                                    <div className="mt-2">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-sm">🎟️</span>
+                                            <span className="text-sm font-medium text-gray-900">Voucher 50% diskon</span>
+                                        </div>
+                                        <div className="mt-1 text-xs font-semibold text-emerald-600">
+                                            Hemat -Rp {voucherDiscount.toLocaleString("id-ID")} untuk 1 unit produk
+                                        </div>
+                                    </div>
+                                ) : appliedVoucherCode ? (
                                     <div className="mt-2">
                                         <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-2">
@@ -4354,7 +4375,7 @@ export default function BuyNowPage({
                                 )}
 
                                 {/* Manual Voucher Code Input */}
-                                {!appliedVoucherCode && !selectedSpinReward && (
+                                {!fallbackPromoSlug && !appliedVoucherCode && !selectedSpinReward && (
                                     <div className="mt-3 border-t border-gray-200 pt-3">
                                         {!showManualVoucherInput ? (
                                             <button

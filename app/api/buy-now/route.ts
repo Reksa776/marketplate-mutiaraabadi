@@ -18,7 +18,11 @@ import {
 } from "@/lib/rate-limit";
 import { readOrderAttribution } from "@/lib/analytics/attribution-server";
 import { buildGuestIdentityKey } from "@/lib/guest-identity";
-import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
+import {
+    isPromoActive,
+    promoQuotaDate,
+    promoVisitorHashFromCookieHeader,
+} from "@/lib/promo-claim";
 import { issueGuestOrderAccessCookie } from "@/lib/guest-order-access";
 import {
     readIdempotencyKey,
@@ -57,6 +61,7 @@ type BuyNowPostBody = {
     shipping: ShippingPayload;
     paymentMethod: PaymentMethod;
     voucherCode?: string | null;
+    fallbackPromoSlug?: string | null;
     spinWheelSpinId?: number | null;
     idempotencyKey?: string | null;
 };
@@ -218,6 +223,7 @@ export async function GET(
                     "quantity"
                 )
             );
+        const fallbackPromoSlug = searchParams.get("fallbackPromo");
 
         if (
             !Number.isInteger(productId) ||
@@ -344,7 +350,53 @@ export async function GET(
                 },
             ], new Date(), promoVisitorHashFromCookieHeader(request.headers.get("cookie")));
 
-        const price =
+        let fallbackVoucherDiscount = 0;
+        if (fallbackPromoSlug) {
+            const visitorHash = promoVisitorHashFromCookieHeader(request.headers.get("cookie"));
+            const quotaDate = promoQuotaDate();
+            const fallbackPromo = await prisma.promoLanding.findUnique({
+                where: { slug: fallbackPromoSlug },
+                include: {
+                    daily: {
+                        where: { quotaDate },
+                        select: { claimedCount: true },
+                        take: 1,
+                    },
+                },
+            });
+            const promoClaim = fallbackPromo && visitorHash
+                ? await prisma.promoClaim.findUnique({
+                      where: {
+                          promoId_quotaDate_visitorKeyHash: {
+                              promoId: fallbackPromo.id,
+                              quotaDate,
+                              visitorKeyHash: visitorHash,
+                          },
+                      },
+                      select: { checkoutOrderId: true },
+                  })
+                : null;
+            const quotaIsExhausted = fallbackPromo &&
+                (fallbackPromo.daily[0]?.claimedCount ?? 0) >= fallbackPromo.dailyQuota;
+
+            if (
+                !fallbackPromo ||
+                !visitorHash ||
+                !promoClaim ||
+                promoClaim.checkoutOrderId !== null ||
+                !isPromoActive(fallbackPromo) ||
+                fallbackPromo.productId !== productId ||
+                fallbackPromo.variantId !== variantId ||
+                !quotaIsExhausted
+            ) {
+                return jsonError("Voucher 50% sudah tidak tersedia.", 409);
+            }
+            fallbackVoucherDiscount = Math.round(rawPrice * 0.5);
+        }
+
+        const price = fallbackPromoSlug
+            ? rawPrice
+            :
             pricing?.effectivePrice ?? rawPrice;
 
         const subtotal =
@@ -387,12 +439,15 @@ export async function GET(
                         : null,
                 originalPrice:
                     pricing?.originalPrice ?? rawPrice,
-                discount:
-                    pricing?.discountAmount ?? 0,
+                discount: fallbackPromoSlug
+                    ? 0
+                    : pricing?.discountAmount ?? 0,
                 hasDiscount:
-                    (pricing?.discountAmount ?? 0) > 0,
+                    fallbackPromoSlug
+                        ? false
+                        : (pricing?.discountAmount ?? 0) > 0,
                 priceSource:
-                    pricing?.source ?? "ORIGINAL",
+                    fallbackPromoSlug ? "VOUCHER_50" : pricing?.source ?? "ORIGINAL",
                 flashSaleName:
                     pricing?.flashSaleName ?? null,
                 flashSaleEndAt:
@@ -407,7 +462,8 @@ export async function GET(
 
             subtotal,
 
-            promoClaimed: pricing?.source === "PROMO_LANDING",
+            promoClaimed: fallbackPromoSlug !== null || pricing?.source === "PROMO_LANDING",
+            fallbackVoucherDiscount,
 
             totalWeight,
 
@@ -721,6 +777,7 @@ export async function POST(
                 shipping: body.shipping,
                 paymentMethod: "COD",
                 voucherCode: voucherCode ?? undefined,
+                fallbackPromoSlug: body.fallbackPromoSlug ?? undefined,
                 productId,
                 variantId,
                 quantity,
