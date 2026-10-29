@@ -628,20 +628,6 @@ export default function ProductDetail({
                                 </button>
                             </div>
                         )}
-                        <Link
-                            href="/products"
-                            onClick={() => setShowPromoLateDialog(false)}
-                            className="mt-6 inline-flex min-h-12 w-full items-center justify-center rounded-xl bg-rose-600 px-5 text-sm font-bold text-white transition hover:bg-rose-700"
-                        >
-                            Lihat promo lainnya
-                        </Link>
-                        <button
-                            type="button"
-                            onClick={() => setShowPromoLateDialog(false)}
-                            className="mt-3 text-sm font-medium text-gray-500 hover:text-gray-800"
-                        >
-                            Tutup
-                        </button>
                     </section>
                 </div>
             )}
