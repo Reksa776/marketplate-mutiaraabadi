@@ -2506,7 +2506,9 @@ export default function BuyNowPage({
             );
 
             if (promoSlug && error instanceof Error && /kuota promo.*habis/i.test(error.message)) {
-                router.replace(`/promo/${encodeURIComponent(promoSlug)}`);
+                router.replace(data
+                    ? `/products/${encodeURIComponent(data.product.slug)}?promo=${encodeURIComponent(promoSlug)}&promoVariantId=${numericVariantId}&promoLate=1`
+                    : `/promo/${encodeURIComponent(promoSlug)}`);
                 return;
             }
 
@@ -2684,7 +2686,9 @@ export default function BuyNowPage({
             );
 
             if (promoSlug && error instanceof Error && /kuota promo.*habis/i.test(error.message)) {
-                router.replace(`/promo/${encodeURIComponent(promoSlug)}`);
+                router.replace(data
+                    ? `/products/${encodeURIComponent(data.product.slug)}?promo=${encodeURIComponent(promoSlug)}&promoVariantId=${numericVariantId}&promoLate=1`
+                    : `/promo/${encodeURIComponent(promoSlug)}`);
                 return;
             }
 

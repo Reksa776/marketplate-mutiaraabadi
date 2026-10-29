@@ -49,12 +49,14 @@ type Props = {
     product: Product;
     promoSlug?: string;
     promoVariantId?: number;
+    promoLate?: boolean;
 };
 
 export default function ProductDetail({
     product,
     promoSlug,
     promoVariantId,
+    promoLate = false,
 }: Props) {
     const router = useRouter();
 
@@ -88,6 +90,13 @@ export default function ProductDetail({
 
     const [checkingPromo, setCheckingPromo] =
         useState(false);
+
+    const [showPromoLateDialog, setShowPromoLateDialog] =
+        useState(promoLate);
+
+    useEffect(() => {
+        if (promoLate) setShowPromoLateDialog(true);
+    }, [promoLate]);
 
     const [bulkTiers, setBulkTiers] =
         useState<Array<{
@@ -472,7 +481,7 @@ export default function ProductDetail({
 
                 const promoStatus = result.data;
                 if (!promoStatus.active || promoStatus.remaining <= 0) {
-                    router.push(`/promo/${encodeURIComponent(promoSlug)}`);
+                    setShowPromoLateDialog(true);
                     return;
                 }
                 if (!promoStatus.claimed) {
@@ -512,6 +521,36 @@ export default function ProductDetail({
 
     return (
         <main className="min-h-screen bg-gray-50 pb-28">
+
+            {showPromoLateDialog && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4 py-8" role="presentation">
+                    <section
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="promo-late-title"
+                        className="w-full max-w-md rounded-2xl bg-white p-6 text-center shadow-2xl"
+                    >
+                        <h2 id="promo-late-title" className="text-2xl font-black text-gray-950">Kamu terlambat</h2>
+                        <p className="mt-3 text-sm leading-6 text-gray-600">
+                            Kuota promo sudah habis. Klik link di bawah ini untuk melihat promo lainnya.
+                        </p>
+                        <Link
+                            href="/products"
+                            onClick={() => setShowPromoLateDialog(false)}
+                            className="mt-6 inline-flex min-h-12 w-full items-center justify-center rounded-xl bg-rose-600 px-5 text-sm font-bold text-white transition hover:bg-rose-700"
+                        >
+                            Lihat promo lainnya
+                        </Link>
+                        <button
+                            type="button"
+                            onClick={() => setShowPromoLateDialog(false)}
+                            className="mt-3 text-sm font-medium text-gray-500 hover:text-gray-800"
+                        >
+                            Tutup
+                        </button>
+                    </section>
+                </div>
+            )}
 
             {/* ========================================================= */}
             {/* TOP NAVIGATION */}
