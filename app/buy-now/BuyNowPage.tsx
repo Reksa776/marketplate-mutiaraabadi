@@ -4279,12 +4279,23 @@ export default function BuyNowPage({
                                 <span className="font-medium">
                                     Rp{" "}
                                     {Number(
-                                        data.subtotal
+                                        fallbackApplied
+                                            ? displayedReferenceTotal
+                                            : data.subtotal
                                     ).toLocaleString(
                                         "id-ID"
                                     )}
                                 </span>
                             </div>
+
+                            {fallbackApplied && displayedReferenceTotal > Number(data.subtotal) && (
+                                <div className="flex justify-between gap-4 text-emerald-600">
+                                    <span>Penyesuaian harga promo</span>
+                                    <span className="font-medium">
+                                        - Rp {(displayedReferenceTotal - Number(data.subtotal)).toLocaleString("id-ID")}
+                                    </span>
+                                </div>
+                            )}
 
                             {/* WEIGHT */}
 
