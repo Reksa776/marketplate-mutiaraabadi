@@ -93,9 +93,14 @@ export default function ProductDetail({
 
     const [showPromoLateDialog, setShowPromoLateDialog] =
         useState(promoLate);
+    const [promoUnavailable, setPromoUnavailable] =
+        useState(promoLate);
 
     useEffect(() => {
-        if (promoLate) setShowPromoLateDialog(true);
+        if (promoLate) {
+            setPromoUnavailable(true);
+            setShowPromoLateDialog(true);
+        }
     }, [promoLate]);
 
     const [bulkTiers, setBulkTiers] =
@@ -204,13 +209,44 @@ export default function ProductDetail({
     |--------------------------------------------------------------------------
     */
 
-    const price =
-        selectedVariant?.effectivePrice ??
-        selectedVariant?.price ?? 0;
+    const showRegularPrice =
+        promoUnavailable && selectedVariant?.priceSource === "PROMO_LANDING";
 
-    const originalPrice =
-        selectedVariant?.originalPrice ??
-        selectedVariant?.price ?? 0;
+    const price = showRegularPrice
+        ? selectedVariant?.price ?? 0
+        : selectedVariant?.effectivePrice ?? selectedVariant?.price ?? 0;
+
+    const originalPrice = showRegularPrice
+        ? price
+        : selectedVariant?.originalPrice ?? selectedVariant?.price ?? 0;
+
+    const [animatedPrice, setAnimatedPrice] = useState(price);
+    const animatedPriceRef = useRef(price);
+
+    useEffect(() => {
+        const from = animatedPriceRef.current;
+        const to = price;
+        if (from === to) return;
+
+        const startedAt = performance.now();
+        const durationMs = 650;
+        let frameId = 0;
+
+        const animate = (now: number) => {
+            const progress = Math.min(1, (now - startedAt) / durationMs);
+            const easedProgress = 1 - Math.pow(1 - progress, 3);
+            const nextPrice = Math.round(from + (to - from) * easedProgress);
+            animatedPriceRef.current = nextPrice;
+            setAnimatedPrice(nextPrice);
+
+            if (progress < 1) {
+                frameId = window.requestAnimationFrame(animate);
+            }
+        };
+
+        frameId = window.requestAnimationFrame(animate);
+        return () => window.cancelAnimationFrame(frameId);
+    }, [price]);
 
     /*
      * Single shared display rule (lib/price-display): the explicit
@@ -222,7 +258,7 @@ export default function ProductDetail({
         effectivePrice: price,
         originalPrice,
         comparePrice:
-            selectedVariant?.comparePrice == null
+            showRegularPrice || selectedVariant?.comparePrice == null
                 ? null
                 : Number(selectedVariant.comparePrice),
     });
@@ -481,6 +517,7 @@ export default function ProductDetail({
 
                 const promoStatus = result.data;
                 if (!promoStatus.active || promoStatus.remaining <= 0) {
+                    setPromoUnavailable(true);
                     setShowPromoLateDialog(true);
                     return;
                 }
@@ -664,8 +701,8 @@ export default function ProductDetail({
                                     <p className="text-sm text-gray-400 line-through">
                                         Rp {formatPrice(strikethroughPrice ?? 0)}
                                     </p>
-                                    <p className="text-3xl font-bold text-rose-600">
-                                        Rp {formatPrice(price)}
+                                    <p className={`text-3xl font-bold transition-colors duration-500 ${showRegularPrice ? "text-gray-900" : "text-rose-600"}`}>
+                                        Rp {formatPrice(animatedPrice)}
                                     </p>
                                     {flashSaleName && (
                                         <p className="mt-1 text-xs font-medium text-rose-500">
@@ -674,8 +711,8 @@ export default function ProductDetail({
                                     )}
                                 </>
                             ) : (
-                                <p className="text-3xl font-bold text-gray-900">
-                                    Rp {formatPrice(price)}
+                                <p className="text-3xl font-bold text-gray-900 transition-colors duration-500">
+                                    Rp {formatPrice(animatedPrice)}
                                 </p>
                             )}
 
@@ -771,7 +808,9 @@ export default function ProductDetail({
                                                         <p className="mt-1 text-xs text-gray-500">
                                                             Rp{" "}
                                                             {formatPrice(
-                                                                variant.effectivePrice ?? variant.price
+                                                                promoUnavailable && variant.priceSource === "PROMO_LANDING"
+                                                                    ? variant.price
+                                                                    : variant.effectivePrice ?? variant.price
                                                             )}
                                                         </p>
 
