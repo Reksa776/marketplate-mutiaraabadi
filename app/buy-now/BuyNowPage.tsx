@@ -2956,11 +2956,11 @@ export default function BuyNowPage({
     );
     const fallbackUnitDiscount = Math.min(
         Number(data.fallbackVoucherDiscount ?? 0),
-        Number(data.variant.price)
+        fallbackReferenceUnitPrice
     );
     const fallbackUnitPrice = Math.max(
         0,
-        Number(data.variant.price) - fallbackUnitDiscount
+        fallbackReferenceUnitPrice - fallbackUnitDiscount
     );
     const displayedLineTotal = fallbackApplied
         ? Number(data.subtotal) - fallbackUnitDiscount

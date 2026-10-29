@@ -396,10 +396,7 @@ export async function GET(
                 Number(variant.comparePrice ?? 0),
                 Number(pricing?.originalPrice ?? rawPrice)
             );
-            fallbackVoucherDiscount = Math.max(
-                0,
-                rawPrice - Math.min(rawPrice, Math.round(fallbackReferencePrice * 0.5))
-            );
+            fallbackVoucherDiscount = Math.round(fallbackReferencePrice * 0.5);
         }
 
         const price = fallbackPromoSlug
@@ -407,8 +404,16 @@ export async function GET(
             :
             pricing?.effectivePrice ?? rawPrice;
 
-        const subtotal =
-            price * quantity;
+        const fallbackReferencePrice = fallbackPromoSlug
+            ? Math.max(
+                  rawPrice,
+                  Number(variant.comparePrice ?? 0),
+                  Number(pricing?.originalPrice ?? rawPrice)
+              )
+            : 0;
+        const subtotal = fallbackPromoSlug
+            ? fallbackReferencePrice + rawPrice * Math.max(0, quantity - 1)
+            : price * quantity;
 
         const totalWeight =
             Math.max(

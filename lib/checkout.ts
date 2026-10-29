@@ -1832,19 +1832,25 @@ export async function createCheckoutOrder(
                     throw new Error("Harga produk voucher 50% tidak valid.");
                 }
 
-                for (const item of targetItems) {
-                    item.price = regularUnitPrice;
-                    item.subtotal = regularUnitPrice * item.quantity;
-                    item.promoLandingId = undefined;
-                    delete item.promoRegularPrice;
-                    delete (item as any).flashSaleId;
+                const targetItem = targetItems[0];
+                const originalQuantity = targetItem.quantity;
+                targetItem.price = referenceUnitPrice;
+                targetItem.quantity = 1;
+                targetItem.subtotal = referenceUnitPrice;
+                targetItem.promoLandingId = undefined;
+                delete targetItem.promoRegularPrice;
+                delete (targetItem as any).flashSaleId;
+
+                if (originalQuantity > 1) {
+                    checkoutItems.push({
+                        ...targetItem,
+                        price: regularUnitPrice,
+                        quantity: originalQuantity - 1,
+                        subtotal: regularUnitPrice * (originalQuantity - 1),
+                    });
                 }
 
-                const fallbackUnitPrice = Math.min(
-                    regularUnitPrice,
-                    Math.round(referenceUnitPrice * 0.5)
-                );
-                fallbackPromoDiscount = Math.max(0, regularUnitPrice - fallbackUnitPrice);
+                fallbackPromoDiscount = Math.round(referenceUnitPrice * 0.5);
                 fallbackPromoContext = {
                     id: fallbackPromo.id,
                     slug: fallbackPromo.slug,
