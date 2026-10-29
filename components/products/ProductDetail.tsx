@@ -258,7 +258,7 @@ export default function ProductDetail({
         effectivePrice: price,
         originalPrice,
         comparePrice:
-            showRegularPrice || selectedVariant?.comparePrice == null
+            selectedVariant?.comparePrice == null
                 ? null
                 : Number(selectedVariant.comparePrice),
     });
