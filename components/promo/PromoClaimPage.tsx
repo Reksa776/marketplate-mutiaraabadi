@@ -142,8 +142,8 @@ export default function PromoClaimPage({
                         <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
                             <FiCheck size={30} />
                         </div>
-                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Promo berhasil diklaim</p>
-                        <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950">Selamat, harga promo sudah aktif!</h1>
+                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">Voucher berhasil diklaim</p>
+                        <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950">Selamat, harga voucher sudah aktif!</h1>
                         <p className="mt-3 text-sm leading-6 text-gray-600">Harga promo untuk produk ini otomatis diterapkan saat checkout hari ini di browser ini.</p>
                         {product && <ProductPriceCard product={product} />}
                         <Link href={product && variantId ? `/products/${product.slug}?promo=${encodeURIComponent(slug)}&promoVariantId=${variantId}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
@@ -155,14 +155,14 @@ export default function PromoClaimPage({
                         <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-rose-100 text-rose-700">
                             <FiGift size={30} />
                         </div>
-                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">Promo spesial untuk kamu</p>
+                        <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">Voucher spesial untuk kamu</p>
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950 sm:text-4xl">Selamat!</h1>
                         <h2 className="mt-2 text-xl font-bold text-gray-800">{title}</h2>
                         {description && <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">{description}</p>}
                         {product && <ProductPriceCard product={product} />}
                         <p className="mt-5 text-sm text-gray-500">Kuota promo hari ini tersisa <strong className="text-gray-900">{status?.remaining ?? 0}</strong>.</p>
                         <button type="button" disabled={claiming || !status?.claimable} onClick={() => void claim()} className="mt-6 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-6 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-wait disabled:opacity-60">
-                            <FiGift /> {claiming ? "Mengaktifkan promo..." : "Klaim Promo"}
+                            <FiGift /> {claiming ? "Mengaktifkan voucher..." : "Klaim Voucher"}
                         </button>
                     </>
                 )}
