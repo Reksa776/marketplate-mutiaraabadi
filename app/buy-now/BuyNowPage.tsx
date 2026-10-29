@@ -191,6 +191,7 @@ type Props = {
     productId: string;
     variantId: string;
     quantity: string;
+    promoSlug?: string;
 };
 
 const emptyAddressForm: AddressForm = {
@@ -443,6 +444,7 @@ export default function BuyNowPage({
     productId,
     variantId,
     quantity,
+    promoSlug,
 }: Props) {
     const router = useRouter();
 
@@ -2503,6 +2505,11 @@ export default function BuyNowPage({
                 error
             );
 
+            if (promoSlug && error instanceof Error && /kuota promo.*habis/i.test(error.message)) {
+                router.replace(`/promo/${encodeURIComponent(promoSlug)}`);
+                return;
+            }
+
             toast.error(
                 error instanceof Error
                     ? error.message
@@ -2675,6 +2682,11 @@ export default function BuyNowPage({
                 "IPAYMU PAYMENT ERROR:",
                 error
             );
+
+            if (promoSlug && error instanceof Error && /kuota promo.*habis/i.test(error.message)) {
+                router.replace(`/promo/${encodeURIComponent(promoSlug)}`);
+                return;
+            }
 
             toast.error(
                 error instanceof Error
@@ -2928,7 +2940,7 @@ export default function BuyNowPage({
 
                 <div className="mb-8">
                     <Link
-                        href={`/products/${data.product.slug}`}
+                        href={`/products/${data.product.slug}${promoSlug ? `?promo=${encodeURIComponent(promoSlug)}&promoVariantId=${numericVariantId}` : ""}`}
                         className="text-sm text-gray-500 hover:text-gray-900"
                     >
                         ← Kembali ke Produk

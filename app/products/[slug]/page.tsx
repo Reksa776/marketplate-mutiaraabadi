@@ -15,6 +15,10 @@ type Props = {
     params: Promise<{
         slug: string;
     }>;
+    searchParams: Promise<{
+        promo?: string | string[];
+        promoVariantId?: string | string[];
+    }>;
 };
 
 /**
@@ -64,10 +68,16 @@ export async function generateMetadata({
 
 export default async function ProductDetailPage({
     params,
+    searchParams,
 }: Props) {
     const session = await auth();
 
     const { slug } = await params;
+    const { promo: promoParam, promoVariantId: promoVariantIdParam } = await searchParams;
+    const promo = typeof promoParam === "string" ? promoParam : undefined;
+    const parsedPromoVariantId = typeof promoVariantIdParam === "string"
+        ? Number(promoVariantIdParam)
+        : NaN;
 
     /*
      * Product detail is public: guests may browse any non-archived
@@ -196,6 +206,8 @@ export default async function ProductDetailPage({
         <main className="min-h-screen bg-gray-50 pb-24">
             <ProductDetail
                 product={serializedProduct}
+                promoSlug={promo}
+                promoVariantId={Number.isInteger(parsedPromoVariantId) ? parsedPromoVariantId : undefined}
             />
 
             {session?.user && <BottomNavbar />}

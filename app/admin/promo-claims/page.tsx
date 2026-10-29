@@ -303,6 +303,11 @@ export default function PromoClaimsAdminPage() {
                                         <Link href={`/promo/${item.slug}`} target="_blank" className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-700 underline">
                                             /promo/{item.slug} <FiExternalLink />
                                         </Link>
+                                        {item.productSlug && (
+                                            <Link href={`/products/${item.productSlug}?promo=${encodeURIComponent(item.slug)}&promoVariantId=${item.variantId ?? ""}`} target="_blank" className="ml-3 inline-flex items-center gap-1 text-xs font-medium text-emerald-700 underline">
+                                                Tujuan setelah klaim: /products/{item.productSlug} <FiExternalLink />
+                                            </Link>
+                                        )}
                                     </div>
                                     <div className="flex gap-2">
                                         <button type="button" onClick={() => editPromo(item)} className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium">Edit</button>

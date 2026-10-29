@@ -101,8 +101,8 @@ export default function PromoClaimPage({
             if (!response.ok || !result.success) {
                 throw new Error(result.message || "Promo belum bisa diklaim.");
             }
-            if (productId && variantId) {
-                router.replace(`/buy-now?productId=${productId}&variantId=${variantId}&quantity=1&promo=${encodeURIComponent(slug)}`);
+            if (product?.slug && productId && variantId) {
+                router.replace(`/products/${encodeURIComponent(product.slug)}?promo=${encodeURIComponent(slug)}&promoVariantId=${variantId}`);
                 return;
             }
             await refresh();
@@ -113,7 +113,7 @@ export default function PromoClaimPage({
         }
     }
 
-    const exhausted = !loading && status && !status.claimed && (!status.active || !status.claimable);
+    const exhausted = !loading && status && (!status.active || status.remaining <= 0);
 
     return (
         <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-rose-50 via-white to-amber-50 px-4 py-12">
@@ -131,10 +131,10 @@ export default function PromoClaimPage({
                         <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">{title}</p>
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950 sm:text-4xl">Kamu terlambat</h1>
                         <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">
-                            Kuota promo hari ini sudah habis atau periode promonya telah berakhir. Tenang, masih ada promo menarik lainnya.
+                            Kuota promo hari ini sudah habis atau periodenya telah berakhir. Lihat promo menarik lainnya di menu produk.
                         </p>
-                        <Link href={product ? `/products/${product.slug}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
-                            <FiShoppingBag /> Ambil promo yang nggak kalah lainnya di sini
+                        <Link href="/products" className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
+                            <FiShoppingBag /> Lihat promo lainnya
                         </Link>
                     </>
                 ) : status?.claimed ? (
@@ -146,7 +146,7 @@ export default function PromoClaimPage({
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950">Selamat, harga promo sudah aktif!</h1>
                         <p className="mt-3 text-sm leading-6 text-gray-600">Harga promo untuk produk ini otomatis diterapkan saat checkout hari ini di browser ini.</p>
                         {product && <ProductPriceCard product={product} />}
-                        <Link href={product ? `/products/${product.slug}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
+                        <Link href={product && variantId ? `/products/${product.slug}?promo=${encodeURIComponent(slug)}&promoVariantId=${variantId}` : "/products"} className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
                             <FiShoppingBag /> {product ? `Beli ${product.name}` : "Lihat produk"}
                         </Link>
                     </>

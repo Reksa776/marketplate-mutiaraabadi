@@ -15,6 +15,7 @@ type Props = {
         productId?: string;
         variantId?: string;
         quantity?: string;
+        promo?: string | string[];
     }>;
 };
 
@@ -49,6 +50,7 @@ export default async function BuyNow(
             quantity={
                 params.quantity ?? "1"
             }
+            promoSlug={typeof params.promo === "string" ? params.promo : undefined}
         />
     );
 }

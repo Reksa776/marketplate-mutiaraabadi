@@ -85,6 +85,7 @@ export async function GET(
         data: {
             active,
             claimed: Boolean(claim),
+            variantId: promo.variantId,
             dailyQuota: promo.dailyQuota,
             claimedCount,
             remaining,

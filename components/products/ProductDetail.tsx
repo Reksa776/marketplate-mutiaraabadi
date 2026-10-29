@@ -47,10 +47,14 @@ type Product = {
 
 type Props = {
     product: Product;
+    promoSlug?: string;
+    promoVariantId?: number;
 };
 
 export default function ProductDetail({
     product,
+    promoSlug,
+    promoVariantId,
 }: Props) {
     const router = useRouter();
 
@@ -72,15 +76,17 @@ export default function ProductDetail({
 
     const [selectedVariant, setSelectedVariant] =
         useState<ProductVariant | null>(
-            product.variants.length > 0
-                ? product.variants[0]
-                : null
+            product.variants.find((variant) => variant.id === promoVariantId) ??
+                (product.variants.length > 0 ? product.variants[0] : null)
         );
 
     const [quantity, setQuantity] =
         useState(1);
 
     const [loading, setLoading] =
+        useState(false);
+
+    const [checkingPromo, setCheckingPromo] =
         useState(false);
 
     const [bulkTiers, setBulkTiers] =
@@ -445,11 +451,44 @@ export default function ProductDetail({
             setLoading(false);
         }
     }
-    const handleBuyNow = () => {
+    const handleBuyNow = async () => {
         if (!selectedVariant) return;
 
         if (quantity > selectedVariant.stock) {
             return;
+        }
+
+        if (promoSlug) {
+            setCheckingPromo(true);
+            try {
+                const response = await fetch(
+                    `/api/promos/${encodeURIComponent(promoSlug)}/claim`,
+                    { cache: "no-store" }
+                );
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.message || "Status promo tidak bisa diperiksa.");
+                }
+
+                const promoStatus = result.data;
+                if (!promoStatus.active || promoStatus.remaining <= 0) {
+                    router.push(`/promo/${encodeURIComponent(promoSlug)}`);
+                    return;
+                }
+                if (!promoStatus.claimed) {
+                    router.push(`/promo/${encodeURIComponent(promoSlug)}`);
+                    return;
+                }
+                if (promoStatus.variantId !== selectedVariant.id) {
+                    toast.error("Promo ini hanya berlaku untuk varian yang dipilih di halaman promo.");
+                    return;
+                }
+            } catch (error) {
+                toast.error(error instanceof Error ? error.message : "Status promo tidak bisa diperiksa.");
+                return;
+            } finally {
+                setCheckingPromo(false);
+            }
         }
 
         /*
@@ -460,7 +499,8 @@ export default function ProductDetail({
         router.push(
             `/buy-now?productId=${product.id}` +
             `&variantId=${selectedVariant.id}` +
-            `&quantity=${quantity}`
+            `&quantity=${quantity}` +
+            (promoSlug ? `&promo=${encodeURIComponent(promoSlug)}&promoVariantId=${selectedVariant.id}` : "")
         );
     };
 
@@ -864,9 +904,10 @@ export default function ProductDetail({
                             <button
                                 type="button"
                                 onClick={handleBuyNow}
+                                disabled={checkingPromo}
                                 className="w-full rounded-xl bg-rose-600 px-5 py-3 font-semibold text-white transition hover:bg-rose-700"
                             >
-                                Beli Sekarang
+                                {checkingPromo ? "Memeriksa kuota promo..." : "Beli Sekarang"}
                             </button>
 
                         </div>
