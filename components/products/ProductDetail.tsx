@@ -97,13 +97,26 @@ export default function ProductDetail({
         useState(promoLate);
     const [fallbackVoucherAvailable, setFallbackVoucherAvailable] =
         useState(false);
+    const [fallbackVoucherApplied, setFallbackVoucherApplied] =
+        useState(false);
 
     useEffect(() => {
         if (promoLate) {
             setPromoUnavailable(true);
             setShowPromoLateDialog(true);
+            if (promoSlug) {
+                fetch(`/api/promos/${encodeURIComponent(promoSlug)}/claim`, { cache: "no-store" })
+                    .then((response) => response.json())
+                    .then((result) => {
+                        const status = result?.data;
+                        setFallbackVoucherAvailable(
+                            Boolean(result?.success && status?.active && status?.remaining <= 0)
+                        );
+                    })
+                    .catch(() => setFallbackVoucherAvailable(false));
+            }
         }
-    }, [promoLate]);
+    }, [promoLate, promoSlug]);
 
     const [bulkTiers, setBulkTiers] =
         useState<Array<{
@@ -214,13 +227,28 @@ export default function ProductDetail({
     const showRegularPrice =
         promoUnavailable && selectedVariant?.priceSource === "PROMO_LANDING";
 
-    const price = showRegularPrice
+    const basePrice = showRegularPrice
         ? selectedVariant?.price ?? 0
         : selectedVariant?.effectivePrice ?? selectedVariant?.price ?? 0;
 
-    const originalPrice = showRegularPrice
-        ? price
-        : selectedVariant?.originalPrice ?? selectedVariant?.price ?? 0;
+    const originalPrice = selectedVariant?.originalPrice ?? selectedVariant?.price ?? 0;
+    const fallbackReferencePrice = Math.max(
+        basePrice,
+        Number(selectedVariant?.comparePrice ?? 0),
+        originalPrice
+    );
+    const fallbackDiscountedPrice = Math.min(
+        basePrice,
+        Math.round(fallbackReferencePrice * 0.5)
+    );
+    const price = fallbackVoucherApplied
+        ? fallbackDiscountedPrice
+        : basePrice;
+    const displayedOriginalPrice = fallbackVoucherApplied
+        ? fallbackReferencePrice
+        : showRegularPrice
+          ? price
+          : originalPrice;
 
     const [animatedPrice, setAnimatedPrice] = useState(price);
     const animatedPriceRef = useRef(price);
@@ -258,7 +286,7 @@ export default function ProductDetail({
      */
     const priceDisplay = resolvePriceDisplay({
         effectivePrice: price,
-        originalPrice,
+        originalPrice: displayedOriginalPrice,
         comparePrice:
             selectedVariant?.comparePrice == null
                 ? null
@@ -311,6 +339,7 @@ export default function ProductDetail({
     function handleSelectVariant(
         variant: ProductVariant
     ) {
+        setFallbackVoucherApplied(false);
         setSelectedVariant(
             variant
         );
@@ -505,7 +534,7 @@ export default function ProductDetail({
             return;
         }
 
-        if (promoSlug) {
+        if (promoSlug && !fallbackVoucherApplied) {
             setCheckingPromo(true);
             try {
                 const response = await fetch(
@@ -551,7 +580,8 @@ export default function ProductDetail({
             `/buy-now?productId=${product.id}` +
             `&variantId=${selectedVariant.id}` +
             `&quantity=${quantity}` +
-            (promoSlug ? `&promo=${encodeURIComponent(promoSlug)}&promoVariantId=${selectedVariant.id}` : "")
+            (promoSlug ? `&promo=${encodeURIComponent(promoSlug)}&promoVariantId=${selectedVariant.id}` : "") +
+            (fallbackVoucherApplied && promoSlug ? `&fallbackPromo=${encodeURIComponent(promoSlug)}` : "")
         );
     };
 
@@ -587,10 +617,14 @@ export default function ProductDetail({
                                 </div>
                                 <button
                                     type="button"
-                                    onClick={() => router.push(`/buy-now?productId=${product.id}&variantId=${selectedVariant.id}&quantity=${quantity}&promo=${encodeURIComponent(promoSlug)}&promoVariantId=${selectedVariant.id}&fallbackPromo=${encodeURIComponent(promoSlug)}`)}
+                                    onClick={() => {
+                                        setFallbackVoucherApplied(true);
+                                        setPromoUnavailable(true);
+                                        setShowPromoLateDialog(false);
+                                    }}
                                     className="mt-4 min-h-11 w-full rounded-lg bg-emerald-700 px-4 text-sm font-bold text-white transition hover:bg-emerald-800"
                                 >
-                                    Pakai voucher 50% & checkout
+                                    Klaim voucher 50%
                                 </button>
                             </div>
                         )}
@@ -721,10 +755,17 @@ export default function ProductDetail({
 
                             {hasDiscount ? (
                                 <>
-                                    <p className="text-sm text-gray-400 line-through">
-                                        Rp {formatPrice(strikethroughPrice ?? 0)}
-                                    </p>
-                                    <p className="text-3xl font-bold text-rose-600 transition-colors duration-500">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <p className="text-sm text-gray-400 line-through">
+                                            Rp {formatPrice(strikethroughPrice ?? 0)}
+                                        </p>
+                                        {fallbackVoucherApplied && (
+                                            <span className="animate-[pulse_1.2s_ease-in-out_2] rounded-full bg-rose-600 px-2.5 py-1 text-xs font-extrabold text-white shadow-sm">
+                                                50% OFF
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className={`text-3xl font-bold transition-all duration-500 ${fallbackVoucherApplied ? "scale-105 text-rose-600" : "text-rose-600"}`}>
                                         Rp {formatPrice(animatedPrice)}
                                     </p>
                                     {flashSaleName && (
@@ -734,8 +775,21 @@ export default function ProductDetail({
                                     )}
                                 </>
                             ) : (
-                                <p className={`text-3xl font-bold transition-colors duration-500 ${showRegularPrice ? "text-rose-600" : "text-gray-900"}`}>
-                                    Rp {formatPrice(animatedPrice)}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <p className={`text-3xl font-bold transition-all duration-500 ${fallbackVoucherApplied ? "scale-105 text-rose-600" : showRegularPrice ? "text-rose-600" : "text-gray-900"}`}>
+                                        Rp {formatPrice(animatedPrice)}
+                                    </p>
+                                    {fallbackVoucherApplied && (
+                                        <>
+                                            <span className="text-sm text-gray-400 line-through">Rp {formatPrice(fallbackReferencePrice)}</span>
+                                            <span className="animate-[pulse_1.2s_ease-in-out_2] rounded-full bg-rose-600 px-2.5 py-1 text-xs font-extrabold text-white shadow-sm">50% OFF</span>
+                                        </>
+                                    )}
+                                </div>
+                            )}
+                            {fallbackVoucherApplied && quantity > 1 && (
+                                <p className="mt-1 text-xs font-medium text-rose-600">
+                                    Diskon 50% berlaku untuk 1 unit. Unit berikutnya harga normal.
                                 </p>
                             )}
 

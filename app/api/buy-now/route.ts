@@ -391,7 +391,15 @@ export async function GET(
             ) {
                 return jsonError("Voucher 50% sudah tidak tersedia.", 409);
             }
-            fallbackVoucherDiscount = Math.round(rawPrice * 0.5);
+            const fallbackReferencePrice = Math.max(
+                rawPrice,
+                Number(variant.comparePrice ?? 0),
+                Number(pricing?.originalPrice ?? rawPrice)
+            );
+            fallbackVoucherDiscount = Math.max(
+                0,
+                rawPrice - Math.min(rawPrice, Math.round(fallbackReferencePrice * 0.5))
+            );
         }
 
         const price = fallbackPromoSlug

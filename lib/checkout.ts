@@ -1809,7 +1809,7 @@ export async function createCheckoutOrder(
 
                 const variantPrice = await tx.productVariant.findUnique({
                     where: { id: fallbackPromo.variantId! },
-                    select: { price: true, productId: true },
+                    select: { price: true, comparePrice: true, productId: true },
                 });
                 if (!variantPrice || variantPrice.productId !== fallbackPromo.productId) {
                     throw new Error("Produk voucher 50% tidak ditemukan.");
@@ -1823,6 +1823,11 @@ export async function createCheckoutOrder(
                 }
 
                 const regularUnitPrice = Math.round(Number(variantPrice.price));
+                const referenceUnitPrice = Math.max(
+                    regularUnitPrice,
+                    Number(variantPrice.comparePrice ?? 0),
+                    Number(targetItems[0].promoRegularPrice ?? 0)
+                );
                 if (!Number.isFinite(regularUnitPrice) || regularUnitPrice <= 0) {
                     throw new Error("Harga produk voucher 50% tidak valid.");
                 }
@@ -1835,10 +1840,11 @@ export async function createCheckoutOrder(
                     delete (item as any).flashSaleId;
                 }
 
-                fallbackPromoDiscount = Math.min(
+                const fallbackUnitPrice = Math.min(
                     regularUnitPrice,
-                    Math.round(regularUnitPrice * 0.5)
+                    Math.round(referenceUnitPrice * 0.5)
                 );
+                fallbackPromoDiscount = Math.max(0, regularUnitPrice - fallbackUnitPrice);
                 fallbackPromoContext = {
                     id: fallbackPromo.id,
                     slug: fallbackPromo.slug,
