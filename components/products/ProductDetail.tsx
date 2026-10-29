@@ -701,7 +701,7 @@ export default function ProductDetail({
                                     <p className="text-sm text-gray-400 line-through">
                                         Rp {formatPrice(strikethroughPrice ?? 0)}
                                     </p>
-                                    <p className={`text-3xl font-bold transition-colors duration-500 ${showRegularPrice ? "text-gray-900" : "text-rose-600"}`}>
+                                    <p className="text-3xl font-bold text-rose-600 transition-colors duration-500">
                                         Rp {formatPrice(animatedPrice)}
                                     </p>
                                     {flashSaleName && (
@@ -711,7 +711,7 @@ export default function ProductDetail({
                                     )}
                                 </>
                             ) : (
-                                <p className="text-3xl font-bold text-gray-900 transition-colors duration-500">
+                                <p className={`text-3xl font-bold transition-colors duration-500 ${showRegularPrice ? "text-rose-600" : "text-gray-900"}`}>
                                     Rp {formatPrice(animatedPrice)}
                                 </p>
                             )}
