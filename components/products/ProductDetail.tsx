@@ -259,7 +259,7 @@ export default function ProductDetail({
         if (from === to) return;
 
         const startedAt = performance.now();
-        const durationMs = 650;
+        const durationMs = 1600;
         let frameId = 0;
 
         const animate = (now: number) => {
