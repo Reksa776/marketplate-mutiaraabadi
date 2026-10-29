@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
@@ -43,6 +43,7 @@ export default function PromoClaimPage({
     const [loading, setLoading] = useState(true);
     const [claiming, setClaiming] = useState(false);
     const [error, setError] = useState("");
+    const fireworksCanvasRef = useRef<HTMLCanvasElement>(null);
 
     const refresh = useCallback(async () => {
         setLoading(true);
@@ -66,6 +67,117 @@ export default function PromoClaimPage({
     useEffect(() => {
         void refresh();
     }, [refresh]);
+
+    useEffect(() => {
+        if (!status?.active || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            return;
+        }
+
+        const canvas = fireworksCanvasRef.current;
+        const context = canvas?.getContext("2d");
+        if (!canvas || !context) return;
+
+        let width = window.innerWidth;
+        let height = window.innerHeight;
+        let animationFrame = 0;
+        let pendingBursts = 3;
+        const timers: number[] = [];
+        const particles: Array<{
+            x: number;
+            y: number;
+            vx: number;
+            vy: number;
+            gravity: number;
+            life: number;
+            maxLife: number;
+            color: string;
+            radius: number;
+        }> = [];
+
+        const resizeCanvas = () => {
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = Math.round(width * pixelRatio);
+            canvas.height = Math.round(height * pixelRatio);
+            canvas.style.width = `${width}px`;
+            canvas.style.height = `${height}px`;
+            context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        };
+
+        const launchBurst = (position: number) => {
+            const centerX = width * position;
+            const centerY = height * (0.22 + Math.random() * 0.24);
+            const color = `hsl(${Math.floor(Math.random() * 360)} 95% 58%)`;
+            const count = 46;
+
+            for (let index = 0; index < count; index += 1) {
+                const angle = (Math.PI * 2 * index) / count;
+                const speed = 1.5 + Math.random() * 3.2;
+                const life = 48 + Math.floor(Math.random() * 28);
+                particles.push({
+                    x: centerX,
+                    y: centerY,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    gravity: 0.035,
+                    life,
+                    maxLife: life,
+                    color,
+                    radius: 1.5 + Math.random() * 1.5,
+                });
+            }
+        };
+
+        const drawFrame = () => {
+            context.clearRect(0, 0, width, height);
+
+            for (let index = particles.length - 1; index >= 0; index -= 1) {
+                const particle = particles[index];
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                particle.vy += particle.gravity;
+                particle.life -= 1;
+
+                if (particle.life <= 0) {
+                    particles.splice(index, 1);
+                    continue;
+                }
+
+                context.globalAlpha = particle.life / particle.maxLife;
+                context.fillStyle = particle.color;
+                context.beginPath();
+                context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+                context.fill();
+            }
+
+            context.globalAlpha = 1;
+            if (pendingBursts > 0 || particles.length > 0) {
+                animationFrame = window.requestAnimationFrame(drawFrame);
+            }
+        };
+
+        resizeCanvas();
+        window.addEventListener("resize", resizeCanvas);
+        [0.22, 0.5, 0.78].forEach((position, index) => {
+            timers.push(
+                window.setTimeout(() => {
+                    launchBurst(position);
+                    pendingBursts -= 1;
+                    if (!animationFrame) {
+                        animationFrame = window.requestAnimationFrame(drawFrame);
+                    }
+                }, 120 + index * 420)
+            );
+        });
+
+        return () => {
+            timers.forEach(window.clearTimeout);
+            window.cancelAnimationFrame(animationFrame);
+            window.removeEventListener("resize", resizeCanvas);
+            context.clearRect(0, 0, width, height);
+        };
+    }, [status?.active]);
 
     useEffect(() => {
         // Keep a page that stays open across midnight in sync with the
@@ -117,10 +229,15 @@ export default function PromoClaimPage({
 
     return (
         <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-rose-50 via-white to-amber-50 px-4 py-12">
+            <canvas
+                ref={fireworksCanvasRef}
+                aria-hidden="true"
+                className="pointer-events-none fixed inset-0 z-10"
+            />
             <div aria-hidden="true" className="pointer-events-none absolute -left-24 top-10 h-72 w-72 rounded-full bg-rose-200/40 blur-3xl" />
             <div aria-hidden="true" className="pointer-events-none absolute -right-24 bottom-0 h-80 w-80 rounded-full bg-amber-200/40 blur-3xl" />
 
-            <section className="relative w-full max-w-xl rounded-3xl border border-white bg-white/90 p-7 text-center shadow-xl shadow-rose-900/5 backdrop-blur sm:p-10">
+            <section className="relative z-20 w-full max-w-xl rounded-3xl border border-white bg-white/90 p-7 text-center shadow-xl shadow-rose-900/5 backdrop-blur sm:p-10">
                 {loading ? (
                     <div className="py-12 text-sm text-gray-500">Memuat voucher...</div>
                 ) : expired ? (
