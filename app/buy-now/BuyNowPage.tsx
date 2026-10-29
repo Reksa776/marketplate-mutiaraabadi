@@ -2945,6 +2945,31 @@ export default function BuyNowPage({
      * =====================================================
      */
 
+    const fallbackApplied = Boolean(fallbackPromoSlug);
+    const baseUnitPrice = Number(
+        data.variant.effectivePrice ?? data.variant.price
+    );
+    const fallbackReferenceUnitPrice = Math.max(
+        Number(data.variant.comparePrice ?? 0),
+        Number(data.variant.originalPrice ?? data.variant.price),
+        Number(data.variant.price)
+    );
+    const fallbackUnitDiscount = Math.min(
+        Number(data.fallbackVoucherDiscount ?? 0),
+        Number(data.variant.price)
+    );
+    const fallbackUnitPrice = Math.max(
+        0,
+        Number(data.variant.price) - fallbackUnitDiscount
+    );
+    const displayedLineTotal = fallbackApplied
+        ? Number(data.subtotal) - fallbackUnitDiscount
+        : Number(data.subtotal);
+    const displayedReferenceTotal = fallbackApplied
+        ? fallbackReferenceUnitPrice +
+          Math.max(0, data.quantity - 1) * Number(data.variant.price)
+        : 0;
+
     return (
         <main className="min-h-screen bg-gray-50 px-4 py-8 sm:px-6">
             <div className="mx-auto max-w-6xl">
@@ -3005,34 +3030,6 @@ export default function BuyNowPage({
                                 </div>
 
                                 <div className="min-w-0 flex-1">
-                                    {(() => {
-                                        const fallbackApplied = Boolean(fallbackPromoSlug);
-                                        const baseUnitPrice = Number(
-                                            data.variant.effectivePrice ?? data.variant.price
-                                        );
-                                        const fallbackReferenceUnitPrice = Math.max(
-                                            Number(data.variant.comparePrice ?? 0),
-                                            Number(data.variant.originalPrice ?? data.variant.price),
-                                            Number(data.variant.price)
-                                        );
-                                        const fallbackUnitDiscount = Math.min(
-                                            Number(data.fallbackVoucherDiscount ?? 0),
-                                            Number(data.variant.price)
-                                        );
-                                        const fallbackUnitPrice = Math.max(
-                                            0,
-                                            Number(data.variant.price) - fallbackUnitDiscount
-                                        );
-                                        const displayedLineTotal = fallbackApplied
-                                            ? Number(data.subtotal) - fallbackUnitDiscount
-                                            : Number(data.subtotal);
-                                        const displayedReferenceTotal = fallbackApplied
-                                            ? fallbackReferenceUnitPrice +
-                                              Math.max(0, data.quantity - 1) * Number(data.variant.price)
-                                            : 0;
-
-                                        return (
-                                            <>
                                     <h3 className="font-bold text-gray-900">
                                         {
                                             data.product
@@ -3128,9 +3125,6 @@ export default function BuyNowPage({
                                         </span>
                                     )}
                                 </div>
-                                            </>
-                                        );
-                                    })()}
                             </div>
                         </section>
 
