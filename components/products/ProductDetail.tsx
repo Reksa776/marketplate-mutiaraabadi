@@ -532,7 +532,7 @@ export default function ProductDetail({
                     >
                         <h2 id="promo-late-title" className="text-2xl font-black text-gray-950">Kamu terlambat</h2>
                         <p className="mt-3 text-sm leading-6 text-gray-600">
-                            Kuota promo sudah habis. Klik link di bawah ini untuk melihat promo lainnya.
+                            Kuota promo hari ini sudah habis atau periodenya telah berakhir. Lihat promo menarik lainnya di menu produk.
                         </p>
                         <Link
                             href="/products"

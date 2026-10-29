@@ -51,7 +51,7 @@ export function isPromoActive(
 
 export type PromoClaimResult =
     | { status: "CLAIMED"; alreadyClaimed: boolean }
-    | { status: "NOT_FOUND" | "INACTIVE" | "QUOTA_EXHAUSTED" };
+    | { status: "NOT_FOUND" | "INACTIVE" };
 
 export async function claimDailyPromo(input: {
     slug: string;
@@ -91,19 +91,6 @@ export async function claimDailyPromo(input: {
                     status: "CLAIMED",
                     alreadyClaimed: true,
                 };
-            }
-
-            const daily = await tx.promoDailyQuota.findUnique({
-                where: {
-                    promoId_quotaDate: {
-                        promoId: promo.id,
-                        quotaDate,
-                    },
-                },
-                select: { claimedCount: true },
-            });
-            if ((daily?.claimedCount ?? 0) >= promo.dailyQuota) {
-                return { status: "QUOTA_EXHAUSTED" };
             }
 
             await tx.promoClaim.create({

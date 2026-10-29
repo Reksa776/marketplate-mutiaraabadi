@@ -89,7 +89,10 @@ export async function GET(
             dailyQuota: promo.dailyQuota,
             claimedCount,
             remaining,
-            claimable: active && !claim && remaining > 0,
+            // Claiming the voucher only saves the visitor's entitlement.
+            // Daily quota is checked when they press Buy Now and reserved
+            // atomically when an order is created.
+            claimable: active && !claim,
             timeZone: "Asia/Jakarta",
             quotaDate: quotaDate.toISOString().slice(0, 10),
         },
@@ -137,12 +140,6 @@ export async function POST(
         return NextResponse.json(
             { success: false, code: "PROMO_INACTIVE", message: "Periode promo sudah berakhir atau promo tidak aktif." },
             { status: 410 }
-        );
-    }
-    if (result.status === "QUOTA_EXHAUSTED") {
-        return NextResponse.json(
-            { success: false, code: "DAILY_QUOTA_EXHAUSTED", message: "Kuota promo hari ini sudah habis." },
-            { status: 409 }
         );
     }
     if (result.status !== "CLAIMED") {

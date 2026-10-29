@@ -113,7 +113,7 @@ export default function PromoClaimPage({
         }
     }
 
-    const exhausted = !loading && status && (!status.active || status.remaining <= 0);
+    const expired = !loading && status && !status.active;
 
     return (
         <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-br from-rose-50 via-white to-amber-50 px-4 py-12">
@@ -122,8 +122,8 @@ export default function PromoClaimPage({
 
             <section className="relative w-full max-w-xl rounded-3xl border border-white bg-white/90 p-7 text-center shadow-xl shadow-rose-900/5 backdrop-blur sm:p-10">
                 {loading ? (
-                    <div className="py-12 text-sm text-gray-500">Memeriksa kuota promo...</div>
-                ) : exhausted ? (
+                    <div className="py-12 text-sm text-gray-500">Memuat voucher...</div>
+                ) : expired ? (
                     <>
                         <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 text-amber-700">
                             <FiGift size={30} />
@@ -131,7 +131,7 @@ export default function PromoClaimPage({
                         <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">{title}</p>
                         <h1 className="mt-3 text-3xl font-black tracking-tight text-gray-950 sm:text-4xl">Kamu terlambat</h1>
                         <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">
-                            Kuota promo hari ini sudah habis atau periodenya telah berakhir. Lihat promo menarik lainnya di menu produk.
+                            Periode voucher ini telah berakhir. Lihat voucher dan promo lainnya di menu produk.
                         </p>
                         <Link href="/products" className="mt-7 inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-gray-950 px-6 text-sm font-bold text-white transition hover:bg-gray-800">
                             <FiShoppingBag /> Lihat promo lainnya
@@ -160,7 +160,7 @@ export default function PromoClaimPage({
                         <h2 className="mt-2 text-xl font-bold text-gray-800">{title}</h2>
                         {description && <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-gray-600">{description}</p>}
                         {product && <ProductPriceCard product={product} />}
-                        <p className="mt-5 text-sm text-gray-500">Kuota promo hari ini tersisa <strong className="text-gray-900">{status?.remaining ?? 0}</strong>.</p>
+                        <p className="mt-5 text-sm text-gray-500">Klaim voucher untuk mengaktifkan harga spesial di halaman produk.</p>
                         <button type="button" disabled={claiming || !status?.claimable} onClick={() => void claim()} className="mt-6 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-rose-600 px-6 text-sm font-bold text-white transition hover:bg-rose-700 disabled:cursor-wait disabled:opacity-60">
                             <FiGift /> {claiming ? "Mengaktifkan voucher..." : "Klaim Voucher"}
                         </button>
