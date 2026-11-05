@@ -953,6 +953,44 @@ export default function AdminOrderDetailPage() {
 
                     <section className="min-w-0 space-y-5">
 
+                        {/* ORDERED PRODUCTS */}
+
+                        <div className="rounded-xl border border-gray-200 bg-white">
+                            <div className="border-b border-gray-100 px-5 py-4">
+                                <h2 className="text-sm font-semibold text-gray-900">
+                                    Produk yang Dipesan
+                                </h2>
+                            </div>
+                            <div className="divide-y divide-gray-100">
+                                {order.items.map((item) => (
+                                    <div
+                                        key={item.id}
+                                        className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+                                    >
+                                        <div className="min-w-0">
+                                            <p className="text-sm font-semibold text-gray-900">
+                                                {item.productName}
+                                            </p>
+                                            <p className="mt-1 text-xs text-gray-500">
+                                                Varian: {item.variantName} · Jumlah: {item.quantity}
+                                            </p>
+                                        </div>
+                                        <div className="shrink-0 text-sm font-medium text-gray-700 sm:text-right">
+                                            <p>{rupiah(Number(item.price))} / item</p>
+                                            <p className="mt-1 text-xs text-gray-500">
+                                                Subtotal {rupiah(Number(item.subtotal))}
+                                            </p>
+                                        </div>
+                                    </div>
+                                ))}
+                                {order.items.length === 0 && (
+                                    <p className="px-5 py-6 text-sm text-gray-500">
+                                        Detail produk tidak tersedia untuk pesanan ini.
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+
                         {/* CUSTOMER */}
 
                         <div className="rounded-xl border border-gray-200 bg-white">
