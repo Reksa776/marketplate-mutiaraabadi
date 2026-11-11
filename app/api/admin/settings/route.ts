@@ -412,12 +412,12 @@ export async function PUT(
 
         const phones = parseRecipientLines(body.orderNotificationPhones);
         const emails = parseRecipientLines(body.orderNotificationEmails);
+        if (phones.length === 0) {
+            return NextResponse.json({ success: false, field: "orderNotificationPhones", message: "Isi minimal satu nomor WhatsApp admin untuk notifikasi pesanan." }, { status: 400 });
+        }
         const normalizedPhones = phones.map(normalizePhone);
         if (normalizedPhones.some((phone) => !phone)) {
             return NextResponse.json({ success: false, field: "orderNotificationPhones", message: "Format nomor WhatsApp admin tidak valid." }, { status: 400 });
-        }
-        if (new Set(normalizedPhones).size === 1) {
-            return NextResponse.json({ success: false, field: "orderNotificationPhones", message: "Isi minimal dua nomor WhatsApp admin yang berbeda atau kosongkan semuanya." }, { status: 400 });
         }
         if (emails.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
             return NextResponse.json({ success: false, field: "orderNotificationEmails", message: "Ada alamat email admin yang tidak valid." }, { status: 400 });

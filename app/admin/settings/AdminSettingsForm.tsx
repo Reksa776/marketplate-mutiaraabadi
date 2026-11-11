@@ -1963,11 +1963,11 @@ export default function AdminSettingsForm() {
 
                     <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
                         <h2 className="text-lg font-bold text-gray-900">Notifikasi Pesanan</h2>
-                        <p className="mt-2 text-sm text-gray-600">Admin menerima kabar saat status pesanan berubah dari Menunggu Pembayaran. Satu nomor per baris; isi minimal dua nomor WhatsApp. Email boleh lebih dari satu, satu alamat per baris.</p>
+                        <p className="mt-2 text-sm text-gray-600">Admin menerima kabar saat status pesanan berubah dari Menunggu Pembayaran. Isi minimal satu nomor WhatsApp; nomor tambahan boleh ditulis satu per baris. Email boleh lebih dari satu, satu alamat per baris.</p>
                         <div className="mt-5 grid gap-5 md:grid-cols-2">
                             <label className="text-sm font-medium text-gray-700">
                                 Nomor WhatsApp admin
-                                <textarea rows={4} value={form.orderNotificationPhones} onChange={(e) => updateField("orderNotificationPhones", e.target.value)} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-rose-500" placeholder={"62812xxxxxxx\n62813xxxxxxx"} />
+                                <textarea rows={4} value={form.orderNotificationPhones} onChange={(e) => updateField("orderNotificationPhones", e.target.value)} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-rose-500" placeholder="62812xxxxxxx" />
                             </label>
                             <label className="text-sm font-medium text-gray-700">
                                 Email admin
