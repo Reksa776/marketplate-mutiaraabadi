@@ -40,6 +40,7 @@ export type OrderStatusChangedEvent = {
     recipientPhone: string;
     /** Delivery channel override for admin recipient fan-out. */
     channel?: NotificationChannel;
+    paymentMethod?: string;
     previousStatus: string;
     newStatus: string;
     total: number;
@@ -79,6 +80,7 @@ export type SendNotificationPayload = {
     trackingNumber?: string | null;
     trackingUrl?: string | null;
     shippingCourier?: string | null;
+    paymentMethod?: string;
 };
 
 /**

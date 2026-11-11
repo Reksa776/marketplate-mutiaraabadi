@@ -129,11 +129,18 @@ function buildStatusMessage(
         return payload.rawMessage;
     }
 
+    const isCodCreation =
+        payload.previousStatus === "CREATED" &&
+        payload.newStatus === "PENDING" &&
+        payload.paymentMethod === "COD";
+
     return [
         "Update Pesanan",
         "",
         `Pesanan: ${payload.orderNumber}`,
-        `Status: ${payload.newStatus}`,
+        isCodCreation
+            ? "Pesanan COD baru berhasil dibuat."
+            : `Status: ${payload.newStatus}`,
         "",
         "Terima kasih telah berbelanja.",
     ].join("\n");

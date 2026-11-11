@@ -284,6 +284,7 @@ export async function onOrderStatusChanged(
             trackingNumber: order.trackingNumber,
             trackingUrl: order.trackingUrl,
             shippingCourier: order.shippingCourier,
+            paymentMethod: order.paymentMethod,
             timestamp: new Date(),
         };
 
@@ -299,10 +300,14 @@ export async function onOrderStatusChanged(
 
         await service.handleOrderStatusChanged(event);
 
-        // Admin order alerts are configured in Store Settings. Only send
-        // after the order has left PENDING; recipient and channel are part
-        // of the idempotency key so retries do not fan out duplicates.
-        if (newStatus !== "PENDING") {
+        // COD remains PENDING after creation, so its creation event is a
+        // notification trigger in its own right. Other orders alert admins
+        // after they leave PENDING.
+        const isCodCreation =
+            previousStatus === "CREATED" &&
+            newStatus === "PENDING" &&
+            order.paymentMethod === "COD";
+        if (newStatus !== "PENDING" || isCodCreation) {
             const settings = await prisma.storeSetting.findUnique({
                 where: { id: 1 },
                 select: {

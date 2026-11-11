@@ -451,6 +451,19 @@ export async function POST(
             );
         }
 
+        // COD orders remain PENDING until fulfilment, so report the
+        // creation event explicitly instead of waiting for a status change.
+        if (!result.duplicate) {
+            try {
+                const { onOrderStatusChanged } = await import(
+                    "@/lib/notification/order-status-handler"
+                );
+                await onOrderStatusChanged(result.order.id, "CREATED", "PENDING");
+            } catch (error) {
+                console.error("COD ORDER NOTIFICATION ERROR:", error);
+            }
+        }
+
         return response;
     } catch (error: any) {
         console.error(

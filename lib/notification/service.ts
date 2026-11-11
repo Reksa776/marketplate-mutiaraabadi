@@ -168,6 +168,7 @@ export class NotificationService {
                         trackingUrl: event.trackingUrl,
                         shippingCourier:
                             event.shippingCourier,
+                        paymentMethod: event.paymentMethod,
                     }),
                 },
                 select: {
@@ -208,6 +209,7 @@ export class NotificationService {
                 trackingNumber: event.trackingNumber,
                 trackingUrl: event.trackingUrl,
                 shippingCourier: event.shippingCourier,
+                paymentMethod: event.paymentMethod,
             } satisfies SendNotificationPayload,
             {
                 maxAttempts: 3,

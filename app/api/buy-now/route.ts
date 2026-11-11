@@ -845,6 +845,18 @@ export async function POST(
             );
         }
 
+        // COD orders remain PENDING, so notify immediately on creation.
+        if (!result.duplicate) {
+            try {
+                const { onOrderStatusChanged } = await import(
+                    "@/lib/notification/order-status-handler"
+                );
+                await onOrderStatusChanged(result.order.id, "CREATED", "PENDING");
+            } catch (error) {
+                console.error("BUY NOW COD NOTIFICATION ERROR:", error);
+            }
+        }
+
         return response;
     } catch (error) {
         console.error(

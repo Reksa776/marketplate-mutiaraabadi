@@ -94,18 +94,22 @@ function formatItems(
 export function generateOrderStatusMessage(
     payload: SendNotificationPayload
 ): string {
-    const statusLabel =
-        STATUS_LABELS[payload.newStatus] ||
-        payload.newStatus;
+    const isCodCreation =
+        payload.previousStatus === "CREATED" &&
+        payload.newStatus === "PENDING" &&
+        payload.paymentMethod === "COD";
+    const statusLabel = isCodCreation
+        ? "Pesanan COD Baru"
+        : STATUS_LABELS[payload.newStatus] || payload.newStatus;
 
     const lines: string[] = [];
 
     // Header
     lines.push("Halo,");
     lines.push("");
-    lines.push(
-        `Pesanan Anda *${payload.orderNumber}* telah diperbarui.`
-    );
+    lines.push(isCodCreation
+        ? `Pesanan COD baru *${payload.orderNumber}* berhasil dibuat.`
+        : `Pesanan *${payload.orderNumber}* telah diperbarui.`);
     lines.push(
         `Status: *${statusLabel}*`
     );
