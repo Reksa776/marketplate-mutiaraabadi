@@ -390,6 +390,47 @@ class WhatsAppService {
         }
     }
 
+    async sendDocument(
+        jid: string,
+        document: Uint8Array,
+        fileName: string,
+        caption: string
+    ): Promise<SendMessageResult> {
+        if (this.status !== "CONNECTED") {
+            return {
+                success: false,
+                errorCode: "NOT_CONNECTED",
+                errorMessage: `WhatsApp is ${this.status.toLowerCase()}`,
+            };
+        }
+        if (!this.socket) {
+            return {
+                success: false,
+                errorCode: "NO_SOCKET",
+                errorMessage: "Socket not available",
+            };
+        }
+        try {
+            const result = await this.socket.sendMessage(jid, {
+                document: Buffer.from(document),
+                mimetype: "application/pdf",
+                fileName,
+                caption,
+            });
+            return {
+                success: true,
+                messageId: result?.key?.id || undefined,
+            };
+        } catch (error) {
+            return {
+                success: false,
+                errorCode: "SEND_FAILED",
+                errorMessage:
+                    error instanceof Error ? error.message : "Send failed",
+            };
+        }
+    }
+
     // ==========================================
     // SEND INTERACTIVE MESSAGE (OPT-IN, BEST EFFORT)
     // ==========================================

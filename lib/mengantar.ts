@@ -263,6 +263,46 @@ function keyPath(suffix: string): string {
     return `/api/public/${MENGANTAR_API_KEY}${suffix}`;
 }
 
+export type MengantarLabelGeneration = {
+    labelGenerationId: string;
+    status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
+    downloadUrl?: string;
+    errorMessage?: string;
+};
+
+/** Start the documented asynchronous PDF label job for one paid order. */
+export async function requestMengantarLabelGeneration({
+    orderId,
+    courier,
+    format,
+}: {
+    orderId: string;
+    courier: MengantarCourier;
+    format: string;
+}): Promise<MengantarLabelGeneration> {
+    const result = await mengantarRequest<MengantarLabelGeneration>(
+        keyPath("/label-generation"),
+        {
+            method: "POST",
+            body: JSON.stringify({ orderId, courier, format }),
+        }
+    );
+    if (!result?.labelGenerationId) {
+        throw new MengantarError("Mengantar tidak mengembalikan ID pembuatan label.");
+    }
+    return result;
+}
+
+/** Read the current state of a previously requested PDF label job. */
+export async function getMengantarLabelGeneration(
+    labelGenerationId: string
+): Promise<MengantarLabelGeneration> {
+    return mengantarRequest<MengantarLabelGeneration>(
+        keyPath(`/label-generation/${encodeURIComponent(labelGenerationId)}`),
+        { method: "GET" }
+    );
+}
+
 /*
  * ============================================================
  * ADDRESS / AREA (origin & destination references)
