@@ -19,6 +19,7 @@
  */
 
 import { prisma } from "@/lib/prisma";
+import { normalizePhone } from "@/lib/whatsapp/phone";
 import { shipmentStatusToEventKey } from "@/lib/mengantar/status";
 import { NotificationService } from "./service";
 import { MockNotificationProvider } from "./mock-provider";
@@ -297,6 +298,28 @@ export async function onOrderStatusChanged(
         const service = await getNotificationService();
 
         await service.handleOrderStatusChanged(event);
+
+        // Admin order alerts are configured in Store Settings. Only send
+        // after the order has left PENDING; recipient and channel are part
+        // of the idempotency key so retries do not fan out duplicates.
+        if (newStatus !== "PENDING") {
+            const settings = await prisma.storeSetting.findUnique({
+                where: { id: 1 },
+                select: {
+                    orderNotificationPhones: true,
+                    orderNotificationEmails: true,
+                },
+            });
+            const adminPhones = [...new Set((settings?.orderNotificationPhones ?? "")
+                .split(/[\n,;]+/).map((phone) => normalizePhone(phone.trim())).filter((phone): phone is string => Boolean(phone)))];
+            const adminEmails = [...new Set((settings?.orderNotificationEmails ?? "")
+                .split(/[\n,;]+/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
+
+            await Promise.allSettled([
+                ...adminPhones.map((phone) => service.handleOrderStatusChanged({ ...event, recipientPhone: phone, channel: "whatsapp" })),
+                ...adminEmails.map((email) => service.handleOrderStatusChanged({ ...event, recipientPhone: email, channel: "email" })),
+            ]);
+        }
     } catch (error) {
         /**
          * ==========================================

@@ -12,6 +12,7 @@
  */
 
 import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 
 import { prisma } from "@/lib/prisma";
 import { getNotificationQueue } from "./queue";
@@ -87,6 +88,7 @@ export class NotificationService {
     ): Promise<void> {
         const notificationType: NotificationType =
             "ORDER_STATUS_CHANGED";
+        const channel = event.channel ?? this.channel;
 
         /**
          * Generate idempotency key.
@@ -100,7 +102,9 @@ export class NotificationService {
             this.generateIdempotencyKey(
                 event.orderId,
                 event.previousStatus,
-                event.newStatus
+                event.newStatus,
+                channel,
+                event.recipientPhone
             );
 
         /**
@@ -147,7 +151,7 @@ export class NotificationService {
                 data: {
                     orderId: event.orderId,
                     userId: event.userId,
-                    channel: this.channel,
+                    channel,
                     notificationType,
                     recipient: event.recipientPhone,
                     idempotencyKey,
@@ -192,7 +196,7 @@ export class NotificationService {
         queue.enqueue(
             {
                 notificationId: notification.id,
-                channel: this.channel,
+                channel,
                 notificationType,
                 recipient: event.recipientPhone,
                 orderId: event.orderId,
@@ -528,8 +532,11 @@ export class NotificationService {
     private generateIdempotencyKey(
         orderId: number,
         previousStatus: string,
-        newStatus: string
+        newStatus: string,
+        channel: NotificationChannel,
+        recipient: string
     ): string {
-        return `notif_order_${orderId}_${previousStatus}_${newStatus}`;
+        const recipientKey = createHash("sha256").update(recipient.trim().toLowerCase()).digest("hex").slice(0, 12);
+        return `notif_order_${orderId}_${channel}_${recipientKey}_${previousStatus}_${newStatus}`;
     }
 }

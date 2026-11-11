@@ -28,6 +28,7 @@ import {
     hasTikTokPixelChanges,
 } from "@/lib/analytics/tiktok-pixel-audit";
 import { createAuditLog } from "@/lib/admin/audit-log";
+import { normalizePhone } from "@/lib/whatsapp/phone";
 import {
     isMengantarConfigured,
     listMengantarPickupAddresses,
@@ -52,6 +53,8 @@ const SETTINGS_SELECT = {
     storeName: true,
     phone: true,
     email: true,
+    orderNotificationPhones: true,
+    orderNotificationEmails: true,
     logo: true,
     faviconUrl: true,
     address: true,
@@ -95,6 +98,8 @@ type SettingsProjectionSource = {
     storeName: string;
     phone: string | null;
     email: string | null;
+    orderNotificationPhones: string | null;
+    orderNotificationEmails: string | null;
     logo: string | null;
     faviconUrl: string | null;
     address: string;
@@ -131,6 +136,8 @@ function toSettingsResponse(
         storeName: setting.storeName,
         phone: setting.phone,
         email: setting.email,
+        orderNotificationPhones: setting.orderNotificationPhones,
+        orderNotificationEmails: setting.orderNotificationEmails,
         logo: setting.logo,
         /**
          * Read-only here: the favicon is uploaded/removed via
@@ -227,6 +234,11 @@ function nullableNumber(
     return Number.isFinite(numberValue)
         ? numberValue
         : null;
+}
+
+function parseRecipientLines(value: unknown): string[] {
+    if (typeof value !== "string") return [];
+    return [...new Set(value.split(/[\n,;]+/).map((entry) => entry.trim()).filter(Boolean))];
 }
 
 /**
@@ -397,6 +409,21 @@ export async function PUT(
 
         const mengantarSettings =
             mengantarResult.value;
+
+        const phones = parseRecipientLines(body.orderNotificationPhones);
+        const emails = parseRecipientLines(body.orderNotificationEmails);
+        const normalizedPhones = phones.map(normalizePhone);
+        if (normalizedPhones.some((phone) => !phone)) {
+            return NextResponse.json({ success: false, field: "orderNotificationPhones", message: "Format nomor WhatsApp admin tidak valid." }, { status: 400 });
+        }
+        if (new Set(normalizedPhones).size === 1) {
+            return NextResponse.json({ success: false, field: "orderNotificationPhones", message: "Isi minimal dua nomor WhatsApp admin yang berbeda atau kosongkan semuanya." }, { status: 400 });
+        }
+        if (emails.some((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+            return NextResponse.json({ success: false, field: "orderNotificationEmails", message: "Ada alamat email admin yang tidak valid." }, { status: 400 });
+        }
+        const orderNotificationPhones = [...new Set(normalizedPhones.filter((phone): phone is string => Boolean(phone)))].join("\n") || null;
+        const orderNotificationEmails = emails.join("\n") || null;
 
         const provinceId =
             body.provinceId
@@ -813,6 +840,9 @@ export async function PUT(
                         body.email?.trim() ||
                         null,
 
+                    orderNotificationPhones,
+                    orderNotificationEmails,
+
                     logo:
                         body.logo?.trim() ||
                         null,
@@ -910,6 +940,9 @@ export async function PUT(
                     email:
                         body.email?.trim() ||
                         null,
+
+                    orderNotificationPhones,
+                    orderNotificationEmails,
 
                     logo:
                         body.logo?.trim() ||

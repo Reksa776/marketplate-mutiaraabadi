@@ -1,45 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { resolveBatchPrices } from "@/lib/marketing/batch-pricing";
 import type { CartStockStatus } from "@/lib/cart-validation";
 import {
-    applyCartCookie,
     findCartForScope,
     getOrCreateCartForScope,
     resolveCartScope,
     type CartScope,
 } from "@/lib/cart-scope";
-import {
-    getClientIp,
-    guestIpKey,
-    rateLimiters,
-} from "@/lib/rate-limit";
 import { rejectCrossSite } from "@/lib/checkout-idempotency";
 import { promoVisitorHashFromCookieHeader } from "@/lib/promo-claim";
 
 /**
  * ==========================================
- * CART API — CUSTOMER LOGIN IS NOT REQUIRED
+ * CART API — CUSTOMER LOGIN REQUIRED
  * ==========================================
  *
- * The cart may belong to:
- *   - an authenticated customer (legacy), or
- *   - an anonymous guest, scoped by an httpOnly cart cookie.
+ * Cart belongs to the authenticated customer account and is persisted
+ * server-side, so it remains available after refresh and across devices.
  *
  * Security notes:
- *  - A cart is a CART SCOPE, not a verified identity. Every price and
- *    stock level shown here is display data; checkout re-derives the
- *    authoritative values server-side (lib/checkout.ts). A tampered
- *    cart cookie cannot change what is charged.
- *  - Item lookups are always filtered by the resolved scope, so one
- *    guest can never read or mutate another guest's cart items.
- *  - Guest mutations are rate limited by IP.
+ *  - Prices and stock shown here are display data; checkout re-derives
+ *    authoritative values server-side (lib/checkout.ts).
+ *  - Item lookups are always filtered by the signed-in user scope.
  */
 
 /**
  * Prisma `where` fragment identifying carts owned by this scope.
- * Returns null for a guest that has no cookie yet.
+ * Returns null when the request has no signed-in user.
  */
 function cartScopeFilter(
     scope: CartScope
@@ -218,28 +206,13 @@ async function loadScopedCart(scope: CartScope) {
     });
 }
 
-/**
- * Rate limit guest cart mutations. Logged-in traffic keeps the
- * pre-existing behaviour (no extra limiter).
- */
-function guestCartRateLimited(
-    request: Request,
-    scope: CartScope
-): boolean {
-    if (scope.userId) {
-        return false;
-    }
-
-    const ip = getClientIp(request);
-
-    return !rateLimiters.guestCart(
-        guestIpKey({ ip, scope: "cart" })
-    ).allowed;
-}
-
 export async function GET(request: NextRequest) {
     try {
         const scope = await resolveCartScope();
+
+        if (!scope.userId) {
+            return NextResponse.json({ message: "Silakan login untuk membuka keranjang." }, { status: 401 });
+        }
 
         const cart = await loadScopedCart(scope);
 
@@ -275,14 +248,8 @@ export async function POST(
 
         const scope = await resolveCartScope();
 
-        if (guestCartRateLimited(request, scope)) {
-            return NextResponse.json(
-                {
-                    message:
-                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
-                },
-                { status: 429 }
-            );
+        if (!scope.userId) {
+            return NextResponse.json({ message: "Silakan login untuk menyimpan produk ke keranjang." }, { status: 401 });
         }
 
         const body = await request.json();
@@ -419,12 +386,9 @@ export async function POST(
             }
         }
 
-        /*
-         * Find or create the cart for this scope. A guest with no
-         * cookie yet gets a fresh token, returned so it can be set as
-         * an httpOnly cookie on this response.
-         */
-        const { cart, issuedToken } =
+        // Find or create the account cart. Cart rows are stored in the
+        // database under userId and survive page reloads and new sessions.
+        const { cart } =
             await getOrCreateCartForScope(scope);
 
         const scopeFilter = cartScopeFilter(scope);
@@ -524,7 +488,7 @@ export async function POST(
             }
         );
 
-        return applyCartCookie(response, issuedToken);
+        return response;
     } catch (error) {
         console.error(
             "POST CART ERROR:",
@@ -555,14 +519,8 @@ export async function PATCH(
 
         const scope = await resolveCartScope();
 
-        if (guestCartRateLimited(request, scope)) {
-            return NextResponse.json(
-                {
-                    message:
-                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
-                },
-                { status: 429 }
-            );
+        if (!scope.userId) {
+            return NextResponse.json({ message: "Silakan login untuk mengubah keranjang." }, { status: 401 });
         }
 
         const scopeFilter = cartScopeFilter(scope);
@@ -727,14 +685,8 @@ export async function DELETE(
 
         const scope = await resolveCartScope();
 
-        if (guestCartRateLimited(request, scope)) {
-            return NextResponse.json(
-                {
-                    message:
-                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
-                },
-                { status: 429 }
-            );
+        if (!scope.userId) {
+            return NextResponse.json({ message: "Silakan login untuk mengubah keranjang." }, { status: 401 });
         }
 
         const scopeFilter = cartScopeFilter(scope);

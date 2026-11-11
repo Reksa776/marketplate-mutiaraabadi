@@ -38,6 +38,8 @@ export type OrderStatusChangedEvent = {
     orderNumber: string;
     userId: string | null;
     recipientPhone: string;
+    /** Delivery channel override for admin recipient fan-out. */
+    channel?: NotificationChannel;
     previousStatus: string;
     newStatus: string;
     total: number;

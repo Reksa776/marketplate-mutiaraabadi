@@ -6,6 +6,7 @@ import { whenTikTokReadyForEvents } from "@/lib/analytics/tiktok-identity";
 import { buildTikTokProductProperties } from "@/lib/analytics/tiktok-catalog";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getSession } from "next-auth/react";
 import toast from "react-hot-toast";
 import { resolvePriceDisplay } from "@/lib/price-display";
 import {
@@ -60,15 +61,8 @@ export default function ProductDetail({
 }: Props) {
     const router = useRouter();
 
-    /*
-     * NO AUTH GATE HERE.
-     *
-     * Customers shop as guests, so "add to cart" and "beli sekarang"
-     * are anonymous-safe operations: the cart is scoped by the guest
-     * cookie (lib/cart-scope.ts) and Buy Now collects the buyer
-     * identity inline. The session is intentionally NOT consulted to
-     * decide whether an action is allowed.
-     */
+    // Cart belongs to the signed-in account; Buy Now remains available
+    // to guests and collects buyer details during checkout.
 
     /*
     |--------------------------------------------------------------------------
@@ -399,14 +393,17 @@ export default function ProductDetail({
     */
 
     async function handleAddToCart() {
-        /*
-         * GUESTS ADD TO CART DIRECTLY.
-         *
-         * Customers shop without an account, so there is no login
-         * gate here. An anonymous request is scoped to the guest cart
-         * cookie by /api/cart (see lib/cart-scope.ts); the session is
-         * only used to keep an existing logged-in cart working.
-         */
+        let hasSession = false;
+        try {
+            hasSession = Boolean((await getSession())?.user);
+        } catch (error) {
+            console.error("CHECK CART SESSION ERROR:", error);
+        }
+        if (!hasSession) {
+            toast.error("Login dulu supaya keranjang tersimpan di akun.");
+            router.push("/login?callbackUrl=%2Fcart");
+            return;
+        }
 
         /*
          * Pastikan variant dipilih.
@@ -471,8 +468,7 @@ export default function ProductDetail({
                 await response.json();
 
             /*
-             * Cart API error (429 rate limit, 400 invalid variant, ...).
-             * There is no customer login to fall back to anymore.
+             * The API repeats the account check as the security boundary.
              */
             if (!response.ok) {
                 toast.error(

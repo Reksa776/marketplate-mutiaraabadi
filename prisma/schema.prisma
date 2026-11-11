@@ -618,6 +618,10 @@ model StoreSetting {
   email     String?
   phone     String?
   address   String  @db.Text
+  // Admin recipients for order status alerts. Newline-separated values;
+  // validated and normalized by the admin settings API.
+  orderNotificationPhones String? @db.Text
+  orderNotificationEmails String? @db.Text
 
   // TikTok Pixel
   tiktokPixelEnabled Boolean @default(false)

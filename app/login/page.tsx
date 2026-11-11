@@ -10,10 +10,16 @@ export const metadata: Metadata = pageMetadata({
     noindex: true,
 });
 
-export default function LoginPage() {
+export default async function LoginPage({
+    searchParams,
+}: {
+    searchParams: Promise<{ callbackUrl?: string }>;
+}) {
+    const params = await searchParams;
+    const returnToCart = params.callbackUrl === "/cart";
     return (
         <main className="min-h-screen bg-gradient-to-b from-rose-50 via-white to-white">
-            <LoginForm />
+            <LoginForm returnToCart={returnToCart} />
         </main>
     );
 }

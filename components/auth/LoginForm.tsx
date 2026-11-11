@@ -17,7 +17,11 @@ import {
     FaEyeSlash,
 } from "react-icons/fa";
 
-export default function LoginForm() {
+export default function LoginForm({
+    returnToCart = false,
+}: {
+    returnToCart?: boolean;
+}) {
     const router = useRouter();
 
     const [identifier, setIdentifier] =
@@ -85,6 +89,8 @@ export default function LoginForm() {
                     router.replace(
                         "/admin"
                     );
+                } else if (returnToCart) {
+                    router.replace("/cart");
                 } else {
                     router.replace(
                         "/home"
@@ -109,7 +115,7 @@ export default function LoginForm() {
         return () => {
             mounted = false;
         };
-    }, [router]);
+    }, [router, returnToCart]);
     async function handleLogin(
         e: React.FormEvent<HTMLFormElement>
     ) {
@@ -150,6 +156,8 @@ export default function LoginForm() {
             // Redirect berdasarkan role
             if (role === "ADMIN") {
                 router.replace("/admin");
+            } else if (returnToCart) {
+                router.replace("/cart");
             } else {
                 router.replace("/home");
             }

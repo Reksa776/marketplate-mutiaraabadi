@@ -44,6 +44,8 @@ type StoreForm = {
      */
     faviconUrl: string;
     address: string;
+    orderNotificationPhones: string;
+    orderNotificationEmails: string;
 
     tiktokPixelEnabled: boolean;
     tiktokPixelId: string;
@@ -173,6 +175,8 @@ const initialForm: StoreForm = {
     logo: "",
     faviconUrl: "",
     address: "",
+    orderNotificationPhones: "",
+    orderNotificationEmails: "",
 
     tiktokPixelEnabled: false,
     tiktokPixelId: "",
@@ -583,6 +587,11 @@ export default function AdminSettingsForm() {
 
                 address:
                     data.data.address ?? "",
+
+                orderNotificationPhones:
+                    data.data.orderNotificationPhones ?? "",
+                orderNotificationEmails:
+                    data.data.orderNotificationEmails ?? "",
 
                 tiktokPixelEnabled:
                     data.data
@@ -1949,6 +1958,21 @@ export default function AdminSettingsForm() {
                                     placeholder="email@toko.com"
                                 />
                             </div>
+                        </div>
+                    </section>
+
+                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
+                        <h2 className="text-lg font-bold text-gray-900">Notifikasi Pesanan</h2>
+                        <p className="mt-2 text-sm text-gray-600">Admin menerima kabar saat status pesanan berubah dari Menunggu Pembayaran. Satu nomor per baris; isi minimal dua nomor WhatsApp. Email boleh lebih dari satu, satu alamat per baris.</p>
+                        <div className="mt-5 grid gap-5 md:grid-cols-2">
+                            <label className="text-sm font-medium text-gray-700">
+                                Nomor WhatsApp admin
+                                <textarea rows={4} value={form.orderNotificationPhones} onChange={(e) => updateField("orderNotificationPhones", e.target.value)} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-rose-500" placeholder={"62812xxxxxxx\n62813xxxxxxx"} />
+                            </label>
+                            <label className="text-sm font-medium text-gray-700">
+                                Email admin
+                                <textarea rows={4} value={form.orderNotificationEmails} onChange={(e) => updateField("orderNotificationEmails", e.target.value)} className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-rose-500" placeholder={"order@toko.com\nowner@toko.com"} />
+                            </label>
                         </div>
                     </section>
 

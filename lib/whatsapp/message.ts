@@ -101,9 +101,7 @@ export function generateOrderStatusMessage(
     const lines: string[] = [];
 
     // Header
-    lines.push(
-        `Halo ${payload.recipient},`
-    );
+    lines.push("Halo,");
     lines.push("");
     lines.push(
         `Pesanan Anda *${payload.orderNumber}* telah diperbarui.`

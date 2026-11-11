@@ -5,11 +5,6 @@ import {
     resolveCartScope,
     type CartScope,
 } from "@/lib/cart-scope";
-import {
-    getClientIp,
-    guestIpKey,
-    rateLimiters,
-} from "@/lib/rate-limit";
 import { rejectCrossSite } from "@/lib/checkout-idempotency";
 
 type Params = {
@@ -19,10 +14,8 @@ type Params = {
 };
 
 /**
- * Cart item routes accept BOTH the logged-in cart scope and the
- * anonymous guest cart scope. The item is always resolved through the
- * caller's own scope, so a guest can never touch another scope's item
- * by guessing an item id.
+ * Cart item routes require login. The item is always resolved through
+ * the signed-in user's own cart, so guessed item ids cannot cross accounts.
  */
 function scopeFilter(scope: CartScope) {
     if (scope.userId) {
@@ -38,21 +31,6 @@ function scopeFilter(scope: CartScope) {
     return null;
 }
 
-function guestLimited(
-    request: Request,
-    scope: CartScope
-): boolean {
-    if (scope.userId) {
-        return false;
-    }
-
-    const ip = getClientIp(request);
-
-    return !rateLimiters.guestCart(
-        guestIpKey({ ip, scope: "cart-item" })
-    ).allowed;
-}
-
 export async function PATCH(
     request: Request,
     { params }: Params
@@ -66,14 +44,8 @@ export async function PATCH(
 
         const scope = await resolveCartScope();
 
-        if (guestLimited(request, scope)) {
-            return NextResponse.json(
-                {
-                    message:
-                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
-                },
-                { status: 429 }
-            );
+        if (!scope.userId) {
+            return NextResponse.json({ message: "Silakan login untuk mengubah keranjang." }, { status: 401 });
         }
 
         const filter = scopeFilter(scope);
@@ -238,14 +210,8 @@ export async function DELETE(
 
         const scope = await resolveCartScope();
 
-        if (guestLimited(request, scope)) {
-            return NextResponse.json(
-                {
-                    message:
-                        "Terlalu banyak permintaan. Silakan coba lagi nanti.",
-                },
-                { status: 429 }
-            );
+        if (!scope.userId) {
+            return NextResponse.json({ message: "Silakan login untuk mengubah keranjang." }, { status: 401 });
         }
 
         const filter = scopeFilter(scope);
