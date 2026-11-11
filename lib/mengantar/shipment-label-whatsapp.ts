@@ -200,7 +200,7 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
             jid,
             pdf,
             `resi-${order.orderNumber}.pdf`,
-            `Label pengiriman pesanan ${order.orderNumber} (${order.trackingNumber}).`
+            `Mutiara Abadi Snack — bukti label pengiriman pesanan ${order.orderNumber} (resi ${order.trackingNumber}). Notifikasi dari website Mutiara Abadi Snack.`
         );
         if (!sendResult.success) throw new Error(sendResult.errorMessage || "Gagal mengirim PDF ke WhatsApp.");
 

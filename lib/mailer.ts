@@ -37,7 +37,7 @@ import type { Transporter } from "nodemailer";
 
 /** Sender identity for every message: name + the existing mailbox. */
 const DEFAULT_FROM =
-    "Mutiara Abadi <admin@mutiaraabadisnack.com>";
+    "Mutiara Abadi Snack <admin@mutiaraabadisnack.com>";
 
 /** Submission port (plaintext + STARTTLS upgrade). */
 const DEFAULT_PORT = 587;

@@ -75,7 +75,7 @@ function formatItems(
     return items
         .map(
             (item, index) =>
-                `${index + 1}. ${item.productName} (${item.variantName}) x${item.quantity}`
+                `${index + 1}. ${item.productName}${item.variantName ? ` — ${item.variantName}` : ""} × ${item.quantity}`
         )
         .join("\n");
 }
@@ -105,27 +105,28 @@ export function generateOrderStatusMessage(
     const lines: string[] = [];
 
     // Header
+    lines.push("*MUTIARA ABADI SNACK*");
+    lines.push("Notifikasi pesanan dari website Mutiara Abadi Snack.");
+    lines.push("");
     lines.push("Halo,");
     lines.push("");
     lines.push(isCodCreation
-        ? `Pesanan COD baru *${payload.orderNumber}* berhasil dibuat.`
-        : `Pesanan *${payload.orderNumber}* telah diperbarui.`);
-    lines.push(
-        `Status: *${statusLabel}*`
-    );
+        ? `Pesanan COD *${payload.orderNumber}* berhasil dicatat.`
+        : `Ada pembaruan untuk pesanan *${payload.orderNumber}*.`);
+    lines.push(`Status pesanan: *${statusLabel}*`);
 
     // Items summary
     const itemsText = formatItems(payload.items);
     if (itemsText) {
         lines.push("");
-        lines.push("Detail:");
+        lines.push("*Rincian pesanan*");
         lines.push(itemsText);
     }
 
     // Total
     lines.push("");
     lines.push(
-        `Total: *${formatRupiah(payload.total)}*`
+        `Total pesanan: *${formatRupiah(payload.total)}*`
     );
 
     // Tracking info
@@ -157,7 +158,7 @@ export function generateOrderStatusMessage(
     // Footer
     lines.push("");
     lines.push(
-        "Terima kasih telah berbelanja di toko kami."
+        "Terima kasih telah mempercayakan pesanan Anda kepada Mutiara Abadi Snack."
     );
 
     return lines.join("\n");
@@ -201,10 +202,11 @@ export function generateTestMessage(): string {
     );
 
     return [
-        "✅ *Test Message - WhatsApp Terhubung*",
+        "*MUTIARA ABADI SNACK*",
+        "✅ Notifikasi uji koneksi WhatsApp",
         "",
         `Waktu: ${timestamp}`,
         "",
-        "Pesan ini dikirim dari admin panel untuk memverifikasi koneksi WhatsApp.",
+        "Pesan ini dikirim dari website Mutiara Abadi Snack untuk memeriksa koneksi WhatsApp.",
     ].join("\n");
 }
