@@ -320,8 +320,8 @@ export function guestIdentityKey(input: GuestLimitInput): string | null {
  * Pre-configured rate limiters for sensitive endpoints.
  */
 export const rateLimiters = {
-    login: (ip: string) =>
-        checkRateLimit(`login:${ip}`, 5, 15 * 60 * 1000), // 5 attempts per 15 min
+    login: (ip: string, identityKey = "all") =>
+        checkRateLimit(`login:${ip}:${identityKey}`, 5, 15 * 60 * 1000), // 5 attempts per account/IP per 15 min
 
     voucherValidation: (ip: string) =>
         checkRateLimit(`voucher:${ip}`, 20, 60 * 1000), // 20 per minute
@@ -329,8 +329,14 @@ export const rateLimiters = {
     orderCreation: (userId: string) =>
         checkRateLimit(`order:${userId}`, 10, 60 * 1000), // 10 per minute
 
-    register: (ip: string) =>
-        checkRateLimit(`register:${ip}`, 3, 60 * 60 * 1000), // 3 per hour
+    register: (ip: string, identityKey?: string) =>
+        checkRateLimit(
+            identityKey
+                ? `register:${ip}:${identityKey}`
+                : `register:${ip}`,
+            3,
+            60 * 60 * 1000
+        ), // 3 attempts per IP/account per hour
 
     broadcastSend: (userId: string) =>
         checkRateLimit(`broadcast:${userId}`, 5, 60 * 1000), // 5 per minute

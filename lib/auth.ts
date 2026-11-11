@@ -1,12 +1,9 @@
-/*
- * Customer self-serve registration no longer exists (shopping and
- * checkout are guest-only). `/login` remains for ADMIN / AFFILIATE
- * dashboard sign-in only — hence no REGISTER entry.
- */
+/* Shared route names for customer account screens and staff login. */
 export const AUTH_ROUTES = {
   LOGIN: "/login",
+  REGISTER: "/register",
 
-  PRODUCTS: "/products",
+  PRODUCTS: "/products",
 
   DASHBOARD: "/dashboard",
 

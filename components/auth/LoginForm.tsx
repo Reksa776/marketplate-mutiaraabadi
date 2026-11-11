@@ -11,10 +11,11 @@ import {
 import toast from "react-hot-toast";
 
 import {
-    FaEnvelope,
     FaLock,
     FaEye,
     FaEyeSlash,
+    FaGoogle,
+    FaPhone,
 } from "react-icons/fa";
 
 export default function LoginForm({
@@ -38,6 +39,19 @@ export default function LoginForm({
 
     const [showPassword, setShowPassword] =
         useState(false);
+
+    const customerRedirect = returnToCart ? "/cart" : "/home";
+
+    async function handleGoogleLogin() {
+        setLoading(true);
+        try {
+            await signIn("google", { redirectTo: customerRedirect });
+        } catch (error) {
+            console.error("GOOGLE LOGIN ERROR:", error);
+            toast.error("Login Google gagal. Silakan coba lagi.");
+            setLoading(false);
+        }
+    }
 
     /*
      * ==========================================
@@ -137,7 +151,7 @@ export default function LoginForm({
 
             if (result?.error) {
                 toast.error(
-                    "Email / Nomor HP atau Password salah."
+                    "Nomor WhatsApp atau password salah."
                 );
 
                 setLoading(false);
@@ -232,29 +246,29 @@ export default function LoginForm({
                     className="space-y-5"
                 >
 
-                    {/* EMAIL / PHONE */}
+                        {/* WHATSAPP NUMBER */}
                     <div>
 
                         <label className="mb-2 block text-sm font-semibold text-gray-700">
-                            Email / Nomor HP
+                            Nomor WhatsApp
                         </label>
 
                         <div className="relative">
 
-                            <FaEnvelope
+                            <FaPhone
                                 size={18}
                                 className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500"
                             />
 
                             <input
-                                type="text"
+                                type="tel"
                                 value={identifier}
                                 onChange={(e) =>
                                     setIdentifier(
                                         e.target.value
                                     )
                                 }
-                                placeholder="Masukkan email atau nomor HP"
+                                placeholder="Contoh: 081234567890"
                                 disabled={loading}
                                 autoComplete="username"
                                 className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-[15px] text-black placeholder:text-gray-400 focus:border-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
@@ -317,30 +331,6 @@ export default function LoginForm({
 
                     </div>
 
-                    {/* REMEMBER + FORGOT */}
-                    <div className="flex items-center justify-between text-sm">
-
-                        <label className="flex items-center gap-2 text-gray-700">
-
-                            <input
-                                type="checkbox"
-                                disabled={loading}
-                                className="h-4 w-4 accent-rose-600"
-                            />
-
-                            Ingat Saya
-
-                        </label>
-
-                        <Link
-                            href="/forgot-password"
-                            className="font-medium text-rose-600 hover:underline"
-                        >
-                            Lupa Password?
-                        </Link>
-
-                    </div>
-
                     {/* LOGIN BUTTON */}
                     <button
                         type="submit"
@@ -349,16 +339,34 @@ export default function LoginForm({
                     >
                         {loading
                             ? "Memproses..."
-                            : "Login"}
+                            : "Login dengan WhatsApp"}
                     </button>
 
-                    {/*
-                     * The Google provider and the self-serve
-                     * registration link were removed together with the
-                     * customer account area. This form now exists only
-                     * for the ADMIN / AFFILIATE dashboards, which
-                     * authenticate with the credentials provider.
-                     */}
+                    <div className="flex items-center gap-3 text-xs text-gray-400">
+                        <span className="h-px flex-1 bg-gray-200" />
+                        atau
+                        <span className="h-px flex-1 bg-gray-200" />
+                    </div>
+
+                    <button
+                        type="button"
+                        onClick={handleGoogleLogin}
+                        disabled={loading}
+                        className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-gray-300 bg-white font-semibold text-gray-800 transition hover:bg-gray-50 disabled:opacity-60"
+                    >
+                        <FaGoogle className="text-rose-600" />
+                        Lanjutkan dengan Google
+                    </button>
+
+                    <p className="text-center text-sm text-gray-600">
+                        Belum punya akun?{" "}
+                        <Link
+                            href={`/register?callbackUrl=${returnToCart ? "%2Fcart" : "%2Fhome"}`}
+                            className="font-semibold text-rose-600 hover:underline"
+                        >
+                            Daftar di sini
+                        </Link>
+                    </p>
 
                 </form>
 

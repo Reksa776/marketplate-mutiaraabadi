@@ -1,19 +1,23 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import Google from "next-auth/providers/google";
+import { createHash } from "node:crypto";
 
 import { PrismaAdapter } from "@auth/prisma-adapter";
 
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/password";
+import { normalizePhone } from "@/lib/whatsapp/phone";
+import { getClientIp, rateLimiters } from "@/lib/rate-limit";
 
 /**
  * ==========================================
- * AUTHENTICATION — ADMIN & AFFILIATE ONLY
+ * AUTHENTICATION — CUSTOMERS, ADMIN & AFFILIATES
  * ==========================================
  *
- * The marketplace no longer has customer accounts: buying is guest-only
- * (see lib/checkout.ts + lib/guest-identity.ts). NextAuth therefore
- * exists ONLY to authenticate:
+ * Customer accounts are optional for checkout, but required for a
+ * persistent account cart. Customers may use WhatsApp + password or
+ * Google OAuth. Admins and affiliates retain credentials login:
  *
  *   ADMIN      → the /admin dashboard and /api/admin/**
  *   AFFILIATE  → the /affiliate dashboard, referral code and payouts
@@ -25,20 +29,17 @@ import { verifyPassword } from "@/lib/password";
  * from the `Role` enum). Filtering purely on the enum would lock every
  * working affiliate out of their own dashboard.
  *
- * Login is allowed when the user is ANY of:
- *   1. role = ADMIN                     → dashboard operator
- *   2. role = AFFILIATOR                → explicit affiliate role
- *   3. has an AffiliateProfile row      → the affiliate identity this
+ * Credentials login is allowed when the user is ANY of:
+ *   1. role = CUSTOMER                  → buyer account
+ *   2. role = ADMIN                     → dashboard operator
+ *   3. role = AFFILIATOR                → explicit affiliate role
+ *   4. has an AffiliateProfile row      → the affiliate identity this
  *                                         schema actually uses
- *   4. role = SELLER                    → staff enum kept working
+ *   5. role = SELLER                    → staff enum kept working
  *
- * A plain `role = CUSTOMER` account with NO affiliate profile can no
- * longer sign in. This is enforced in `authorize()` — NOT by a UI
- * redirect — so it cannot be bypassed by calling the API directly.
- *
- * The Google provider has been removed: it existed only for customer
- * sign-in and is not used by admin/affiliate, and removing it also
- * removes the OAuth account-linking attack surface entirely.
+ * Google OAuth is explicitly limited to role=CUSTOMER, while the
+ * credentials path retains existing staff access. Customer credentials
+ * are looked up by normalized WhatsApp number, never customer email.
  */
 
 /** Re-validate the stored role at most this often (ms). */
@@ -79,6 +80,7 @@ async function isAuthorizedAccount(userId: string): Promise<{
     );
 
     const allowed =
+        user.role === "CUSTOMER" ||
         hasAffiliateProfile ||
         ALLOWED_ROLES.includes(
             user.role as AllowedRole
@@ -107,18 +109,23 @@ export const {
     },
 
     providers: [
+        Google({
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        }),
         /*
          * CREDENTIALS
          *
-         * The ONLY provider: customer sign-in no longer exists.
+         * Customer sign-in uses WhatsApp number + password. Existing
+         * staff accounts can continue to use email credentials.
          */
         Credentials({
             name: "Credentials",
 
             credentials: {
                 identifier: {
-                    label: "Email / Nomor HP",
-                    type: "text",
+                    label: "Nomor WhatsApp",
+                    type: "tel",
                 },
 
                 password: {
@@ -127,7 +134,7 @@ export const {
                 },
             },
 
-            async authorize(credentials) {
+            async authorize(credentials, request) {
                 /*
                  * Pastikan identifier dan password
                  * dikirim dari form login.
@@ -147,23 +154,22 @@ export const {
                     credentials.password
                 );
 
-                /*
-                 * Cari user berdasarkan:
-                 *
-                 * email ATAU nomor HP
-                 */
-                const user =
-                    await prisma.user.findFirst({
-                        where: {
-                            OR: [
-                                {
-                                    email: identifier,
-                                },
-                                {
-                                    phone: identifier,
-                                },
-                            ],
-                        },
+                const normalizedPhone = normalizePhone(identifier);
+                const isEmailLogin = identifier.includes("@");
+                const identityKey = createHash("sha256")
+                    .update((normalizedPhone ?? identifier.toLowerCase()).trim())
+                    .digest("hex")
+                    .slice(0, 20);
+                if (!rateLimiters.login(getClientIp(request), identityKey).allowed) {
+                    return null;
+                }
+                const phoneCandidates = normalizedPhone
+                    ? [...new Set([normalizedPhone, `0${normalizedPhone.slice(2)}`, `+${normalizedPhone}`, identifier])]
+                    : [identifier];
+                const user = await prisma.user.findFirst({
+                        where: isEmailLogin
+                            ? { email: identifier.toLowerCase() }
+                            : { phone: { in: phoneCandidates } },
                         include: {
                             affiliateProfile: {
                                 select: { id: true },
@@ -184,6 +190,20 @@ export const {
                  */
                 if (!user) {
                     // Run dummy verify to prevent timing attack
+                    await verifyPassword(
+                        password,
+                        "$2a$12$x dummy hash to prevent timing attack"
+                    );
+                    return null;
+                }
+
+                // Customer credentials are phone-only. Email login stays
+                // available to staff and existing affiliate identities.
+                if (
+                    isEmailLogin &&
+                    user.role === "CUSTOMER" &&
+                    !user.affiliateProfile
+                ) {
                     await verifyPassword(
                         password,
                         "$2a$12$x dummy hash to prevent timing attack"
@@ -223,9 +243,8 @@ export const {
                  * ROLE AUTHORIZATION (fail-closed)
                  * ==========================================
                  *
-                 * A CUSTOMER account without an affiliate profile is
-                 * rejected HERE, at the credential boundary. The UI is
-                 * never the authorization mechanism.
+                 * CUSTOMER accounts and allowed staff accounts may use
+                 * credentials. Google remains customer-only in signIn().
                  */
                 const hasAffiliateProfile = Boolean(
                     user.affiliateProfile
@@ -237,6 +256,7 @@ export const {
                     );
 
                 if (
+                    user.role !== "CUSTOMER" &&
                     !hasAffiliateProfile &&
                     !isAllowedRole
                 ) {
@@ -269,9 +289,23 @@ export const {
          * second, independent check so a future provider cannot slip an
          * unauthorized account through.
          */
-        async signIn({ user }) {
+        async signIn({ user, account, profile }) {
             if (!user?.id) {
                 return false;
+            }
+
+            if (account?.provider === "google") {
+                const customer = await prisma.user.findUnique({
+                    where: { id: user.id },
+                    select: {
+                        role: true,
+                        affiliateProfile: { select: { id: true } },
+                    },
+                });
+                const googleProfile = profile as { email_verified?: boolean } | undefined;
+                return customer?.role === "CUSTOMER" &&
+                    !customer.affiliateProfile &&
+                    googleProfile?.email_verified === true;
             }
 
             const check = await isAuthorizedAccount(

@@ -5,11 +5,11 @@ import { auth } from "@/auth";
  * PROXY (ex-middleware) — ROUTE GUARDS
  * ==========================================
  *
- * CUSTOMER SHOPPING IS GUEST-ONLY.
+ * CUSTOMER CHECKOUT CAN BE GUEST-ONLY; THE ACCOUNT CART IS PRIVATE.
  *
- * Shopping, cart, checkout, payment, order history and tracking all
- * work without a session, so those routes are deliberately NOT gated
- * here. What remains gated is the STAFF surface:
+ * Product browsing, checkout, payment, order history and tracking can
+ * work without a session. The cart page and cart APIs enforce customer
+ * login directly. What remains gated here is the STAFF surface:
  *
  *   /admin/**            → ADMIN dashboard + /api/admin/**
  *   /api/affiliate/**    → affiliate dashboard, payouts, commissions
@@ -62,9 +62,9 @@ const PUBLIC_API_PREFIXES = [
  * PROTECTED API ROUTES
  * ==========================================
  *
- * STAFF ONLY. Customer-facing APIs (cart, checkout, orders, buy-now,
- * payment, voucher, spin wheel) are intentionally absent: they must be
- * reachable without a login, and they authorize per-request instead.
+ * STAFF ONLY. Customer-facing APIs enforce their own per-request rules.
+ * Cart APIs require a customer session; checkout, order recovery, and
+ * payment retain guest access where their handlers support it.
  */
 const PROTECTED_API_PREFIXES = [
     "/api/admin/",
