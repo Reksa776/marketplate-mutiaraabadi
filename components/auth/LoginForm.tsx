@@ -16,12 +16,15 @@ import {
     FaEyeSlash,
     FaGoogle,
     FaPhone,
+    FaEnvelope,
 } from "react-icons/fa";
 
 export default function LoginForm({
     returnToCart = false,
+    adminMode = false,
 }: {
     returnToCart?: boolean;
+    adminMode?: boolean;
 }) {
     const router = useRouter();
 
@@ -103,6 +106,8 @@ export default function LoginForm({
                     router.replace(
                         "/admin"
                     );
+                } else if (adminMode) {
+                    router.replace("/products");
                 } else if (returnToCart) {
                     router.replace("/cart");
                 } else {
@@ -129,7 +134,7 @@ export default function LoginForm({
         return () => {
             mounted = false;
         };
-    }, [router, returnToCart]);
+    }, [router, returnToCart, adminMode]);
     async function handleLogin(
         e: React.FormEvent<HTMLFormElement>
     ) {
@@ -146,13 +151,14 @@ export default function LoginForm({
             const result = await signIn("credentials", {
                 identifier,
                 password,
+                loginMode: adminMode ? "admin" : "customer",
                 redirect: false,
             });
 
             if (result?.error) {
-                toast.error(
-                    "Nomor WhatsApp/email atau password salah."
-                );
+                toast.error(adminMode
+                    ? "Email admin atau password salah."
+                    : "Nomor WhatsApp atau password salah.");
 
                 setLoading(false);
                 return;
@@ -170,6 +176,10 @@ export default function LoginForm({
             // Redirect berdasarkan role
             if (role === "ADMIN") {
                 router.replace("/admin");
+            } else if (adminMode) {
+                toast.error("Akun ini tidak memiliki akses admin.");
+                setLoading(false);
+                return;
             } else if (returnToCart) {
                 router.replace("/cart");
             } else {
@@ -231,11 +241,11 @@ export default function LoginForm({
                     </div>
 
                     <h1 className="text-3xl font-bold text-gray-900">
-                        Selamat Datang
+                        {adminMode ? "Login Admin" : "Selamat Datang"}
                     </h1>
 
                     <p className="mt-2 text-sm text-gray-600">
-                        Login untuk mulai berbelanja.
+                        {adminMode ? "Masuk ke panel pengelolaan Mutiara Abadi Snack." : "Login untuk mulai berbelanja."}
                     </p>
 
                 </div>
@@ -250,15 +260,18 @@ export default function LoginForm({
                     <div>
 
                         <label className="mb-2 block text-sm font-semibold text-gray-700">
-                            Nomor WhatsApp pelanggan / email admin
+                            {adminMode ? "Email admin" : "Nomor WhatsApp"}
                         </label>
 
                         <div className="relative">
 
-                            <FaPhone
+                            {adminMode ? <FaEnvelope
                                 size={18}
                                 className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500"
-                            />
+                            /> : <FaPhone
+                                size={18}
+                                className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500"
+                            />}
 
                             <input
                                 type="text"
@@ -268,7 +281,7 @@ export default function LoginForm({
                                         e.target.value
                                     )
                                 }
-                                placeholder="081234567890 atau admin@email.com"
+                                placeholder={adminMode ? "admin@email.com" : "Contoh: 081234567890"}
                                 disabled={loading}
                                 autoComplete="username"
                                 className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-[15px] text-black placeholder:text-gray-400 focus:border-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
@@ -339,9 +352,10 @@ export default function LoginForm({
                     >
                         {loading
                             ? "Memproses..."
-                            : "Login"}
+                            : adminMode ? "Masuk sebagai Admin" : "Login dengan WhatsApp"}
                     </button>
 
+                    {!adminMode && <>
                     <div className="flex items-center gap-3 text-xs text-gray-400">
                         <span className="h-px flex-1 bg-gray-200" />
                         atau
@@ -367,6 +381,7 @@ export default function LoginForm({
                             Daftar di sini
                         </Link>
                     </p>
+                    </>}
 
                 </form>
 

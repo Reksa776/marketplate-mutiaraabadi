@@ -132,6 +132,10 @@ export const {
                     label: "Password",
                     type: "password",
                 },
+                loginMode: {
+                    label: "Login mode",
+                    type: "text",
+                },
             },
 
             async authorize(credentials, request) {
@@ -153,6 +157,10 @@ export const {
                 const password = String(
                     credentials.password
                 );
+                const adminLogin = String(credentials.loginMode ?? "") === "admin";
+                if (adminLogin && !identifier.includes("@")) {
+                    return null;
+                }
 
                 const normalizedPhone = normalizePhone(identifier);
                 const isEmailLogin = identifier.includes("@");
@@ -235,6 +243,12 @@ export const {
                 );
 
                 if (!valid) {
+                    return null;
+                }
+
+                // The dedicated admin sign-in path must never create a
+                // customer or affiliate session, even if called directly.
+                if (adminLogin && user.role !== "ADMIN") {
                     return null;
                 }
 
