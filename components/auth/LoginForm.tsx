@@ -151,7 +151,7 @@ export default function LoginForm({
 
             if (result?.error) {
                 toast.error(
-                    "Nomor WhatsApp atau password salah."
+                    "Nomor WhatsApp/email atau password salah."
                 );
 
                 setLoading(false);
@@ -250,7 +250,7 @@ export default function LoginForm({
                     <div>
 
                         <label className="mb-2 block text-sm font-semibold text-gray-700">
-                            Nomor WhatsApp
+                            Nomor WhatsApp pelanggan / email admin
                         </label>
 
                         <div className="relative">
@@ -261,14 +261,14 @@ export default function LoginForm({
                             />
 
                             <input
-                                type="tel"
+                                type="text"
                                 value={identifier}
                                 onChange={(e) =>
                                     setIdentifier(
                                         e.target.value
                                     )
                                 }
-                                placeholder="Contoh: 081234567890"
+                                placeholder="081234567890 atau admin@email.com"
                                 disabled={loading}
                                 autoComplete="username"
                                 className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-[15px] text-black placeholder:text-gray-400 focus:border-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
@@ -339,7 +339,7 @@ export default function LoginForm({
                     >
                         {loading
                             ? "Memproses..."
-                            : "Login dengan WhatsApp"}
+                            : "Login"}
                     </button>
 
                     <div className="flex items-center gap-3 text-xs text-gray-400">
