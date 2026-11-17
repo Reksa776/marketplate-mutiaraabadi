@@ -5,7 +5,7 @@ import {
     toMengantarCourier,
 } from "@/lib/mengantar";
 import { getWhatsAppService } from "@/lib/whatsapp/service";
-import { normalizePhoneToJid, isValidIndonesianPhone } from "@/lib/whatsapp/phone";
+import { normalizePhone, normalizePhoneToJid, isValidIndonesianPhone } from "@/lib/whatsapp/phone";
 
 const LABEL_FORMAT = process.env.MENGANTAR_LABEL_FORMAT || "normal-1";
 const LABEL_POLL_INTERVAL_MS = 2_000;
@@ -61,23 +61,21 @@ async function downloadPdf(urlValue: string): Promise<Uint8Array> {
 }
 
 /**
- * Generate Mengantar's per-shipment label and send the PDF to the
- * customer. A Notification row is the durable idempotency/claim record;
- * its payload contains only provider IDs, never the expiring signed URL
- * or PDF bytes.
+ * Generate Mengantar's per-shipment label and send the PDF only to the
+ * configured admin WhatsApp numbers. A Notification row
+ * is the durable idempotency/claim record; its payload contains only
+ * provider IDs and delivery markers, never the expiring URL or PDF bytes.
  */
-export async function sendShipmentLabelToCustomer(orderId: number): Promise<void> {
+export async function sendShipmentLabelToAdmins(orderId: number): Promise<void> {
     const order = await prisma.order.findUnique({
         where: { id: orderId },
         select: {
             id: true,
             orderNumber: true,
-            phone: true,
             providerShipmentId: true,
             providerCourier: true,
             trackingNumber: true,
             shipmentStatus: true,
-            shippingPaymentStatus: true,
         },
     });
 
@@ -85,13 +83,19 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
         !order ||
         !order.providerShipmentId ||
         !order.trackingNumber ||
-        !["SHIPPING_PAID", "CREATED", "PICKED_UP", "IN_TRANSIT", "DELIVERED", "UNDELIVERED", "RETURNED", "CANCELLED"].includes(order.shipmentStatus || "") ||
-        order.shippingPaymentStatus === "UNPAID"
+        order.shipmentStatus === "DELETED"
     ) return;
 
-    const recipient = String(order.phone || "").trim();
-    if (!isValidIndonesianPhone(recipient)) {
-        console.warn(`[SHIPMENT LABEL] Invalid WhatsApp number for order ${order.id}`);
+    const setting = await prisma.storeSetting.findUnique({
+        where: { id: 1 },
+        select: { orderNotificationPhones: true },
+    });
+    const recipients = [...new Set((setting?.orderNotificationPhones ?? "")
+        .split(/[\n,;]+/)
+        .map((value) => normalizePhone(value.trim()))
+        .filter((value): value is string => Boolean(value)))];
+    if (!recipients.length) {
+        console.warn(`[SHIPMENT LABEL] No valid admin WhatsApp numbers are configured for order ${order.id}`);
         return;
     }
     const courier = toMengantarCourier(order.providerCourier);
@@ -110,7 +114,15 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
     let notification = await prisma.notification.findUnique({
         where: { idempotencyKey },
     });
-    if (notification?.status === "SENT") return;
+    const priorPayload = parsePayload(notification?.payload ?? null);
+    const previouslySent = new Set(
+        Array.isArray(priorPayload.sentRecipients)
+            ? priorPayload.sentRecipients.filter((value): value is string => typeof value === "string")
+            : notification?.status === "SENT"
+              ? notification.recipient.split(/[\n,;]+/).map((value) => normalizePhone(value.trim())).filter((value): value is string => Boolean(value))
+              : []
+    );
+    if (notification?.status === "SENT" && recipients.every((recipient) => previouslySent.has(recipient))) return;
 
     const staleBefore = new Date(Date.now() - 10 * 60_000);
     let ownsClaim = false;
@@ -121,7 +133,7 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
                     orderId: order.id,
                     channel: "whatsapp",
                     notificationType: "SHIPMENT_LABEL_PDF",
-                    recipient,
+                    recipient: recipients.join(","),
                     idempotencyKey,
                     status: "PROCESSING",
                     payload: JSON.stringify({ providerOrderId: order.providerShipmentId }),
@@ -133,11 +145,12 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
             notification = await prisma.notification.findUnique({ where: { idempotencyKey } });
         }
     }
-    if (!notification || notification.status === "SENT") return;
+    if (!notification) return;
 
     if (!ownsClaim) {
         const canClaim = notification.status === "FAILED" ||
             notification.status === "QUEUED" ||
+            notification.status === "SENT" ||
             (notification.status === "PROCESSING" && notification.updatedAt < staleBefore);
         if (!canClaim) return;
 
@@ -149,7 +162,7 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
             },
             data: {
                 status: "PROCESSING",
-                recipient,
+                recipient: recipients.join(","),
                 errorCode: null,
                 errorMessage: null,
                 retryCount: { increment: 1 },
@@ -160,6 +173,12 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
 
     try {
         const payload = parsePayload(notification.payload);
+        const sentRecipients = new Set(
+            Array.isArray(payload.sentRecipients)
+                ? payload.sentRecipients.filter((value): value is string => typeof value === "string")
+                : previouslySent
+        );
+        let providerMessageId: string | null = null;
         let generationId = typeof payload.labelGenerationId === "string"
             ? payload.labelGenerationId
             : null;
@@ -172,7 +191,7 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
             generationId = job.labelGenerationId;
             await prisma.notification.update({
                 where: { id: notification.id },
-                data: { payload: JSON.stringify({ providerOrderId: order.providerShipmentId, labelGenerationId: generationId }) },
+                data: { payload: JSON.stringify({ providerOrderId: order.providerShipmentId, labelGenerationId: generationId, sentRecipients: [...sentRecipients] }) },
             });
         }
 
@@ -194,21 +213,37 @@ export async function sendShipmentLabelToCustomer(orderId: number): Promise<void
         // Download immediately: Mengantar's signed URL expires 15 minutes
         // after each completed status response.
         const pdf = await downloadPdf(completedUrl);
-        const jid = normalizePhoneToJid(recipient);
-        if (!jid) throw new Error("Nomor WhatsApp pelanggan tidak valid.");
-        const sendResult = await service.sendDocument(
-            jid,
-            pdf,
-            `resi-${order.orderNumber}.pdf`,
-            `Mutiara Abadi Snack — bukti label pengiriman pesanan ${order.orderNumber} (resi ${order.trackingNumber}). Notifikasi dari website Mutiara Abadi Snack.`
-        );
-        if (!sendResult.success) throw new Error(sendResult.errorMessage || "Gagal mengirim PDF ke WhatsApp.");
+        for (const recipient of recipients) {
+            if (sentRecipients.has(recipient)) continue;
+            const jid = normalizePhoneToJid(recipient);
+            if (!jid || !isValidIndonesianPhone(recipient)) continue;
+            const sendResult = await service.sendDocument(
+                jid,
+                pdf,
+                `resi-${order.orderNumber}.pdf`,
+                `Mutiara Abadi Snack — bukti label pengiriman pesanan ${order.orderNumber} (resi ${order.trackingNumber}). Notifikasi dari website Mutiara Abadi Snack.`
+            );
+            if (!sendResult.success) {
+                throw new Error(sendResult.errorMessage || "WhatsApp menolak dokumen PDF.");
+            }
+            providerMessageId = sendResult.messageId ?? providerMessageId;
+            sentRecipients.add(recipient);
+            await prisma.notification.update({
+                where: { id: notification.id },
+                data: { payload: JSON.stringify({ providerOrderId: order.providerShipmentId, labelGenerationId: generationId, sentRecipients: [...sentRecipients] }) },
+            });
+        }
+
+        const missingRecipients = recipients.filter((recipient) => !sentRecipients.has(recipient));
+        if (missingRecipients.length) {
+            throw new Error("PDF belum berhasil dikirim ke semua penerima WhatsApp.");
+        }
 
         await prisma.notification.update({
             where: { id: notification.id },
             data: {
                 status: "SENT",
-                providerMessageId: sendResult.messageId,
+                providerMessageId,
                 errorCode: null,
                 errorMessage: null,
             },

@@ -444,10 +444,10 @@ export async function onShipmentStatusChanged(
     // soon as it is created; later status updates also retry a previously
     // failed label/send without creating duplicate WhatsApp documents.
     try {
-        const { sendShipmentLabelToCustomer } = await import(
+        const { sendShipmentLabelToAdmins } = await import(
             "@/lib/mengantar/shipment-label-whatsapp"
         );
-        await sendShipmentLabelToCustomer(orderId);
+        await sendShipmentLabelToAdmins(orderId);
     } catch (error) {
         console.error(`[SHIPMENT LABEL] Order ${orderId}:`, error);
     }
