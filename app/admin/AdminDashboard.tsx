@@ -165,6 +165,13 @@ export default function AdminPage() {
                             title="Reporting"
                             description="Lihat dan download laporan."
                         />
+
+                        <AdminMenuCard
+                            href="/admin/analytics"
+                            icon={FiTrendingUp}
+                            title="Analitik Pengunjung"
+                            description="Pantau kunjungan website dan aktivitas checkout."
+                        />
                     </div>
                 </section>
                 <DashboardStats

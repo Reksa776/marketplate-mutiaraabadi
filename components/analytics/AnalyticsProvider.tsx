@@ -5,6 +5,7 @@ import TikTokAttribution from "./TikTokAttribution";
 import TikTokPageViewTracker from "./TikTokPageViewTracker";
 import TikTokPixel from "./TikTokPixel";
 import MetaPixel from "./MetaPixel";
+import SiteAnalyticsTracker from "./SiteAnalyticsTracker";
 import { extractMetaPixelId, normalizeMetaPixelCode, stripMetaAutomaticPageView } from "@/lib/analytics/meta-pixel-code";
 
 import { getTikTokPixelConfig } from "@/lib/analytics/tiktok-config";
@@ -52,6 +53,7 @@ export default async function AnalyticsProvider() {
 
     return (
         <>
+            <SiteAnalyticsTracker />
             <Suspense fallback={null}>
                 <MetaPixel enabled={metaPixel.enabled} pixelId={metaPixel.pixelId} script={metaPixel.script} />
             </Suspense>

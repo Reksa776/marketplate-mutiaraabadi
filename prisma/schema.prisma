@@ -82,6 +82,23 @@ model VerificationToken {
   @@map("verificationtoken")
 }
 
+// First-party, anonymous storefront analytics. No names, emails, phone
+// numbers, raw IP addresses, or full referrer URLs are stored here.
+model SiteAnalyticsEvent {
+  id           Int      @id @default(autoincrement())
+  visitorId    String   @db.VarChar(36)
+  sessionId    String   @db.VarChar(36)
+  eventType    String   @db.VarChar(24)
+  path         String   @db.VarChar(512)
+  referrerHost String?  @db.VarChar(255)
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt, eventType])
+  @@index([visitorId, createdAt])
+  @@index([path, createdAt])
+  @@map("siteanalyticsevent")
+}
+
 model Product {
   id          Int              @id @default(autoincrement())
   name        String

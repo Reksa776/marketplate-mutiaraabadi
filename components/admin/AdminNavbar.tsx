@@ -68,6 +68,11 @@ const menuItems: NavItem[] = [
         icon: FiGrid,
     },
     {
+        label: "Analitik",
+        href: "/admin/analytics",
+        icon: FiTrendingUp,
+    },
+    {
         label: "Produk",
         href: "/admin/products",
         icon: FiBox,

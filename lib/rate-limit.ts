@@ -372,6 +372,11 @@ export const rateLimiters = {
     shippingCost: (ip: string) =>
         checkRateLimit(`shipping:${ip}`, 60, 60 * 1000), // 60 per minute
 
+    // Anonymous first-party page analytics. The high per-IP ceiling
+    // accommodates busy storefronts while limiting database flooding.
+    siteAnalytics: (ip: string) =>
+        checkRateLimit(`site-analytics:${ip}`, 1800, 15 * 60 * 1000),
+
     /*
      * ==========================================
      * GUEST (UNAUTHENTICATED CUSTOMER) LIMITERS
