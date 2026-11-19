@@ -7,7 +7,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 function cleanPath(value: unknown): string | null {
     if (typeof value !== "string" || value.length > 512) return null;
     if (!value.startsWith("/") || value.startsWith("//") || /[?#\u0000-\u001f]/.test(value)) return null;
-    if (/^\/admin(?:\/|$)/.test(value) || value.startsWith("/api/")) return null;
+    if (/^\/admin(?:\/|$)/.test(value) || value === "/admin-login" || value.startsWith("/api/")) return null;
     return value;
 }
 

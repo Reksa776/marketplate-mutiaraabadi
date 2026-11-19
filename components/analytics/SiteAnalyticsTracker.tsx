@@ -33,7 +33,12 @@ export default function SiteAnalyticsTracker() {
     const lastPath = useRef<string | null>(null);
 
     useEffect(() => {
-        if (!pathname || /^\/admin(?:\/|$)/.test(pathname) || lastPath.current === pathname) return;
+        if (
+            !pathname ||
+            /^\/admin(?:\/|$)/.test(pathname) ||
+            pathname === "/admin-login" ||
+            lastPath.current === pathname
+        ) return;
         lastPath.current = pathname;
 
         let visitorId: string;
