@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { FiActivity, FiEye, FiShoppingCart, FiUsers } from "react-icons/fi";
 
-type Period = "7d" | "30d" | "90d";
+type Period = "today" | "yesterday" | "7d" | "30d" | "90d";
 type AnalyticsData = {
     period: Period;
     summary: { visitors: number; pageViews: number; checkoutStarts: number; orders: number; paidOrders: number };
@@ -24,6 +24,10 @@ type AnalyticsData = {
 };
 
 function formatDate(value: string, compact = false) {
+    if (value.includes("T")) {
+        const [, time] = value.split("T");
+        return `${time.slice(0, 2)}.00`;
+    }
     const [year, month, day] = value.split("-").map(Number);
     return new Intl.DateTimeFormat("id-ID", {
         day: "2-digit",
@@ -46,7 +50,7 @@ const cards = [
 ] as const;
 
 export default function AnalyticsDashboardPage() {
-    const [period, setPeriod] = useState<Period>("7d");
+    const [period, setPeriod] = useState<Period>("today");
     const [data, setData] = useState<AnalyticsData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -80,6 +84,8 @@ export default function AnalyticsDashboardPage() {
                     <div className="flex items-center gap-3">
                         <label htmlFor="analytics-period" className="text-sm font-medium text-gray-600">Periode</label>
                         <select id="analytics-period" value={period} onChange={(event) => setPeriod(event.target.value as Period)} className="rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 outline-none focus:border-rose-500">
+                            <option value="today">Hari ini</option>
+                            <option value="yesterday">Kemarin</option>
                             <option value="7d">7 hari</option>
                             <option value="30d">30 hari</option>
                             <option value="90d">90 hari</option>
@@ -125,7 +131,7 @@ export default function AnalyticsDashboardPage() {
                     <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                         <div className="mb-5">
                             <h2 className="text-lg font-bold text-gray-900">Perkembangan harian</h2>
-                            <p className="mt-1 text-sm text-gray-500">Pengunjung unik, kunjungan halaman, checkout, dan pesanan yang dibuat.</p>
+                            <p className="mt-1 text-sm text-gray-500">{period === "today" || period === "yesterday" ? "Per jam" : "Per hari"}: pengunjung unik, kunjungan halaman, checkout, dan pesanan yang dibuat.</p>
                         </div>
                         <div className="h-[340px]">
                             <ResponsiveContainer width="100%" height="100%">

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 
-type Period = "7d" | "30d" | "90d";
+type Period = "today" | "yesterday" | "7d" | "30d" | "90d";
 type DailyEventRow = {
     day: string;
     pageViews: bigint | number;
@@ -18,7 +18,7 @@ type PeriodEventSummary = {
     previousCheckoutStarts: bigint | number;
 };
 
-const PERIOD_DAYS: Record<Period, number> = { "7d": 7, "30d": 30, "90d": 90 };
+const PERIOD_DAYS: Record<Exclude<Period, "today" | "yesterday">, number> = { "7d": 7, "30d": 30, "90d": 90 };
 
 function wibDateKey(date: Date): string {
     return new Intl.DateTimeFormat("en-CA", {
@@ -46,7 +46,7 @@ function toNumber(value: bigint | number | undefined): number {
 }
 
 function validPeriod(value: string | null): Period {
-    return value === "30d" || value === "90d" ? value : "7d";
+    return value === "today" || value === "yesterday" || value === "30d" || value === "90d" ? value : "7d";
 }
 
 export async function GET(request: Request) {
@@ -57,44 +57,61 @@ export async function GET(request: Request) {
         }
 
         const period = validPeriod(new URL(request.url).searchParams.get("period"));
-        const days = PERIOD_DAYS[period];
         const now = new Date();
         const todayKey = wibDateKey(now);
-        const currentStartKey = shiftDateKey(todayKey, -(days - 1));
-        const previousStartKey = shiftDateKey(currentStartKey, -days);
+        const isSingleDay = period === "today" || period === "yesterday";
+        const days = isSingleDay ? 1 : PERIOD_DAYS[period];
+        const currentStartKey = period === "yesterday"
+            ? shiftDateKey(todayKey, -1)
+            : isSingleDay
+              ? todayKey
+              : shiftDateKey(todayKey, -(days - 1));
+        const currentEndKey = period === "yesterday"
+            ? todayKey
+            : isSingleDay
+              ? shiftDateKey(todayKey, 1)
+              : shiftDateKey(todayKey, 1);
+        const previousStartKey = isSingleDay
+            ? shiftDateKey(currentStartKey, -1)
+            : shiftDateKey(currentStartKey, -days);
+        const previousEndKey = isSingleDay
+            ? currentStartKey
+            : currentStartKey;
         const currentStart = wibMidnightUtc(currentStartKey);
         const previousStart = wibMidnightUtc(previousStartKey);
+        const currentEnd = wibMidnightUtc(currentEndKey);
+        const previousEnd = wibMidnightUtc(previousEndKey);
 
         const [eventRows, periodEventSummary, orders, topPages, topReferrers] = await Promise.all([
             prisma.$queryRaw<DailyEventRow[]>`
                 SELECT
-                    DATE_FORMAT(DATE_ADD(\`createdAt\`, INTERVAL 7 HOUR), '%Y-%m-%d') AS day,
+                    DATE_FORMAT(DATE_ADD(\`createdAt\`, INTERVAL 7 HOUR), ${isSingleDay ? "%Y-%m-%dT%H" : "%Y-%m-%d"}) AS day,
                     SUM(CASE WHEN \`eventType\` = 'PAGE_VIEW' THEN 1 ELSE 0 END) AS pageViews,
                     COUNT(DISTINCT CASE WHEN \`eventType\` = 'PAGE_VIEW' THEN \`visitorId\` END) AS visitors,
                     SUM(CASE WHEN \`eventType\` = 'CHECKOUT_START' THEN 1 ELSE 0 END) AS checkoutStarts
                 FROM \`siteanalyticsevent\`
-                WHERE \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${now}
+                WHERE \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${currentEnd}
                 GROUP BY day
                 ORDER BY day ASC
             `,
             prisma.$queryRaw<PeriodEventSummary[]>`
                 SELECT
-                    COUNT(DISTINCT CASE WHEN \`createdAt\` >= ${currentStart} AND \`eventType\` = 'PAGE_VIEW' THEN \`visitorId\` END) AS currentVisitors,
-                    COUNT(DISTINCT CASE WHEN \`createdAt\` < ${currentStart} AND \`eventType\` = 'PAGE_VIEW' THEN \`visitorId\` END) AS previousVisitors,
-                    SUM(CASE WHEN \`createdAt\` >= ${currentStart} AND \`eventType\` = 'PAGE_VIEW' THEN 1 ELSE 0 END) AS currentPageViews,
-                    SUM(CASE WHEN \`createdAt\` < ${currentStart} AND \`eventType\` = 'PAGE_VIEW' THEN 1 ELSE 0 END) AS previousPageViews,
-                    SUM(CASE WHEN \`createdAt\` >= ${currentStart} AND \`eventType\` = 'CHECKOUT_START' THEN 1 ELSE 0 END) AS currentCheckoutStarts,
-                    SUM(CASE WHEN \`createdAt\` < ${currentStart} AND \`eventType\` = 'CHECKOUT_START' THEN 1 ELSE 0 END) AS previousCheckoutStarts
+                    COUNT(DISTINCT CASE WHEN \`createdAt\` >= ${currentStart} AND \`createdAt\` < ${currentEnd} AND \`eventType\` = 'PAGE_VIEW' THEN \`visitorId\` END) AS currentVisitors,
+                    COUNT(DISTINCT CASE WHEN \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${previousEnd} AND \`eventType\` = 'PAGE_VIEW' THEN \`visitorId\` END) AS previousVisitors,
+                    SUM(CASE WHEN \`createdAt\` >= ${currentStart} AND \`createdAt\` < ${currentEnd} AND \`eventType\` = 'PAGE_VIEW' THEN 1 ELSE 0 END) AS currentPageViews,
+                    SUM(CASE WHEN \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${previousEnd} AND \`eventType\` = 'PAGE_VIEW' THEN 1 ELSE 0 END) AS previousPageViews,
+                    SUM(CASE WHEN \`createdAt\` >= ${currentStart} AND \`createdAt\` < ${currentEnd} AND \`eventType\` = 'CHECKOUT_START' THEN 1 ELSE 0 END) AS currentCheckoutStarts,
+                    SUM(CASE WHEN \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${previousEnd} AND \`eventType\` = 'CHECKOUT_START' THEN 1 ELSE 0 END) AS previousCheckoutStarts
                 FROM \`siteanalyticsevent\`
-                WHERE \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${now}
+                WHERE \`createdAt\` >= ${previousStart} AND \`createdAt\` < ${currentEnd}
             `,
             prisma.order.findMany({
-                where: { createdAt: { gte: previousStart, lt: now } },
+                where: { createdAt: { gte: previousStart, lt: currentEnd } },
                 select: { createdAt: true, paymentStatus: true },
             }),
             prisma.siteAnalyticsEvent.groupBy({
                 by: ["path"],
-                where: { eventType: "PAGE_VIEW", createdAt: { gte: currentStart, lt: now } },
+                where: { eventType: "PAGE_VIEW", createdAt: { gte: currentStart, lt: currentEnd } },
                 _count: { _all: true },
                 orderBy: { _count: { path: "desc" } },
                 take: 8,
@@ -103,7 +120,7 @@ export async function GET(request: Request) {
                 by: ["referrerHost"],
                 where: {
                     eventType: "PAGE_VIEW",
-                    createdAt: { gte: currentStart, lt: now },
+                    createdAt: { gte: currentStart, lt: currentEnd },
                 },
                 _count: { _all: true },
                 orderBy: { _count: { referrerHost: "desc" } },
@@ -121,7 +138,23 @@ export async function GET(request: Request) {
             orderByDay.set(key, entry);
         }
 
-        const chart = Array.from({ length: days }, (_, index) => {
+        const chart = Array.from({ length: isSingleDay ? 24 : days }, (_, index) => {
+            if (isSingleDay) {
+                const date = currentStartKey;
+                const hourStart = new Date(currentStart.getTime() + index * 60 * 60 * 1000);
+                const hourEnd = new Date(hourStart.getTime() + 60 * 60 * 1000);
+                const hourKey = `${date}T${String(index).padStart(2, "0")}`;
+                const hourEvent = eventByDay.get(hourKey);
+                const hourOrders = orders.filter((order) => order.createdAt >= hourStart && order.createdAt < hourEnd);
+                return {
+                    date: `${date}T${String(index).padStart(2, "0")}:00`,
+                    visitors: toNumber(hourEvent?.visitors),
+                    pageViews: toNumber(hourEvent?.pageViews),
+                    checkoutStarts: toNumber(hourEvent?.checkoutStarts),
+                    orders: hourOrders.length,
+                    paidOrders: hourOrders.filter((order) => order.paymentStatus === "PAID").length,
+                };
+            }
             const date = shiftDateKey(currentStartKey, index);
             const event = eventByDay.get(date);
             const order = orderByDay.get(date);
@@ -135,11 +168,11 @@ export async function GET(request: Request) {
             };
         });
 
-        const inCurrentPeriod = (key: string) => key >= currentStartKey && key <= todayKey;
+        const inCurrentPeriod = (key: string) => key >= currentStartKey && key < currentEndKey;
         const currentOrders = orders.filter((order) => inCurrentPeriod(wibDateKey(order.createdAt)));
         const previousOrders = orders.filter((order) => {
             const key = wibDateKey(order.createdAt);
-            return key >= previousStartKey && key < currentStartKey;
+            return key >= previousStartKey && key < previousEndKey;
         });
 
         const summary = {
@@ -161,6 +194,7 @@ export async function GET(request: Request) {
             success: true,
             data: {
                 period,
+                periodLabel: period === "today" ? "Hari ini" : period === "yesterday" ? "Kemarin" : period === "7d" ? "7 hari terakhir" : period === "30d" ? "30 hari terakhir" : "90 hari terakhir",
                 summary,
                 previous,
                 chart,
