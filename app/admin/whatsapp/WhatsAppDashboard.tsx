@@ -213,6 +213,44 @@ export default function WhatsAppDashboard() {
         }
     }
 
+    async function handleFreshQr() {
+        const confirmed = window.confirm(
+            "Buat QR baru? Sesi WhatsApp yang tersimpan di server akan dihapus, lalu WhatsApp perlu ditautkan ulang dengan QR."
+        );
+        if (!confirmed) return;
+
+        setLoading(true);
+        setActionError(null);
+        setQr(null);
+
+        try {
+            const disconnectResponse = await fetch("/api/admin/whatsapp/disconnect", {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+            });
+            const disconnectData = await disconnectResponse.json();
+            if (!disconnectResponse.ok || !disconnectData.success) {
+                throw new Error(disconnectData.message || "Sesi WhatsApp gagal direset.");
+            }
+
+            const connectResponse = await fetch("/api/admin/whatsapp/connect", {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+            });
+            const connectData = await connectResponse.json();
+            if (!connectResponse.ok || !connectData.success) {
+                throw new Error(connectData.message || "QR baru gagal dibuat.");
+            }
+            await fetchStatus();
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : "QR baru gagal dibuat.");
+        } finally {
+            setLoading(false);
+        }
+    }
+
     // ==========================================
     // DISCONNECT
     // ==========================================
@@ -408,6 +446,22 @@ export default function WhatsAppDashboard() {
                             </button>
                         )}
                     </div>
+
+                    {!isConnected && (
+                        <div className="mt-4 border-t border-gray-100 pt-4">
+                            <button
+                                type="button"
+                                onClick={handleFreshQr}
+                                disabled={loading}
+                                className="w-full rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                {loading ? "Menyiapkan QR..." : "Reset sesi & buat QR baru"}
+                            </button>
+                            <p className="mt-2 text-xs leading-5 text-gray-500">
+                                Gunakan jika QR tidak muncul atau tidak bisa dipindai. Sesi yang tersimpan di server akan dihapus dan perlu ditautkan ulang.
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 {/* ==========================================
